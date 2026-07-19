@@ -1,0 +1,12 @@
+{
+  "name": "salon-platform",
+  "private": true,
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "packages/*"
+  ],
+  "scripts": {
+    "db:migrate": "for f in db/migrations/0*.sql; do psql \"$DATABASE_URL\" -f \"$f\"; done"
+  }
+}
