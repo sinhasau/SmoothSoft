@@ -4,8 +4,9 @@ import { DatabaseModule } from './db/database.module';
 import { AuthModule } from './auth/auth.module';
 import { QueueModule } from './queue/queue.module';
 import { PaymentsModule } from './payments/payments.module';
+import { SettingsModule } from './settings/settings.module';
 import { RlsTransactionMiddleware } from './common/rls-transaction.middleware';
-import { HealthController, DebugController } from './health.controller';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -17,8 +18,9 @@ import { HealthController, DebugController } from './health.controller';
     AuthModule,
     QueueModule,
     PaymentsModule,
+    SettingsModule,
   ],
-  controllers: [HealthController, DebugController],
+  controllers: [HealthController],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
