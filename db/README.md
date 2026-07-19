@@ -1,10 +1,28 @@
 # Database
 
-8 sequential migrations. Apply in order against a fresh Postgres 15+ database:
+## Local one-time setup (native Postgres via Homebrew — no Docker required)
+
+```bash
+brew install postgresql@16 redis
+brew services start postgresql@16
+brew services start redis
+
+export PATH="/usr/local/opt/postgresql@16/bin:$PATH"
+psql -d postgres -c "CREATE ROLE salon LOGIN PASSWORD 'salon_dev_password' CREATEDB;"
+psql -d postgres -c "CREATE DATABASE salon_platform OWNER salon;"
+
+cp .env.example .env   # DATABASE_MIGRATE_URL (owner) + DATABASE_URL (app) both point here
+
+npm run db:migrate           # runs 0001-0010 as the owner role
+npm run db:grant-app-role    # creates salon_app and grants it table access — see below
+```
+
+10 sequential migrations. Apply in order against a fresh Postgres 15+ database
+(the `db:migrate` script does this):
 
 ```bash
 for f in migrations/0*.sql; do
-  psql "$DATABASE_URL" -f "$f"
+  psql "$DATABASE_MIGRATE_URL" -f "$f"
 done
 ```
 
@@ -24,19 +42,36 @@ tool-agnostic SQL specifically so they aren't locked to one migration runner yet
 | `0006_financials.sql` | `transactions`, `transaction_items`, `refunds` — append-only |
 | `0007_indexes.sql` | Composite/specialized indexes, each tied to a specific query — see SCALING-AND-INDEXING-NOTES.md for the reasoning behind each one |
 | `0008_row_level_security.sql` | RLS policies enforcing tenant isolation |
+| `0009_scheduling_and_compliance.sql` | `schedule_exceptions` (date-specific coverage changes), `schedule_change_requests` (pending approval flow), `compliance_documents` (license/insurance expiry tracking) — added for the Schedule and Dashboard screens, not present in the original handoff |
+| `0010_payments.sql` | Widens `transactions.payment_method` to add `'external'`, adds `payment_processor_config` (which processor is active per location) — added to support real Stripe/Square integration plus a manual reference-number fallback |
 
-## The one thing you must get right before writing application code
+## Two things you must get right before writing application code
 
-RLS depends on `app.current_organization_id` / `app.current_location_id` being set
-correctly per request. **If you introduce PgBouncer in transaction-pooling mode
-(likely, at scale — see SCALING-AND-INDEXING-NOTES.md §3), a plain `SET` will leak
-across unrelated requests sharing a pooled connection.**
+**1. RLS is bypassed for the table-owning role.** Postgres does not enforce
+Row-Level Security policies against a table's owner (or a superuser),
+regardless of the policy's `USING` clause. Verified locally while standing
+this up: querying as the migration-owning role (`salon`) returned rows across
+two simulated tenants even with RLS enabled; querying as a second, non-owner
+role (`salon_app`) correctly returned only the scoped tenant's rows. **The
+application must connect as `salon_app` (`DATABASE_URL`), never as the
+migration-owning role (`DATABASE_MIGRATE_URL`).** Run `npm run db:grant-app-role`
+after `db:migrate` (and after any future migration that adds tables) to keep
+`salon_app`'s grants current — see `db/grant-app-role.sql`.
+
+**2. RLS depends on `app.current_organization_id` / `app.current_location_id`
+being set correctly per request, with `SET LOCAL`, not plain `SET`.** If you
+introduce PgBouncer in transaction-pooling mode (likely, at scale — see
+SCALING-AND-INDEXING-NOTES.md §3), a plain `SET` leaks across unrelated
+requests sharing a pooled connection. **Reproduced locally as a regression
+check:** on a single connection, a plain `SET app.current_location_id = 'A'`
+inside one transaction was still visible to a *second, unrelated* transaction
+on that same connection after the first committed — `SET LOCAL` does not have
+this problem, since it's scoped to just the transaction it was issued in.
 
 Use `SET LOCAL` inside every transaction, enforced by middleware wrapping every
-request — never trust individual query call sites to remember this. Getting this
-wrong doesn't throw an error. It silently returns another tenant's data under load.
-Test this explicitly, with two concurrent simulated tenants, before this goes near
-real traffic.
+request (see `apps/api/src/common/rls-transaction.interceptor.ts`) — never trust
+individual query call sites to remember this. Getting this wrong doesn't throw
+an error. It silently returns another tenant's data under load.
 
 ## Not yet done
 
@@ -44,6 +79,5 @@ real traffic.
   an already-isolated parent (`transaction_items`, `phone_bindings`,
   `staff_schedule_days`, `staff_compensation_history`, `refunds`) need their own
   direct RLS policies the moment any endpoint queries them without that join.
-- No seed data / fixtures yet for local development.
 - No migration-down (rollback) scripts — add these before this touches a shared
   environment.
