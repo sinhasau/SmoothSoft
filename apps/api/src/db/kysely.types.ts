@@ -10,10 +10,19 @@ import { ColumnType, Generated, Insertable, Selectable, Updateable } from 'kysel
  * by default (to avoid float precision loss) but accepts number|string on
  * write.
  */
+/**
+ * NOTE: this Kysely version's `Generated<S> = ColumnType<S, S | undefined, S>`
+ * does NOT flatten a nested ColumnType — wrapping an already-ColumnType
+ * alias (Numeric, TimestampTz, ...) in Generated<> produces a type whose
+ * Insert/Update value type is itself a ColumnType object, not a plain
+ * value, which fails at every call site. Any column that is both a
+ * ColumnType AND has a DB-side default must use one of the *WithDefault
+ * aliases below directly — never `Generated<TimestampTz>` etc.
+ */
 type Numeric = ColumnType<string, string | number, string | number>;
-/** A NUMERIC column with a DB-side default — insert is optional, and accepts string|number when provided. */
 type NumericWithDefault = ColumnType<string, string | number | undefined, string | number>;
 type TimestampTz = ColumnType<Date, Date | string, Date | string>;
+type TimestampTzWithDefault = ColumnType<Date, Date | string | undefined, Date | string>;
 type DateOnly = ColumnType<string, string, string>;
 type TimeOnly = ColumnType<string, string, string>;
 
@@ -22,7 +31,7 @@ export interface OrganizationsTable {
   name: string;
   legal_structure: string | null;
   allow_staff_multi_location: Generated<boolean>;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface LocationsTable {
@@ -30,7 +39,7 @@ export interface LocationsTable {
   organization_id: string;
   name: string;
   timezone: Generated<string>;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface UsersTable {
@@ -38,7 +47,7 @@ export interface UsersTable {
   email: string | null;
   phone: string | null;
   full_name: string;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export type StaffRole = 'org_owner' | 'location_manager' | 'staff' | 'front_desk';
@@ -54,7 +63,7 @@ export interface LocationStaffTable {
   is_primary: Generated<boolean>;
   permission_overrides: Generated<Record<string, boolean>>;
   status: Generated<StaffStatus>;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface StaffScheduleDaysTable {
@@ -71,7 +80,7 @@ export interface StaffCompensationHistoryTable {
   classification: StaffClassification;
   commission_pct: Numeric | null;
   booth_rent_weekly: Numeric | null;
-  effective_from: Generated<TimestampTz>;
+  effective_from: TimestampTzWithDefault;
   effective_to: TimestampTz | null;
 }
 
@@ -99,14 +108,14 @@ export interface ClientsTable {
   notes: string | null;
   allergy_flag: Generated<boolean>;
   last_confirmed_at: TimestampTz | null;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface PhoneBindingsTable {
   id: Generated<string>;
   phone_normalized: string;
   client_id: string;
-  bound_at: Generated<TimestampTz>;
+  bound_at: TimestampTzWithDefault;
   superseded_at: TimestampTz | null;
 }
 
@@ -115,13 +124,13 @@ export interface GlobalClientAccountsTable {
   phone_normalized: string | null;
   email: string | null;
   verified_at: TimestampTz;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface ClientIdentityLinksTable {
   local_client_id: string;
   global_account_id: string;
-  linked_at: Generated<TimestampTz>;
+  linked_at: TimestampTzWithDefault;
   verification_method: 'sms_otp' | 'email_otp';
 }
 
@@ -202,7 +211,7 @@ export interface EventsTable {
   entity_id: string | null;
   actor_user_id: string | null;
   payload: Record<string, unknown>;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export type QueueEntryStatus = 'waiting' | 'in_service' | 'completed' | 'cancelled' | 'no_show';
@@ -211,6 +220,7 @@ export interface QueueEntriesTable {
   id: Generated<string>;
   location_id: string;
   client_id: string | null;
+  guest_name: string | null;
   service_id: string | null;
   status: QueueEntryStatus;
   assigned_location_staff_id: string | null;
@@ -223,8 +233,8 @@ export interface QueueEntriesTable {
   waiting_order: number | null;
   original_waiting_order: number | null;
   service_notes: string | null;
-  created_at: Generated<TimestampTz>;
-  updated_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
+  updated_at: TimestampTzWithDefault;
 }
 
 export type PaymentMethod = 'card' | 'cash' | 'external';
@@ -241,7 +251,7 @@ export interface TransactionsTable {
   total: Numeric;
   payment_method: PaymentMethod;
   payment_processor_ref: string | null;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface TransactionItemsTable {
@@ -258,7 +268,7 @@ export interface RefundsTable {
   original_transaction_id: string;
   amount: Numeric;
   reason: string | null;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface ScheduleExceptionsTable {
@@ -270,7 +280,7 @@ export interface ScheduleExceptionsTable {
   start_time: TimeOnly | null;
   end_time: TimeOnly | null;
   reason: string | null;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export type ScheduleRequestType = 'one_time' | 'recurring';
@@ -291,7 +301,7 @@ export interface ScheduleChangeRequestsTable {
   requested_by_user_id: string | null;
   decided_by_user_id: string | null;
   decided_at: TimestampTz | null;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export type ComplianceDocStatus = 'valid' | 'needs_attention' | 'overdue';
@@ -303,9 +313,9 @@ export interface ComplianceDocumentsTable {
   doc_type: string;
   description: string | null;
   expires_at: DateOnly | null;
-  last_updated_at: Generated<TimestampTz>;
+  last_updated_at: TimestampTzWithDefault;
   status: Generated<ComplianceDocStatus>;
-  created_at: Generated<TimestampTz>;
+  created_at: TimestampTzWithDefault;
 }
 
 export type ActiveProcessor = 'stripe' | 'square' | 'external';
@@ -318,7 +328,7 @@ export interface PaymentProcessorConfigTable {
   square_application_id: string | null;
   square_location_id: string | null;
   card_fee_pct: NumericWithDefault;
-  updated_at: Generated<TimestampTz>;
+  updated_at: TimestampTzWithDefault;
 }
 
 export interface DB {

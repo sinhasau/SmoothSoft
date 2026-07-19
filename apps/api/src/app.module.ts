@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { DatabaseModule } from './db/database.module';
 import { AuthModule } from './auth/auth.module';
+import { QueueModule } from './queue/queue.module';
 import { RlsTransactionMiddleware } from './common/rls-transaction.middleware';
 import { HealthController, DebugController } from './health.controller';
 
@@ -13,6 +14,7 @@ import { HealthController, DebugController } from './health.controller';
     }),
     DatabaseModule,
     AuthModule,
+    QueueModule,
   ],
   controllers: [HealthController, DebugController],
 })
