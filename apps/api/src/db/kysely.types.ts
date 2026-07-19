@@ -328,7 +328,24 @@ export interface PaymentProcessorConfigTable {
   square_application_id: string | null;
   square_location_id: string | null;
   card_fee_pct: NumericWithDefault;
+  starting_cash_float: NumericWithDefault;
   updated_at: TimestampTzWithDefault;
+}
+
+export interface ShopClosingsTable {
+  id: Generated<string>;
+  location_id: string;
+  closed_by_user_id: string | null;
+  closing_date: DateOnly;
+  starting_float: Numeric;
+  cash_sales_total: Numeric;
+  expected_cash: Numeric;
+  actual_cash_count: Numeric;
+  variance: Numeric;
+  card_sales_total: Numeric;
+  estimated_card_fee: Numeric;
+  tasks_completed: Generated<string[]>;
+  created_at: TimestampTzWithDefault;
 }
 
 export interface DB {
@@ -359,6 +376,7 @@ export interface DB {
   schedule_change_requests: ScheduleChangeRequestsTable;
   compliance_documents: ComplianceDocumentsTable;
   payment_processor_config: PaymentProcessorConfigTable;
+  shop_closings: ShopClosingsTable;
 }
 
 export type Organization = Selectable<OrganizationsTable>;
