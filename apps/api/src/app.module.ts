@@ -6,6 +6,7 @@ import { QueueModule } from './queue/queue.module';
 import { PaymentsModule } from './payments/payments.module';
 import { SettingsModule } from './settings/settings.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { ScheduleModule } from './schedule/schedule.module';
 import { RlsTransactionMiddleware } from './common/rls-transaction.middleware';
 import { HealthController } from './health.controller';
 
@@ -21,6 +22,7 @@ import { HealthController } from './health.controller';
     PaymentsModule,
     SettingsModule,
     DashboardModule,
+    ScheduleModule,
   ],
   controllers: [HealthController],
 })
