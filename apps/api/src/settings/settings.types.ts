@@ -18,6 +18,14 @@ export interface UpsertProductDto {
   stockQty?: number;
 }
 
+export interface UpsertDiscountCodeDto {
+  code: string;
+  discountType: 'percent' | 'flat';
+  value: number;
+  active?: boolean;
+  expiresAt?: string | null;
+}
+
 export interface UpdateTaxConfigDto {
   retailTaxPct: number;
   servicesTaxable: boolean;

@@ -12,6 +12,7 @@ import type {
   UpdateStaffCompensationDto,
   UpdateStaffGoalsDto,
   UpdateTaxConfigDto,
+  UpsertDiscountCodeDto,
   UpsertProductDto,
   UpsertServiceDto,
 } from './settings.types';
@@ -134,5 +135,25 @@ export class SettingsController {
   @Put('staff/:id/schedule')
   setSchedule(@Param('id') id: string, @Body() days: ScheduleDayDto[]) {
     return this.settings.setStaffSchedule(id, days);
+  }
+
+  @Get('discount-codes')
+  discountCodes() {
+    return this.settings.discountCodes(requireAuth().locationId);
+  }
+
+  @Post('discount-codes')
+  addDiscountCode(@Body() dto: UpsertDiscountCodeDto) {
+    return this.settings.addDiscountCode(requireAuth().locationId, dto);
+  }
+
+  @Put('discount-codes/:id')
+  updateDiscountCode(@Param('id') id: string, @Body() dto: UpsertDiscountCodeDto) {
+    return this.settings.updateDiscountCode(requireAuth().locationId, id, dto);
+  }
+
+  @Delete('discount-codes/:id')
+  removeDiscountCode(@Param('id') id: string) {
+    return this.settings.removeDiscountCode(requireAuth().locationId, id);
   }
 }

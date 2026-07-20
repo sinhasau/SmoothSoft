@@ -251,6 +251,22 @@ export interface TransactionsTable {
   total: Numeric;
   payment_method: PaymentMethod;
   payment_processor_ref: string | null;
+  discount_code_id: string | null;
+  discount_amount: NumericWithDefault;
+  created_at: TimestampTzWithDefault;
+}
+
+export type DiscountType = 'percent' | 'flat';
+
+export interface DiscountCodesTable {
+  id: Generated<string>;
+  location_id: string;
+  code: string;
+  discount_type: DiscountType;
+  value: Numeric;
+  active: Generated<boolean>;
+  expires_at: DateOnly | null;
+  usage_count: Generated<number>;
   created_at: TimestampTzWithDefault;
 }
 
@@ -376,6 +392,7 @@ export interface DB {
   schedule_change_requests: ScheduleChangeRequestsTable;
   compliance_documents: ComplianceDocumentsTable;
   payment_processor_config: PaymentProcessorConfigTable;
+  discount_codes: DiscountCodesTable;
   shop_closings: ShopClosingsTable;
 }
 

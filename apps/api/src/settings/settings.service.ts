@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
 import type {
   AddStaffDto,
@@ -9,6 +9,7 @@ import type {
   UpdateStaffCompensationDto,
   UpdateStaffGoalsDto,
   UpdateTaxConfigDto,
+  UpsertDiscountCodeDto,
   UpsertProductDto,
   UpsertServiceDto,
   StoreHoursDayDto,
@@ -310,5 +311,65 @@ export class SettingsService {
         .execute();
     }
     return trx.selectFrom('staff_schedule_days').selectAll().where('location_staff_id', '=', locationStaffId).orderBy('day_of_week').execute();
+  }
+
+  // ---- Discount codes ----
+  discountCodes(locationId: string) {
+    return db().selectFrom('discount_codes').selectAll().where('location_id', '=', locationId).orderBy('created_at', 'desc').execute();
+  }
+
+  async addDiscountCode(locationId: string, dto: UpsertDiscountCodeDto) {
+    if (dto.discountType === 'percent' && (dto.value <= 0 || dto.value > 100)) {
+      throw new BadRequestException('A percent discount must be between 0 and 100');
+    }
+    if (dto.value <= 0) {
+      throw new BadRequestException('Discount value must be greater than 0');
+    }
+    const code = dto.code.trim().toUpperCase();
+    const existing = await db()
+      .selectFrom('discount_codes')
+      .select('id')
+      .where('location_id', '=', locationId)
+      .where('code', '=', code)
+      .executeTakeFirst();
+    if (existing) {
+      throw new BadRequestException(`Discount code "${code}" already exists for this location`);
+    }
+
+    return db()
+      .insertInto('discount_codes')
+      .values({
+        location_id: locationId,
+        code,
+        discount_type: dto.discountType,
+        value: dto.value,
+        active: dto.active ?? true,
+        expires_at: dto.expiresAt ?? null,
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  async updateDiscountCode(locationId: string, id: string, dto: UpsertDiscountCodeDto) {
+    const result = await db()
+      .updateTable('discount_codes')
+      .set({
+        code: dto.code.trim().toUpperCase(),
+        discount_type: dto.discountType,
+        value: dto.value,
+        active: dto.active ?? true,
+        expires_at: dto.expiresAt ?? null,
+      })
+      .where('id', '=', id)
+      .where('location_id', '=', locationId)
+      .returningAll()
+      .executeTakeFirst();
+    if (!result) throw new NotFoundException('Discount code not found');
+    return result;
+  }
+
+  async removeDiscountCode(locationId: string, id: string) {
+    await db().deleteFrom('discount_codes').where('id', '=', id).where('location_id', '=', locationId).execute();
+    return { ok: true };
   }
 }

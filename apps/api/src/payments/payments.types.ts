@@ -16,6 +16,8 @@ export interface CheckoutDto {
   paymentToken?: string;
   /** Required for paymentMethod='external': the terminal's confirmation/reference number — never a card number. */
   externalReference?: string;
+  /** Optional discount code, validated and applied server-side — never trust a client-supplied discount amount. */
+  discountCode?: string;
 }
 
 /**

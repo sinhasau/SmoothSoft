@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { sql } from 'kysely';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
 import { appendEvent } from '../queue/event-log';
@@ -64,8 +65,38 @@ export class PaymentsService {
     const taxConfig = await trx.selectFrom('tax_config').selectAll().where('location_id', '=', locationId).executeTakeFirst();
     const retailTaxPct = Number(taxConfig?.retail_tax_pct ?? 0);
 
-    const subtotal = dto.lineItems.reduce((sum, item) => sum + item.price, 0);
-    const tax = dto.lineItems.reduce((sum, item) => (item.taxable ? sum + item.price * (retailTaxPct / 100) : sum), 0);
+    const rawSubtotal = dto.lineItems.reduce((sum, item) => sum + item.price, 0);
+    const rawTaxableAmount = dto.lineItems.reduce((sum, item) => (item.taxable ? sum + item.price : sum), 0);
+
+    // Discount codes are validated and priced server-side only — the
+    // client sends a code string, never a discount amount, so a tampered
+    // request can't just declare its own discount.
+    let discountCodeId: string | null = null;
+    let discountAmount = 0;
+    if (dto.discountCode) {
+      const code = dto.discountCode.trim().toUpperCase();
+      const discount = await trx
+        .selectFrom('discount_codes')
+        .selectAll()
+        .where('location_id', '=', locationId)
+        .where('code', '=', code)
+        .executeTakeFirst();
+      if (!discount) throw new BadRequestException(`Discount code "${code}" not found`);
+      if (!discount.active) throw new BadRequestException(`Discount code "${code}" is no longer active`);
+      if (discount.expires_at && new Date(discount.expires_at) < new Date()) {
+        throw new BadRequestException(`Discount code "${code}" has expired`);
+      }
+      discountCodeId = discount.id;
+      discountAmount =
+        discount.discount_type === 'percent' ? rawSubtotal * (Number(discount.value) / 100) : Math.min(Number(discount.value), rawSubtotal);
+    }
+
+    const subtotal = rawSubtotal - discountAmount;
+    // Tax is computed on the taxable portion of the DISCOUNTED subtotal —
+    // scale the taxable amount down by the same ratio the discount took
+    // off the whole sale, rather than taxing the pre-discount price.
+    const discountRatio = rawSubtotal > 0 ? discountAmount / rawSubtotal : 0;
+    const tax = rawTaxableAmount * (1 - discountRatio) * (retailTaxPct / 100);
     const total = subtotal + tax + dto.tip;
     const amountCents = Math.round(total * 100);
 
@@ -129,9 +160,19 @@ export class PaymentsService {
         total,
         payment_method: dto.paymentMethod,
         payment_processor_ref: processorRef,
+        discount_code_id: discountCodeId,
+        discount_amount: discountAmount,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+
+    if (discountCodeId) {
+      await trx
+        .updateTable('discount_codes')
+        .set({ usage_count: sql`usage_count + 1` })
+        .where('id', '=', discountCodeId)
+        .execute();
+    }
 
     await trx
       .insertInto('transaction_items')

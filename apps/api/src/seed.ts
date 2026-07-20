@@ -15,6 +15,7 @@
  * mockup itself was never wired to real data, so those two locations are
  * approximate, not pixel-matched.
  */
+import './env';
 import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
 import type { DB, StaffClassification, StaffRole } from './db/kysely.types';
