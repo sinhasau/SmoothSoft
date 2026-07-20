@@ -1,5 +1,6 @@
 node_modules/
 .env
+.env.local
 .next/
 dist/
 build/
@@ -8,3 +9,4 @@ build/
 __pycache__/
 .venv/
 .claude/settings.local.json
+*.tsbuildinfo

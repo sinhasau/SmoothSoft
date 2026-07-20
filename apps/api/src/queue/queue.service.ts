@@ -61,6 +61,8 @@ export class QueueService {
         'qe.waiting_order as waitingOrder',
         'qe.service_notes as serviceNotes',
         'qe.created_at as createdAt',
+        'qe.updated_at as updatedAt',
+        'qe.original_waiting_order as originalWaitingOrder',
       ]);
 
     const nowServing = await entryBase.where('qe.location_id', '=', locationId).where('qe.status', '=', 'in_service').execute();
@@ -281,26 +283,40 @@ export class QueueService {
     actorUserId: string,
     status: 'cancelled' | 'no_show',
     eventType: QueueEventType,
-    abandoned = false,
+    options: { abandoned?: boolean; allowInService?: boolean } = {},
   ) {
     const trx = db();
     const entry = await this.getEntryOrThrow(queueEntryId);
-    if (entry.status !== 'waiting') {
-      throw new ConflictException(`Only a waiting entry can be marked ${status}`);
+    const allowedStatuses = options.allowInService ? ['waiting', 'in_service'] : ['waiting'];
+    if (!allowedStatuses.includes(entry.status)) {
+      throw new ConflictException(`Only a waiting${options.allowInService ? ' or in-service' : ''} entry can be marked ${status}`);
     }
 
     await trx
       .updateTable('queue_entries')
-      .set({ status, abandoned, updated_at: new Date() })
+      .set({ status, abandoned: options.abandoned ?? false, updated_at: new Date() })
       .where('id', '=', queueEntryId)
       .execute();
+
+    // Cancelling directly out of Now Serving (PRD-live-queue-checkin.md §5.2
+    // "cancel service outright") must free the barber it was occupying.
+    if (entry.status === 'in_service' && entry.assigned_location_staff_id) {
+      await trx.updateTable('location_staff').set({ status: 'available' }).where('id', '=', entry.assigned_location_staff_id).execute();
+    }
 
     await appendEvent(trx, {
       locationId,
       eventType,
       entityId: queueEntryId,
       actorUserId,
-      payload: { queueEntryId, reversal: { previousStatus: entry.status, previousWaitingOrder: entry.waiting_order } },
+      payload: {
+        queueEntryId,
+        reversal: {
+          previousStatus: entry.status,
+          previousWaitingOrder: entry.waiting_order,
+          previousAssignedStaffId: entry.assigned_location_staff_id,
+        },
+      },
     });
 
     this.broadcast(locationId);
@@ -311,8 +327,9 @@ export class QueueService {
     return this.terminate(locationId, queueEntryId, actorUserId, 'no_show', 'queue_entry_no_show');
   }
 
+  /** Cancellable from either Waiting or Now Serving (PRD-live-queue-checkin.md §5.2 "cancel service outright"). */
   cancel(locationId: string, queueEntryId: string, actorUserId: string) {
-    return this.terminate(locationId, queueEntryId, actorUserId, 'cancelled', 'queue_entry_cancelled');
+    return this.terminate(locationId, queueEntryId, actorUserId, 'cancelled', 'queue_entry_cancelled', { allowInService: true });
   }
 
   /** Checked "here" (present=true) but never got served — tracked distinctly from no-show, per confirmed decision. */
@@ -322,7 +339,7 @@ export class QueueService {
     if (!entry.present) {
       throw new BadRequestException('Only a present entry can be marked abandoned — use no-show for a non-present entry');
     }
-    return this.terminate(locationId, queueEntryId, actorUserId, 'cancelled', 'queue_entry_abandoned', true);
+    return this.terminate(locationId, queueEntryId, actorUserId, 'cancelled', 'queue_entry_abandoned', { abandoned: true });
   }
 
   async reassign(locationId: string, queueEntryId: string, actorUserId: string, dto: ReassignDto) {
@@ -633,11 +650,24 @@ export class QueueService {
       case 'queue_entry_cancelled':
       case 'queue_entry_no_show':
       case 'queue_entry_abandoned': {
+        // Cancel is reachable from Now Serving too (allowInService) — undo
+        // must restore whichever status it actually came from, not always
+        // 'waiting', and re-busy the staff member if it came from in_service.
+        const restoredStatus = reversal.previousStatus ?? 'waiting';
         await trx
           .updateTable('queue_entries')
-          .set({ status: 'waiting', abandoned: false, waiting_order: reversal.previousWaitingOrder, updated_at: new Date() })
+          .set({
+            status: restoredStatus,
+            abandoned: false,
+            waiting_order: reversal.previousWaitingOrder,
+            assigned_location_staff_id: reversal.previousAssignedStaffId ?? null,
+            updated_at: new Date(),
+          })
           .where('id', '=', payload.queueEntryId)
           .execute();
+        if (restoredStatus === 'in_service' && reversal.previousAssignedStaffId) {
+          await trx.updateTable('location_staff').set({ status: 'busy' }).where('id', '=', reversal.previousAssignedStaffId).execute();
+        }
         break;
       }
       case 'queue_entry_reassigned': {
