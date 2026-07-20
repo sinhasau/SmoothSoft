@@ -58,17 +58,8 @@ interface ActivityEvent {
   event_type: string;
   entity_id: string | null;
   created_at: string;
-  payload: Record<string, any>;
-}
-
-function activitySummary(ev: ActivityEvent): string {
-  if (ev.event_type === 'shop_closed') {
-    const p = ev.payload;
-    const varianceLabel =
-      Math.abs(p.variance) < 0.01 ? 'matched exactly' : p.variance > 0 ? `$${p.variance.toFixed(2)} over` : `$${Math.abs(p.variance).toFixed(2)} short`;
-    return `Shop closed — cash $${Number(p.actualCashCount).toFixed(2)} counted vs $${Number(p.expectedCash).toFixed(2)} expected (${varianceLabel}), card sales $${Number(p.cardSalesTotal).toFixed(2)}`;
-  }
-  return ev.event_type.replace(/_/g, ' ');
+  /** Human-readable summary built server-side (queue.service.activityLog), names resolved. */
+  description: string;
 }
 
 function displayName(e: { clientName: string | null; guestName: string | null }) {
@@ -78,6 +69,10 @@ function displayName(e: { clientName: string | null; guestName: string | null })
 function timeLabel(iso: string | null) {
   if (!iso) return '—';
   return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function shortDate(iso: string) {
+  return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 export default function QueuePage({ params }: { params: { locationId: string } }) {
@@ -90,6 +85,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const [dragId, setDragId] = useState<string | null>(null);
   const [localWaitingOrder, setLocalWaitingOrder] = useState<string[] | null>(null);
   const [showCloseShop, setShowCloseShop] = useState(false);
+  const [confirmingUndo, setConfirmingUndo] = useState<string | null>(null);
 
   const board = useQuery({ queryKey: ['queue', 'board'], queryFn: () => api.get<Board>('/queue/board'), refetchInterval: 20_000 });
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
@@ -189,7 +185,8 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                   {e.serviceName} with {e.assignedStaffName} · started {timeLabel(e.updatedAt)}
                 </div>
               </div>
-              <div className="flex items-center gap-1">
+              {/* gap-3 matches the waiting rows so Complete's right edge lines up with Start's. */}
+              <div className="flex items-center gap-3">
                 <Button variant="solid" onClick={() => setCheckoutEntry(e)}>
                   Complete
                 </Button>
@@ -209,7 +206,9 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       <div>
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Waiting · drag to reorder</h2>
-          <div className="flex gap-2">
+          {/* mr-[60px] = card px-4 (16) + ⋮ menu w-8 (32) + gap-3 (12), so these
+              buttons' right edge aligns exactly with the Start buttons below. */}
+          <div className="flex gap-2 mr-[60px]">
             <Button onClick={() => setShowCheckIn('appointment')}>+ Appointment</Button>
             <Button variant="solid" onClick={() => setShowCheckIn('walkin')}>
               + Walk-in
@@ -248,7 +247,9 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                   here
                   {e.present && e.presentCheckedAt && <span className="text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
                 </label>
-                <span className="text-sm text-gray-500 w-16 text-right">{e.isAppt ? timeLabel(e.apptAt) : `~${timeLabel(e.estimatedStart)}`}</span>
+                <span className="text-sm text-gray-500 min-w-[76px] text-right whitespace-nowrap">
+                  {e.isAppt ? timeLabel(e.apptAt) : `~${timeLabel(e.estimatedStart)}`}
+                </span>
                 <Button disabled={availableStaff.length === 0} onClick={() => setStartEntry(e)}>
                   Start
                 </Button>
@@ -268,20 +269,38 @@ export default function QueuePage({ params }: { params: { locationId: string } }
 
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Activity</h2>
-        {/* Capped to ~4 rows visible, scrollable beyond that — keeps the
-            page from growing unbounded as the shift goes on (item 31). */}
-        <Card className={(activity.data?.length ?? 0) > 4 ? 'max-h-[168px] overflow-y-auto' : ''}>
+        {/* Exactly 4 rows visible: each row is a fixed h-9 (36px) + 3 dividers
+            = 147px; anything past that scrolls (item 31). */}
+        <Card className={(activity.data?.length ?? 0) > 4 ? 'max-h-[147px] overflow-y-auto' : ''}>
           {activity.data?.map((ev) => (
-            <div key={ev.id} className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-2 text-sm">
-              <span>{activitySummary(ev)}</span>
-              <div className="flex items-center gap-3 text-gray-400">
-                <span>{new Date(ev.created_at).toLocaleDateString()}</span>
-                {!ev.event_type.endsWith('_undone') && (
-                  <button className="underline hover:text-black" onClick={() => undo.mutate(String(ev.id))}>
-                    Undo
+            <div key={ev.id} className="flex h-9 items-center justify-between gap-4 border-b border-black/5 last:border-0 px-4 text-sm">
+              <span className="min-w-0 flex-1 truncate">{ev.description}</span>
+              {confirmingUndo === String(ev.id) ? (
+                /* Cancel sits exactly where Undo was (rightmost); Confirm to its left. */
+                <div className="flex items-center gap-3 whitespace-nowrap">
+                  <button
+                    className="font-medium text-red-600 hover:underline"
+                    onClick={() => {
+                      undo.mutate(String(ev.id));
+                      setConfirmingUndo(null);
+                    }}
+                  >
+                    Confirm undo
                   </button>
-                )}
-              </div>
+                  <button className="text-gray-400 underline hover:text-black" onClick={() => setConfirmingUndo(null)}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3 whitespace-nowrap text-gray-400">
+                  <span>{shortDate(ev.created_at)}</span>
+                  {!ev.event_type.endsWith('_undone') && (
+                    <button className="underline hover:text-black" onClick={() => setConfirmingUndo(String(ev.id))}>
+                      Undo
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </Card>
@@ -314,8 +333,11 @@ export default function QueuePage({ params }: { params: { locationId: string } }
 
 function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-start justify-center pt-20 z-50" onClick={onClose}>
-      <div className="bg-white rounded-xl border border-black/10 p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-24 backdrop-blur-[2px]" onClick={onClose}>
+      <div
+        className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5"
+        onClick={(e) => e.stopPropagation()}
+      >
         {children}
       </div>
     </div>
@@ -556,11 +578,16 @@ function CheckoutPanel({
   const [showExternal, setShowExternal] = useState(false);
   const [externalReference, setExternalReference] = useState('');
   const [discountCode, setDiscountCode] = useState('');
+  const [discountOpen, setDiscountOpen] = useState(false);
   const [retailItems, setRetailItems] = useState<Product[]>([]);
+  const [extraServices, setExtraServices] = useState<Service[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
 
-  const config = useQuery({ queryKey: ['payments', 'config'], queryFn: () => api.get<{ activeProcessor: string; configured: boolean }>('/payments/config') });
+  const config = useQuery({
+    queryKey: ['payments', 'config'],
+    queryFn: () => api.get<{ activeProcessor: string; configured: boolean; showDiscountAtCheckout: boolean }>('/payments/config'),
+  });
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
   const products = useQuery({ queryKey: ['settings', 'products'], queryFn: () => api.get<Product[]>('/settings/products') });
   const taxConfig = useQuery({ queryKey: ['settings', 'tax-config'], queryFn: () => api.get<{ services_taxable: boolean }>('/settings/tax-config') });
@@ -570,9 +597,10 @@ function CheckoutPanel({
   });
   const service = services.data?.find((s) => s.id === entry.serviceId);
   const servicePrice = service ? Number(service.price) : 0;
+  const extraServicesTotal = extraServices.reduce((sum, s) => sum + Number(s.price), 0);
   const retailTotal = retailItems.reduce((sum, p) => sum + Number(p.price), 0);
-  // "Total (before tip)" — updates live as retail products are added/removed (item 1).
-  const beforeTip = servicePrice + retailTotal;
+  // "Total (before tip)" — updates live as services/products are added or removed.
+  const beforeTip = servicePrice + extraServicesTotal + retailTotal;
 
   // Client-side preview only — the server independently validates and
   // computes the real discount at checkout, this just avoids a round trip
@@ -587,8 +615,10 @@ function CheckoutPanel({
 
   const checkout = useMutation({
     mutationFn: async () => {
+      const servicesTaxable = taxConfig.data?.services_taxable ?? false;
       const lineItems = [
-        { name: service?.name ?? 'Service', itemType: 'service' as const, price: servicePrice, taxable: taxConfig.data?.services_taxable ?? false },
+        { name: service?.name ?? 'Service', itemType: 'service' as const, price: servicePrice, taxable: servicesTaxable },
+        ...extraServices.map((s) => ({ name: s.name, itemType: 'service' as const, price: Number(s.price), taxable: servicesTaxable })),
         ...retailItems.map((p) => ({ name: p.name, itemType: 'retail' as const, price: Number(p.price), taxable: true })),
       ];
       // Simulates the future Stripe API response gate (item 4) — cash and
@@ -624,62 +654,115 @@ function CheckoutPanel({
       <h3 className="font-semibold mb-1">Complete — {displayName(entry)}</h3>
       <p className="text-sm text-gray-500 mb-4">{service?.name}</p>
 
-      {retailItems.length > 0 && (
-        <div className="mb-2 space-y-1">
-          {retailItems.map((p, i) => (
-            <div key={`${p.id}-${i}`} className="flex justify-between text-sm text-gray-600">
-              <span>+ {p.name}</span>
-              <span className="flex items-center gap-2">
-                ${Number(p.price).toFixed(2)}
-                <button
-                  className="text-gray-400 hover:text-red-600"
-                  disabled={busy}
-                  onClick={() => setRetailItems((items) => items.filter((_, idx) => idx !== i))}
-                >
-                  ✕
-                </button>
-              </span>
-            </div>
-          ))}
+      <div className="mb-2 space-y-1">
+        <div className="flex justify-between text-sm text-gray-600">
+          <span>{service?.name}</span>
+          <span>${servicePrice.toFixed(2)}</span>
         </div>
-      )}
+        {extraServices.map((s, i) => (
+          <div key={`svc-${s.id}-${i}`} className="flex justify-between text-sm text-gray-600">
+            <span>+ {s.name}</span>
+            <span className="flex items-center gap-2">
+              ${Number(s.price).toFixed(2)}
+              <button
+                className="text-gray-400 hover:text-red-600"
+                disabled={busy}
+                onClick={() => setExtraServices((items) => items.filter((_, idx) => idx !== i))}
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        ))}
+        {retailItems.map((p, i) => (
+          <div key={`ret-${p.id}-${i}`} className="flex justify-between text-sm text-gray-600">
+            <span>+ {p.name}</span>
+            <span className="flex items-center gap-2">
+              ${Number(p.price).toFixed(2)}
+              <button
+                className="text-gray-400 hover:text-red-600"
+                disabled={busy}
+                onClick={() => setRetailItems((items) => items.filter((_, idx) => idx !== i))}
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+        ))}
+      </div>
 
-      {products.data && products.data.length > 0 && (
-        <select
-          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2 text-sm text-gray-500"
-          disabled={busy}
-          value=""
-          onChange={(e) => {
-            const product = products.data!.find((p) => p.id === e.target.value);
-            if (product) setRetailItems((items) => [...items, product]);
-          }}
-        >
-          <option value="">+ Add a retail product…</option>
-          {products.data.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} · ${Number(p.price).toFixed(2)}
-            </option>
-          ))}
-        </select>
-      )}
+      <div className="mb-2 flex gap-2">
+        {services.data && services.data.length > 0 && (
+          <select
+            className="min-w-0 flex-1 rounded-lg border border-black/15 px-3 py-2 text-sm text-gray-500"
+            disabled={busy}
+            value=""
+            onChange={(e) => {
+              const svc = services.data!.find((s) => s.id === e.target.value);
+              if (svc) setExtraServices((items) => [...items, svc]);
+            }}
+          >
+            <option value="">+ Add a service…</option>
+            {services.data.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} · ${Number(s.price).toFixed(2)}
+              </option>
+            ))}
+          </select>
+        )}
+        {products.data && products.data.length > 0 && (
+          <select
+            className="min-w-0 flex-1 rounded-lg border border-black/15 px-3 py-2 text-sm text-gray-500"
+            disabled={busy}
+            value=""
+            onChange={(e) => {
+              const product = products.data!.find((p) => p.id === e.target.value);
+              if (product) setRetailItems((items) => [...items, product]);
+            }}
+          >
+            <option value="">+ Add a product…</option>
+            {products.data.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · ${Number(p.price).toFixed(2)}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
 
       <div className="flex justify-between text-sm font-medium mb-3 pt-2 border-t border-black/5">
         <span>Total (before tip)</span>
         <span>${beforeTip.toFixed(2)}</span>
       </div>
 
-      <input
-        className="w-full border border-black/15 rounded-lg px-3 py-2 mb-1 font-mono uppercase disabled:bg-gray-50"
-        placeholder="Discount code (optional)"
-        value={discountCode}
-        disabled={busy}
-        onChange={(e) => setDiscountCode(e.target.value)}
-      />
-      {discountCode.trim() && (
-        <p className={`text-xs mb-2 ${matchedDiscount ? 'text-green-700' : 'text-gray-400'}`}>
-          {matchedDiscount ? `−$${discountAmount.toFixed(2)} applied` : 'Not a recognized active code — validated again at checkout'}
-        </p>
-      )}
+      {/* Discount entry hides behind a small affordance; whether it appears
+          at all is an owner setting (Settings → Billing, default on). */}
+      {(config.data?.showDiscountAtCheckout ?? true) &&
+        (!discountOpen ? (
+          <button
+            className="mb-3 rounded-lg border border-dashed border-black/20 px-3 py-1.5 text-xs text-gray-500 hover:border-black/40 hover:text-black"
+            disabled={busy}
+            onClick={() => setDiscountOpen(true)}
+          >
+            + Discount code
+          </button>
+        ) : (
+          <div className="mb-2">
+            <input
+              autoFocus
+              className="w-full rounded-lg border border-black/15 px-3 py-2 font-mono uppercase disabled:bg-gray-50"
+              placeholder="Discount code"
+              value={discountCode}
+              disabled={busy}
+              onChange={(e) => setDiscountCode(e.target.value)}
+            />
+            {discountCode.trim() && (
+              <p className={`mt-1 text-xs ${matchedDiscount ? 'text-green-700' : 'text-gray-400'}`}>
+                {matchedDiscount ? `−$${discountAmount.toFixed(2)} applied` : 'Not a recognized active code — validated again at checkout'}
+              </p>
+            )}
+          </div>
+        ))}
       <input
         type="number"
         className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3 disabled:bg-gray-50"

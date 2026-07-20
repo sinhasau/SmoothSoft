@@ -167,17 +167,28 @@ export class SettingsService {
     return db().selectFrom('payment_processor_config').selectAll().where('location_id', '=', locationId).executeTakeFirst();
   }
 
-  setPaymentProcessorConfig(locationId: string, dto: UpdatePaymentProcessorConfigDto) {
+  /**
+   * Partial update: merges with the existing row rather than overwriting.
+   * Earlier version null-ed out every omitted field, which meant a UI that
+   * only wanted to change (say) the card fee silently wiped the Stripe
+   * publishable key — every caller would have had to round-trip the full
+   * config. Merge semantics let each Settings control PUT just its own field.
+   */
+  async setPaymentProcessorConfig(locationId: string, dto: UpdatePaymentProcessorConfigDto) {
+    const current = await this.paymentProcessorConfig(locationId);
+    if (!current) throw new NotFoundException('Payment processor config not found for this location');
+
     return db()
       .updateTable('payment_processor_config')
       .set({
-        active_processor: dto.activeProcessor,
-        stripe_publishable_key: dto.stripePublishableKey ?? null,
-        stripe_connected_account_id: dto.stripeConnectedAccountId ?? null,
-        square_application_id: dto.squareApplicationId ?? null,
-        square_location_id: dto.squareLocationId ?? null,
-        card_fee_pct: dto.cardFeePct,
-        starting_cash_float: dto.startingCashFloat,
+        active_processor: dto.activeProcessor ?? current.active_processor,
+        stripe_publishable_key: dto.stripePublishableKey !== undefined ? dto.stripePublishableKey : current.stripe_publishable_key,
+        stripe_connected_account_id: dto.stripeConnectedAccountId !== undefined ? dto.stripeConnectedAccountId : current.stripe_connected_account_id,
+        square_application_id: dto.squareApplicationId !== undefined ? dto.squareApplicationId : current.square_application_id,
+        square_location_id: dto.squareLocationId !== undefined ? dto.squareLocationId : current.square_location_id,
+        card_fee_pct: dto.cardFeePct ?? current.card_fee_pct,
+        starting_cash_float: dto.startingCashFloat ?? current.starting_cash_float,
+        show_discount_at_checkout: dto.showDiscountAtCheckout ?? current.show_discount_at_checkout,
         updated_at: new Date(),
       })
       .where('location_id', '=', locationId)

@@ -46,6 +46,7 @@ interface PaymentProcessorConfig {
   starting_cash_float: string;
   card_fee_pct: string;
   active_processor: 'stripe' | 'square' | 'external';
+  show_discount_at_checkout: boolean;
 }
 
 interface SchedulingPolicy {
@@ -115,14 +116,15 @@ export default function SettingsPage() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-codes'] }),
   });
 
+  // Partial PUTs — the server merges with the existing row, so each
+  // control only sends its own field.
   const updateCashConfig = useMutation({
-    mutationFn: (dto: { startingCashFloat: number; cardFeePct: number }) =>
-      api.put('/settings/payment-processor-config', {
-        activeProcessor: cashConfig.data?.active_processor ?? 'external',
-        startingCashFloat: dto.startingCashFloat,
-        cardFeePct: dto.cardFeePct,
-      }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'payment-processor-config'] }),
+    mutationFn: (dto: { startingCashFloat?: number; cardFeePct?: number; showDiscountAtCheckout?: boolean }) =>
+      api.put('/settings/payment-processor-config', dto),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'payment-processor-config'] });
+      void queryClient.invalidateQueries({ queryKey: ['payments', 'config'] });
+    },
   });
 
   const updateSchedulingPolicy = useMutation({
@@ -280,6 +282,14 @@ export default function SettingsPage() {
             </Button>
           </div>
           {discountError && <p className="text-red-600 text-sm px-4 pb-3">{discountError}</p>}
+          <label className="flex items-center gap-2 border-t border-black/5 px-4 py-3 text-sm">
+            <input
+              type="checkbox"
+              checked={cashConfig.data?.show_discount_at_checkout ?? true}
+              onChange={(e) => updateCashConfig.mutate({ showDiscountAtCheckout: e.target.checked })}
+            />
+            Show the discount code field at checkout
+          </label>
         </Card>
       </div>
 
@@ -294,7 +304,7 @@ export default function SettingsPage() {
                 className="ml-2 border border-black/15 rounded-lg px-2 py-1 w-24"
                 defaultValue={cashConfig.data.starting_cash_float}
                 onBlur={(e) =>
-                  updateCashConfig.mutate({ startingCashFloat: Number(e.target.value), cardFeePct: Number(cashConfig.data!.card_fee_pct) })
+                  updateCashConfig.mutate({ startingCashFloat: Number(e.target.value) })
                 }
               />
             </label>
@@ -306,7 +316,7 @@ export default function SettingsPage() {
                 className="ml-2 border border-black/15 rounded-lg px-2 py-1 w-20"
                 defaultValue={cashConfig.data.card_fee_pct}
                 onBlur={(e) =>
-                  updateCashConfig.mutate({ startingCashFloat: Number(cashConfig.data!.starting_cash_float), cardFeePct: Number(e.target.value) })
+                  updateCashConfig.mutate({ cardFeePct: Number(e.target.value) })
                 }
               />
             </label>

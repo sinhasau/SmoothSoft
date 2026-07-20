@@ -5,5 +5,23 @@
 body {
   background-color: #faf9f5;
   color: #1a1a1a;
+  /* font-family is set by next/font (Inter) on <body>; this is the fallback stack. */
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Consistent, pleasant form controls everywhere without per-input classes. */
+input,
+select,
+textarea {
+  background-color: #fff;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgb(0 0 0 / 0.35);
+  box-shadow: 0 0 0 3px rgb(0 0 0 / 0.05);
 }

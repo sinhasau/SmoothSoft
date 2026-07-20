@@ -57,14 +57,16 @@ export interface UpdateLocationGoalsDto {
   utilizationTargetPct?: number;
 }
 
+/** Partial update — omitted fields keep their current values (the service merges with the existing row). */
 export interface UpdatePaymentProcessorConfigDto {
-  activeProcessor: 'stripe' | 'square' | 'external';
+  activeProcessor?: 'stripe' | 'square' | 'external';
   stripePublishableKey?: string | null;
   stripeConnectedAccountId?: string | null;
   squareApplicationId?: string | null;
   squareLocationId?: string | null;
   cardFeePct?: number;
   startingCashFloat?: number;
+  showDiscountAtCheckout?: boolean;
 }
 
 export interface ScheduleDayDto {

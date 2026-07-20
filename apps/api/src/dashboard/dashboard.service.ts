@@ -192,6 +192,57 @@ export class DashboardService {
    * just runs the same scoped query N times and aggregates the results in
    * application code. See db/scoped-query.ts.
    */
+  /**
+   * Itemized breakdown of today's transactions — one row per sale with
+   * its service/retail split, tip, tax, discount, and total. Backs the
+   * drill-down screen the Revenue / Clients-served stat cards link to.
+   */
+  async salesBreakdown(locationId: string) {
+    const trx = db();
+    const since = startOfToday();
+
+    const txns = await trx
+      .selectFrom('transactions as t')
+      .leftJoin('clients as c', 'c.id', 't.client_id')
+      .leftJoin('location_staff as ls', 'ls.id', 't.location_staff_id')
+      .leftJoin('users as u', 'u.id', 'ls.user_id')
+      .select([
+        't.id as transactionId',
+        'c.id as clientId',
+        'c.name as clientName',
+        'ls.id as staffId',
+        'u.full_name as staffName',
+        't.tax as tax',
+        't.tip as tip',
+        't.discount_amount as discountAmount',
+        't.total as total',
+        't.payment_method as paymentMethod',
+        't.created_at as createdAt',
+      ])
+      .where('t.location_id', '=', locationId)
+      .where('t.created_at', '>=', since)
+      .orderBy('t.created_at', 'desc')
+      .execute();
+
+    const ids = txns.map((t) => t.transactionId);
+    const items = ids.length
+      ? await trx.selectFrom('transaction_items').select(['transaction_id', 'item_type', 'price']).where('transaction_id', 'in', ids).execute()
+      : [];
+
+    const serviceTotals = new Map<string, number>();
+    const retailTotals = new Map<string, number>();
+    for (const item of items) {
+      const map = item.item_type === 'service' ? serviceTotals : retailTotals;
+      map.set(item.transaction_id, (map.get(item.transaction_id) ?? 0) + Number(item.price));
+    }
+
+    return txns.map((t) => ({
+      ...t,
+      serviceTotal: serviceTotals.get(t.transactionId) ?? 0,
+      retailTotal: retailTotals.get(t.transactionId) ?? 0,
+    }));
+  }
+
   async orgDashboard(organizationId: string) {
     const trx = db();
     const locations = await trx.selectFrom('locations').selectAll().where('organization_id', '=', organizationId).execute();

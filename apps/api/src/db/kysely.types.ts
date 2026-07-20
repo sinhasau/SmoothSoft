@@ -353,6 +353,7 @@ export interface PaymentProcessorConfigTable {
   square_location_id: string | null;
   card_fee_pct: NumericWithDefault;
   starting_cash_float: NumericWithDefault;
+  show_discount_at_checkout: Generated<boolean>;
   updated_at: TimestampTzWithDefault;
 }
 

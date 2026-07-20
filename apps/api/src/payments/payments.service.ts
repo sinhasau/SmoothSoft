@@ -24,7 +24,7 @@ export class PaymentsService {
       .executeTakeFirst();
 
     if (!config) {
-      return { activeProcessor: 'external' as const, configured: false };
+      return { activeProcessor: 'external' as const, configured: false, showDiscountAtCheckout: true };
     }
 
     const processor = this.buildProcessor(config.active_processor, config);
@@ -37,6 +37,7 @@ export class PaymentsService {
       squareLocationId: config.active_processor === 'square' ? config.square_location_id : null,
       cardFeePct: config.card_fee_pct,
       startingCashFloat: config.starting_cash_float,
+      showDiscountAtCheckout: config.show_discount_at_checkout,
     };
   }
 

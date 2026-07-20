@@ -13,6 +13,11 @@ export class DashboardController {
     return this.dashboard.locationDashboard(requireAuth().locationId);
   }
 
+  @Get('sales')
+  sales() {
+    return this.dashboard.salesBreakdown(requireAuth().locationId);
+  }
+
   @Get('org')
   org() {
     return this.dashboard.orgDashboard(requireAuth().organizationId);

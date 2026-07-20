@@ -730,14 +730,103 @@ export class QueueService {
     this.broadcast(locationId);
   }
 
+  /**
+   * Events enriched with a human-readable `description` ("Checked in
+   * Sam R. (walk-in)", "Kim set to available") built server-side, where
+   * the names are one indexed lookup away — rather than making the
+   * frontend re-derive them from raw payloads it doesn't have the joins
+   * for.
+   */
   async activityLog(locationId: string, limit = 50) {
-    return db()
+    const trx = db();
+    const events = await trx
       .selectFrom('events')
       .selectAll()
       .where('location_id', '=', locationId)
       .orderBy('id', 'desc')
       .limit(limit)
       .execute();
+
+    const entryIds = new Set<string>();
+    const staffIds = new Set<string>();
+    for (const e of events) {
+      const p = e.payload as any;
+      if (p?.queueEntryId) entryIds.add(p.queueEntryId);
+      for (const key of ['staffId', 'newStaffId', 'locationStaffId']) {
+        if (p?.[key]) staffIds.add(p[key]);
+      }
+    }
+
+    const entryNames = new Map<string, string>();
+    if (entryIds.size > 0) {
+      const rows = await trx
+        .selectFrom('queue_entries as qe')
+        .leftJoin('clients as c', 'c.id', 'qe.client_id')
+        .select(['qe.id as id', 'c.name as clientName', 'qe.guest_name as guestName'])
+        .where('qe.id', 'in', [...entryIds])
+        .execute();
+      for (const r of rows) entryNames.set(r.id, r.clientName ?? r.guestName ?? 'Guest');
+    }
+
+    const staffNames = new Map<string, string>();
+    if (staffIds.size > 0) {
+      const rows = await trx
+        .selectFrom('location_staff as ls')
+        .innerJoin('users as u', 'u.id', 'ls.user_id')
+        .select(['ls.id as id', 'u.full_name as name'])
+        .where('ls.id', 'in', [...staffIds])
+        .execute();
+      for (const r of rows) staffNames.set(r.id, r.name);
+    }
+
+    const byId = new Map(events.map((e) => [String(e.id), e]));
+
+    const describe = (e: (typeof events)[number]): string => {
+      const p = e.payload as any;
+      const who = (p?.queueEntryId && entryNames.get(p.queueEntryId)) ?? p?.displayName ?? 'Guest';
+      const staff = (id?: string) => (id && staffNames.get(id)) || 'a barber';
+
+      switch (e.event_type) {
+        case 'client_checked_in':
+          return `Checked in ${who}${p?.mode === 'guest' ? ' (walk-in)' : ''}`;
+        case 'service_started':
+          return `Started ${who} with ${staff(p?.staffId)}`;
+        case 'service_completed':
+          return `Completed ${who}`;
+        case 'queue_entry_cancelled':
+          return `Cancelled ${who}`;
+        case 'queue_entry_no_show':
+          return `Marked ${who} as a no-show`;
+        case 'queue_entry_abandoned':
+          return `Marked ${who} as abandoned`;
+        case 'queue_entry_reassigned':
+          return `Reassigned ${who} to ${staff(p?.newStaffId)}`;
+        case 'queue_entry_reordered':
+          return 'Reordered the waiting list';
+        case 'queue_entry_present_toggled':
+          return p?.present ? `Marked ${who} as here` : `Unmarked ${who} as here`;
+        case 'queue_entry_returned_to_waiting':
+          return `Returned ${who} to ${p?.position === 'top' ? 'the top of the waiting list' : 'their original position'}`;
+        case 'staff_status_changed':
+          return `${staff(p?.locationStaffId)} set to ${p?.newStatus}`;
+        case 'staff_clocked_in':
+          return `${staff(p?.locationStaffId)} clocked in`;
+        case 'shop_closed': {
+          const v = Number(p?.variance ?? 0);
+          const varianceLabel = Math.abs(v) < 0.01 ? 'matched exactly' : v > 0 ? `$${v.toFixed(2)} over` : `$${Math.abs(v).toFixed(2)} short`;
+          return `Closed up shop — drawer ${varianceLabel}, card sales $${Number(p?.cardSalesTotal ?? 0).toFixed(2)}`;
+        }
+        default: {
+          if (e.event_type.endsWith('_undone')) {
+            const target = p?.undoneEventId ? byId.get(String(p.undoneEventId)) : undefined;
+            return target ? `Undid: ${describe(target)}` : 'Undid an action';
+          }
+          return e.event_type.replace(/_/g, ' ');
+        }
+      }
+    };
+
+    return events.map((e) => ({ ...e, description: describe(e) }));
   }
 
   private async getEntryOrThrow(queueEntryId: string) {
