@@ -6,6 +6,7 @@ import type {
   AddStaffDto,
   ScheduleDayDto,
   StoreHoursDayDto,
+  UpdateComplianceDocumentDto,
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
   UpdatePricingPolicyDto,
@@ -118,7 +119,8 @@ export class SettingsController {
 
   @Get('staff')
   roster() {
-    return this.settings.roster(requireAuth().locationId);
+    const auth = requireAuth();
+    return this.settings.roster(auth.locationId, auth.role);
   }
 
   @Post('staff')
@@ -189,5 +191,15 @@ export class SettingsController {
   @Put('staff/:id/price-tier')
   setStaffPriceTier(@Param('id') id: string, @Body() dto: UpdateStaffPriceTierDto) {
     return this.settings.setStaffPriceTier(id, dto);
+  }
+
+  @Get('compliance-documents')
+  complianceDocuments() {
+    return this.settings.complianceDocuments(requireAuth().locationId);
+  }
+
+  @Put('compliance-documents/:id')
+  updateComplianceDocument(@Param('id') id: string, @Body() dto: UpdateComplianceDocumentDto) {
+    return this.settings.updateComplianceDocument(id, dto);
   }
 }

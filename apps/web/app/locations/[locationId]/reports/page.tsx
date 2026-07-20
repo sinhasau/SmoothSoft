@@ -22,8 +22,12 @@ interface ReportDef {
   label: string;
   category: 'Sales' | 'Staff & Operations' | 'Clients';
   dateRanged: boolean;
+  /** Preset day-count buttons offered alongside "Custom". Defaults to [7, 30, 90]. */
+  rangeOptions?: number[];
   columns: Column[];
 }
+
+const DEFAULT_RANGE_OPTIONS = [7, 30, 90];
 
 interface Column {
   key: string;
@@ -62,6 +66,7 @@ const REPORTS: ReportDef[] = [
     label: 'Revenue by staff',
     category: 'Sales',
     dateRanged: true,
+    rangeOptions: [14],
     columns: [
       { key: 'fullName', label: 'Staff', format: (r, locId) => <ClickableName id={r.locationStaffId} name={r.fullName} href={(id) => `/locations/${locId}/staff/${id}`} /> },
       { key: 'clients', label: 'Clients', align: 'right' },
@@ -195,15 +200,24 @@ function StarIcon({ filled }: { filled: boolean }) {
 export default function ReportsPage({ params }: { params: { locationId: string } }) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<ReportId | null>(null);
-  const [rangeDays, setRangeDays] = useState<7 | 30 | 90>(30);
+  const [rangeMode, setRangeMode] = useState<number | 'custom'>(30);
+  const [customFrom, setCustomFrom] = useState(isoDaysAgo(13));
+  const [customTo, setCustomTo] = useState(isoDaysAgo(0));
 
-  const from = isoDaysAgo(rangeDays - 1);
-  const to = isoDaysAgo(0);
+  const from = rangeMode === 'custom' ? customFrom : isoDaysAgo(rangeMode - 1);
+  const to = rangeMode === 'custom' ? customTo : isoDaysAgo(0);
 
   const favoritesQuery = useQuery({ queryKey: ['reports', 'favorites'], queryFn: () => api.get<string[]>('/reports/favorites') });
   const favorites = new Set(favoritesQuery.data ?? []);
 
   const def = selected ? REPORTS.find((r) => r.id === selected) : null;
+  const rangeOptions = def?.rangeOptions ?? DEFAULT_RANGE_OPTIONS;
+
+  function selectReport(id: ReportId) {
+    setSelected(id);
+    const options = REPORTS.find((r) => r.id === id)?.rangeOptions ?? DEFAULT_RANGE_OPTIONS;
+    setRangeMode(options[0]);
+  }
   const reportQuery = useQuery({
     queryKey: ['reports', 'data', selected, def?.dateRanged ? from : null, def?.dateRanged ? to : null],
     queryFn: () => api.get<{ rows: any[]; totals?: Record<string, number> }>(`/reports/${selected}${def?.dateRanged ? `?from=${from}&to=${to}` : ''}`),
@@ -224,7 +238,7 @@ export default function ReportsPage({ params }: { params: { locationId: string }
         {favoritedReports.length > 0 && (
           <div>
             <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Favorites</h3>
-            <ReportList reports={favoritedReports} selected={selected} favorites={favorites} onSelect={setSelected} onToggleFavorite={(id) => toggleFavorite.mutate(id)} />
+            <ReportList reports={favoritedReports} selected={selected} favorites={favorites} onSelect={selectReport} onToggleFavorite={(id) => toggleFavorite.mutate(id)} />
           </div>
         )}
         {CATEGORIES.map((cat) => (
@@ -234,7 +248,7 @@ export default function ReportsPage({ params }: { params: { locationId: string }
               reports={REPORTS.filter((r) => r.category === cat)}
               selected={selected}
               favorites={favorites}
-              onSelect={setSelected}
+              onSelect={selectReport}
               onToggleFavorite={(id) => toggleFavorite.mutate(id)}
             />
           </div>
@@ -249,20 +263,36 @@ export default function ReportsPage({ params }: { params: { locationId: string }
               <h2 className="text-xl font-bold">{def.label}</h2>
               {def.dateRanged && (
                 <div className="flex gap-1">
-                  {([7, 30, 90] as const).map((d) => (
+                  {rangeOptions.map((d) => (
                     <button
                       key={d}
-                      onClick={() => setRangeDays(d)}
+                      onClick={() => setRangeMode(d)}
                       className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${
-                        rangeDays === d ? 'border-black bg-black text-white' : 'border-black/10 bg-white text-ink hover:border-black/30'
+                        rangeMode === d ? 'border-black bg-black text-white' : 'border-black/10 bg-white text-ink hover:border-black/30'
                       }`}
                     >
                       {d}d
                     </button>
                   ))}
+                  <button
+                    onClick={() => setRangeMode('custom')}
+                    className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${
+                      rangeMode === 'custom' ? 'border-black bg-black text-white' : 'border-black/10 bg-white text-ink hover:border-black/30'
+                    }`}
+                  >
+                    Custom
+                  </button>
                 </div>
               )}
             </div>
+
+            {def.dateRanged && rangeMode === 'custom' && (
+              <div className="flex items-center gap-2 text-sm">
+                <input type="date" className="border border-black/15 rounded-lg px-2 py-1" value={customFrom} max={customTo} onChange={(e) => setCustomFrom(e.target.value)} />
+                <span className="text-gray-400">to</span>
+                <input type="date" className="border border-black/15 rounded-lg px-2 py-1" value={customTo} min={customFrom} onChange={(e) => setCustomTo(e.target.value)} />
+              </div>
+            )}
 
             {reportQuery.isLoading && <p className="text-gray-500">Loading…</p>}
             {reportQuery.data && (

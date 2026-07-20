@@ -3,11 +3,17 @@ import type { Pool } from 'pg';
 import { db } from '../common/request-context';
 import { PG_POOL } from '../db/database.module';
 import { runInLocationScope } from '../db/scoped-query';
+import type { StaffRole } from '../db/kysely.types';
 
 function startOfToday(): Date {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+/** W2/1099 classification is payroll-sensitive — only management should see it about other staff. */
+function canViewClassification(role: StaffRole): boolean {
+  return role === 'org_owner' || role === 'location_manager';
 }
 
 /**
@@ -20,7 +26,7 @@ function startOfToday(): Date {
 export class DashboardService {
   constructor(@Inject(PG_POOL) private readonly pool: Pool) {}
 
-  async locationDashboard(locationId: string) {
+  async locationDashboard(locationId: string, requesterRole: StaffRole) {
     const trx = db();
     const since = startOfToday();
 
@@ -69,8 +75,11 @@ export class DashboardService {
     const abandoned = cancelledToday.filter((e) => e.abandoned).length;
     const cancels = cancelledToday.filter((e) => e.status === 'cancelled' && !e.abandoned).length;
 
-    const staffToday = await this.staffToday(locationId, since);
-    const utilization = this.computeUtilization(staffToday);
+    const staffTodayRaw = await this.staffToday(locationId, since);
+    const utilization = this.computeUtilization(staffTodayRaw);
+    const staffToday = canViewClassification(requesterRole)
+      ? staffTodayRaw
+      : staffTodayRaw.map(({ classification, ...rest }) => rest);
 
     const compliance = await trx
       .selectFrom('compliance_documents as cd')

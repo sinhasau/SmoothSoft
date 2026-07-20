@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../../../lib/api';
-import { Button, Card } from '../../../../components/ui';
+import { Button, Card, Pill } from '../../../../components/ui';
 
 interface Service {
   id: string;
@@ -59,6 +59,16 @@ interface PricingPolicy {
   flatSurchargeAmount: number;
 }
 
+interface ComplianceDocument {
+  id: string;
+  docType: string;
+  description: string | null;
+  expiresAt: string | null;
+  status: 'valid' | 'needs_attention' | 'overdue';
+  locationStaffId: string | null;
+  staffName: string | null;
+}
+
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
@@ -68,6 +78,7 @@ export default function SettingsPage() {
   const discountCodes = useQuery({ queryKey: ['settings', 'discount-codes'], queryFn: () => api.get<DiscountCode[]>('/settings/discount-codes') });
   const cashConfig = useQuery({ queryKey: ['settings', 'payment-processor-config'], queryFn: () => api.get<PaymentProcessorConfig>('/settings/payment-processor-config') });
   const schedulingPolicy = useQuery({ queryKey: ['settings', 'scheduling-policy'], queryFn: () => api.get<SchedulingPolicy>('/settings/scheduling-policy') });
+  const complianceDocs = useQuery({ queryKey: ['settings', 'compliance-documents'], queryFn: () => api.get<ComplianceDocument[]>('/settings/compliance-documents') });
   const pricingPolicy = useQuery({ queryKey: ['settings', 'pricing-policy'], queryFn: () => api.get<PricingPolicy>('/settings/pricing-policy') });
 
   const [newService, setNewService] = useState({ name: '', durationMinutes: 20, price: 28 });
@@ -154,8 +165,47 @@ export default function SettingsPage() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'staff'] }),
   });
 
+  const updateComplianceDoc = useMutation({
+    mutationFn: ({ id, ...dto }: { id: string; status?: ComplianceDocument['status']; expiresAt?: string | null }) =>
+      api.put(`/settings/compliance-documents/${id}`, dto),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['settings', 'compliance-documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['dashboard', 'location'] });
+    },
+  });
+
   return (
     <div className="space-y-6 max-w-2xl">
+      <div id="compliance">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Compliance documents</h2>
+        <Card>
+          {complianceDocs.data?.length === 0 && <p className="px-4 py-3 text-sm text-gray-400">No compliance documents on file.</p>}
+          {complianceDocs.data?.map((d) => (
+            <div key={d.id} className="flex items-center justify-between gap-4 border-b border-black/5 last:border-0 px-4 py-3 text-sm">
+              <div>
+                <div className="font-medium">
+                  {d.docType.replace(/_/g, ' ')}
+                  {d.staffName ? ` · ${d.staffName}` : ''}
+                </div>
+                {d.description && <div className="text-gray-500">{d.description}</div>}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Pill tone={d.status === 'overdue' ? 'red' : d.status === 'needs_attention' ? 'amber' : 'green'}>{d.status.replace(/_/g, ' ')}</Pill>
+                <input
+                  type="date"
+                  className="border border-black/15 rounded-lg px-2 py-1 text-sm"
+                  defaultValue={d.expiresAt ?? ''}
+                  onBlur={(e) => updateComplianceDoc.mutate({ id: d.id, expiresAt: e.target.value || null })}
+                />
+                {d.status !== 'valid' && (
+                  <Button onClick={() => updateComplianceDoc.mutate({ id: d.id, status: 'valid' })}>Mark valid</Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </Card>
+      </div>
+
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Services</h2>
         <Card>

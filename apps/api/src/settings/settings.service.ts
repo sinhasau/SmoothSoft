@@ -3,6 +3,7 @@ import { db } from '../common/request-context';
 import type {
   AddStaffDto,
   ScheduleDayDto,
+  UpdateComplianceDocumentDto,
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
   UpdatePricingPolicyDto,
@@ -18,6 +19,12 @@ import type {
   UpsertServiceDto,
   StoreHoursDayDto,
 } from './settings.types';
+import type { StaffRole } from '../db/kysely.types';
+
+/** W2/1099 classification is payroll-sensitive — only management should see it about other staff. */
+function canViewClassification(role: StaffRole): boolean {
+  return role === 'org_owner' || role === 'location_manager';
+}
 
 /**
  * Module 2 (Shop Configuration) — CRUD over the config tables that drive
@@ -199,7 +206,7 @@ export class SettingsService {
   }
 
   // ---- Staff roster ----
-  async roster(locationId: string) {
+  async roster(locationId: string, requesterRole: StaffRole) {
     const trx = db();
     const staff = await trx
       .selectFrom('location_staff as ls')
@@ -236,7 +243,8 @@ export class SettingsService {
       ]);
       results.push({ ...person, compensation: comp ?? null, goals: goals ?? null, schedule });
     }
-    return results;
+    // W2/1099 classification is payroll-sensitive — only management sees it about other staff.
+    return canViewClassification(requesterRole) ? results : results.map(({ classification, ...rest }) => rest);
   }
 
   async addStaff(locationId: string, dto: AddStaffDto) {
@@ -450,6 +458,42 @@ export class SettingsService {
       .returningAll()
       .executeTakeFirst();
     if (!result) throw new NotFoundException('Staff member not found');
+    return result;
+  }
+
+  // ---- Compliance documents ----
+  async complianceDocuments(locationId: string) {
+    return db()
+      .selectFrom('compliance_documents as cd')
+      .leftJoin('location_staff as ls', 'ls.id', 'cd.location_staff_id')
+      .leftJoin('users as u', 'u.id', 'ls.user_id')
+      .select([
+        'cd.id as id',
+        'cd.doc_type as docType',
+        'cd.description as description',
+        'cd.expires_at as expiresAt',
+        'cd.status as status',
+        'cd.location_staff_id as locationStaffId',
+        'u.full_name as staffName',
+      ])
+      .where('cd.location_id', '=', locationId)
+      .orderBy((eb) => eb.case().when('cd.status', '=', 'overdue').then(0).when('cd.status', '=', 'needs_attention').then(1).else(2).end())
+      .execute();
+  }
+
+  async updateComplianceDocument(id: string, dto: UpdateComplianceDocumentDto) {
+    const result = await db()
+      .updateTable('compliance_documents')
+      .set({
+        ...(dto.status !== undefined ? { status: dto.status } : {}),
+        ...(dto.expiresAt !== undefined ? { expires_at: dto.expiresAt } : {}),
+        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        last_updated_at: new Date(),
+      })
+      .where('id', '=', id)
+      .returningAll()
+      .executeTakeFirst();
+    if (!result) throw new NotFoundException('Compliance document not found');
     return result;
   }
 }

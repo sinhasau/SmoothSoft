@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { api } from '../../lib/api';
 import { useRequireAuth } from '../../lib/auth';
 import { Card, Pill, StatCard } from '../../components/ui';
@@ -54,13 +56,21 @@ const COMPLIANCE_LABEL: Record<string, string> = {
 
 export default function OrgDashboardPage() {
   const auth = useRequireAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (auth && auth.role !== 'org_owner') {
+      router.replace(`/locations/${auth.locationId}`);
+    }
+  }, [auth, router]);
+
   const { data } = useQuery({
     queryKey: ['dashboard', 'org'],
     queryFn: () => api.get<OrgDashboard>('/dashboard/org'),
-    enabled: !!auth,
+    enabled: !!auth && auth.role === 'org_owner',
   });
 
-  if (!auth || !data) return <p className="text-gray-500 px-6 py-6">Loading…</p>;
+  if (!auth || auth.role !== 'org_owner' || !data) return <p className="text-gray-500 px-6 py-6">Loading…</p>;
 
   return (
     <div className="min-h-screen px-6 py-6 max-w-5xl mx-auto space-y-6">

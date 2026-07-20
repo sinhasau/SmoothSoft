@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
+import { useRequireAuth } from '../../../../lib/auth';
 import { Card, ClickableName, Pill } from '../../../../components/ui';
 
 interface ScheduleDay {
@@ -12,7 +13,8 @@ interface StaffRosterRow {
   locationStaffId: string;
   fullName: string;
   role: string;
-  classification: string;
+  /** Omitted by the API for non-management roles — payroll-sensitive. */
+  classification?: string;
   schedule: ScheduleDay[];
 }
 
@@ -34,6 +36,7 @@ function scheduleSummary(schedule: ScheduleDay[]): string {
 }
 
 export default function StaffTabPage({ params }: { params: { locationId: string } }) {
+  const auth = useRequireAuth();
   const roster = useQuery({ queryKey: ['settings', 'staff'], queryFn: () => api.get<StaffRosterRow[]>('/settings/staff') });
   const dashboard = useQuery({ queryKey: ['dashboard', 'location', params.locationId], queryFn: () => api.get<LocationDashboard>('/dashboard/location') });
 
@@ -43,6 +46,7 @@ export default function StaffTabPage({ params }: { params: { locationId: string 
   }
 
   if (!roster.data) return <p className="text-gray-500">Loading…</p>;
+  const showClassification = auth?.role === 'org_owner' || auth?.role === 'location_manager';
 
   return (
     <Card className="overflow-hidden">
@@ -50,7 +54,7 @@ export default function StaffTabPage({ params }: { params: { locationId: string 
         <thead>
           <tr className="text-left text-gray-500 border-b border-black/10">
             <th className="px-4 py-3 font-medium">Staff</th>
-            <th className="px-4 py-3 font-medium">Classification</th>
+            {showClassification && <th className="px-4 py-3 font-medium">Classification</th>}
             <th className="px-4 py-3 font-medium">Schedule summary</th>
             <th className="px-4 py-3 font-medium">Compliance</th>
           </tr>
@@ -63,7 +67,7 @@ export default function StaffTabPage({ params }: { params: { locationId: string 
                 <td className="px-4 py-3">
                   <ClickableName id={r.locationStaffId} name={r.fullName} href={(id) => `/locations/${params.locationId}/staff/${id}`} />
                 </td>
-                <td className="px-4 py-3 text-gray-500">{r.classification.toUpperCase()}</td>
+                {showClassification && <td className="px-4 py-3 text-gray-500">{r.classification?.toUpperCase()}</td>}
                 <td className="px-4 py-3 text-gray-500">{scheduleSummary(r.schedule)}</td>
                 <td className="px-4 py-3">
                   {status === 'overdue' ? (

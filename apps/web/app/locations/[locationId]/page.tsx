@@ -2,13 +2,16 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { api } from '../../../lib/api';
+import { useRequireAuth } from '../../../lib/auth';
 import { Card, ClickableName, StatCard } from '../../../components/ui';
 
 interface StaffTodayRow {
   locationStaffId: string;
   fullName: string;
-  classification: string;
+  /** Omitted by the API for non-management roles — payroll-sensitive. */
+  classification?: string;
   clients: number;
   revenue: number;
   status: string;
@@ -57,12 +60,14 @@ function money(n: number) {
 
 export default function DashboardPage({ params }: { params: { locationId: string } }) {
   const router = useRouter();
+  const auth = useRequireAuth();
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard', 'location', params.locationId],
     queryFn: () => api.get<LocationDashboard>('/dashboard/location'),
   });
 
   if (isLoading || !data) return <p className="text-gray-500">Loading…</p>;
+  const showClassification = auth?.role === 'org_owner' || auth?.role === 'location_manager';
 
   const goToSales = () => router.push(`/locations/${params.locationId}/sales`);
 
@@ -87,7 +92,7 @@ export default function DashboardPage({ params }: { params: { locationId: string
             <thead>
               <tr className="text-left text-gray-500 border-b border-black/10">
                 <th className="px-4 py-3 font-medium">Staff</th>
-                <th className="px-4 py-3 font-medium">Classification</th>
+                {showClassification && <th className="px-4 py-3 font-medium">Classification</th>}
                 <th className="px-4 py-3 font-medium">Clients</th>
                 <th className="px-4 py-3 font-medium">Revenue</th>
                 <th className="px-4 py-3 font-medium">Status</th>
@@ -99,7 +104,7 @@ export default function DashboardPage({ params }: { params: { locationId: string
                   <td className="px-4 py-3">
                     <ClickableName id={s.locationStaffId} name={s.fullName} href={(id) => `/locations/${params.locationId}/staff/${id}`} />
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{s.classification.toUpperCase()}</td>
+                  {showClassification && <td className="px-4 py-3 text-gray-500">{s.classification?.toUpperCase()}</td>}
                   <td className="px-4 py-3">{s.clients}</td>
                   <td className="px-4 py-3">{money(s.revenue)}</td>
                   <td className="px-4 py-3">
@@ -117,12 +122,17 @@ export default function DashboardPage({ params }: { params: { locationId: string
           <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Compliance</h2>
           <div className="space-y-2">
             {data.compliance.map((c) => (
-              <div key={c.id} className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
-                <div className="font-medium text-amber-900">
-                  {c.staffName ? `${c.staffName}'s ` : ''}
-                  {c.docType.replace(/_/g, ' ')} {c.status === 'overdue' ? 'is overdue' : 'needs attention'}
+              <div key={c.id} className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 flex items-start justify-between gap-4">
+                <div>
+                  <div className="font-medium text-amber-900">
+                    {c.staffName ? `${c.staffName}'s ` : ''}
+                    {c.docType.replace(/_/g, ' ')} {c.status === 'overdue' ? 'is overdue' : 'needs attention'}
+                  </div>
+                  {c.description && <div className="text-sm text-amber-800">{c.description}</div>}
                 </div>
-                {c.description && <div className="text-sm text-amber-800">{c.description}</div>}
+                <Link href={`/locations/${params.locationId}/settings#compliance`} className="text-sm text-amber-900 underline shrink-0 whitespace-nowrap">
+                  Fix in Settings
+                </Link>
               </div>
             ))}
           </div>

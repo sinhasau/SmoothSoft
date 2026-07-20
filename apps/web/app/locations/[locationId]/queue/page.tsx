@@ -497,13 +497,20 @@ function StartPanel({
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-1">Start — {displayName(entry)}</h3>
       <p className="text-sm text-gray-500 mb-4">{entry.serviceName}</p>
-      <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3" value={staffId} onChange={(e) => setStaffId(e.target.value)}>
+      <div className="flex flex-wrap gap-2 mb-3">
         {availableStaff.map((t) => (
-          <option key={t.locationStaffId} value={t.locationStaffId}>
+          <button
+            key={t.locationStaffId}
+            type="button"
+            onClick={() => setStaffId(t.locationStaffId)}
+            className={`rounded-lg border px-4 py-2 text-sm font-medium ${
+              staffId === t.locationStaffId ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
+            }`}
+          >
             {t.fullName}
-          </option>
+          </button>
         ))}
-      </select>
+      </div>
       <textarea
         className="w-full border border-black/15 rounded-lg px-3 py-2 mb-4"
         placeholder="Service notes"

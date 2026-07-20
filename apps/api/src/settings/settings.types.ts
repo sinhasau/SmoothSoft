@@ -105,3 +105,9 @@ export interface UpdateStaffGoalsDto {
   dailyRevenue?: number;
   clientsPerDay?: number;
 }
+
+export interface UpdateComplianceDocumentDto {
+  status?: 'valid' | 'needs_attention' | 'overdue';
+  expiresAt?: string | null;
+  description?: string | null;
+}

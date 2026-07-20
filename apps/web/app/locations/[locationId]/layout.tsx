@@ -43,9 +43,11 @@ export default function LocationLayout({ children, params }: { children: React.R
             Signed in as {auth.fullName} · {auth.role.replace('_', ' ')}
           </p>
         </div>
-        <a href="/org" className="text-sm underline text-gray-500 hover:text-black">
-          Owner dashboard
-        </a>
+        {auth.role === 'org_owner' && (
+          <a href="/org" className="text-sm underline text-gray-500 hover:text-black">
+            Owner dashboard
+          </a>
+        )}
       </div>
 
       <nav className="flex gap-2 mb-6">

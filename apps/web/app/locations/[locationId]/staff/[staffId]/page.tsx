@@ -2,6 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../../../../../lib/api';
+import { useRequireAuth } from '../../../../../lib/auth';
 import { Card } from '../../../../../components/ui';
 
 interface ScheduleDay {
@@ -14,7 +15,8 @@ interface StaffDetail {
   locationStaffId: string;
   fullName: string;
   role: string;
-  classification: string;
+  /** Omitted by the API for non-management roles — payroll-sensitive. */
+  classification?: string;
   status: string;
   compensation: { commission_pct: string | null; booth_rent_weekly: string | null } | null;
   goals: { daily_revenue: string | null; clients_per_day: number | null } | null;
@@ -31,11 +33,13 @@ function fmtTime(t: string) {
 }
 
 export default function StaffDetailPage({ params }: { params: { locationId: string; staffId: string } }) {
+  const auth = useRequireAuth();
   const { data: roster } = useQuery({ queryKey: ['settings', 'staff'], queryFn: () => api.get<StaffDetail[]>('/settings/staff') });
   const person = roster?.find((r) => r.locationStaffId === params.staffId);
 
   if (!roster) return <p className="text-gray-500">Loading…</p>;
   if (!person) return <p className="text-gray-500">Staff member not found.</p>;
+  const showClassification = auth?.role === 'org_owner' || auth?.role === 'location_manager';
 
   return (
     <div className="space-y-6 max-w-xl">
@@ -44,7 +48,8 @@ export default function StaffDetailPage({ params }: { params: { locationId: stri
           <div>
             <h2 className="text-xl font-semibold">{person.fullName}</h2>
             <p className="text-sm text-gray-500">
-              {person.role.replace('_', ' ')} · {person.classification.toUpperCase()}
+              {person.role.replace('_', ' ')}
+              {showClassification && person.classification ? ` · ${person.classification.toUpperCase()}` : ''}
             </p>
           </div>
           <span className={person.status === 'off' ? 'text-gray-400' : 'text-green-700'}>{person.status === 'off' ? 'Off today' : person.status}</span>
