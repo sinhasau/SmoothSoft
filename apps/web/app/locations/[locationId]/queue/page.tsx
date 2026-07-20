@@ -25,6 +25,7 @@ interface QueueEntry {
   assignedStaffId: string | null;
   assignedStaffName: string | null;
   present: boolean;
+  presentCheckedAt: string | null;
   isAppt: boolean;
   apptAt: string | null;
   waitingOrder: number | null;
@@ -45,11 +46,29 @@ interface Service {
   price: string;
 }
 
+interface Product {
+  id: string;
+  name: string;
+  price: string;
+  stock_qty: number;
+}
+
 interface ActivityEvent {
   id: string;
   event_type: string;
   entity_id: string | null;
   created_at: string;
+  payload: Record<string, any>;
+}
+
+function activitySummary(ev: ActivityEvent): string {
+  if (ev.event_type === 'shop_closed') {
+    const p = ev.payload;
+    const varianceLabel =
+      Math.abs(p.variance) < 0.01 ? 'matched exactly' : p.variance > 0 ? `$${p.variance.toFixed(2)} over` : `$${Math.abs(p.variance).toFixed(2)} short`;
+    return `Shop closed — cash $${Number(p.actualCashCount).toFixed(2)} counted vs $${Number(p.expectedCash).toFixed(2)} expected (${varianceLabel}), card sales $${Number(p.cardSalesTotal).toFixed(2)}`;
+  }
+  return ev.event_type.replace(/_/g, ' ');
 }
 
 function displayName(e: { clientName: string | null; guestName: string | null }) {
@@ -70,6 +89,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const [reassignEntry, setReassignEntry] = useState<QueueEntry | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [localWaitingOrder, setLocalWaitingOrder] = useState<string[] | null>(null);
+  const [showCloseShop, setShowCloseShop] = useState(false);
 
   const board = useQuery({ queryKey: ['queue', 'board'], queryFn: () => api.get<Board>('/queue/board'), refetchInterval: 20_000 });
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
@@ -130,6 +150,16 @@ export default function QueuePage({ params }: { params: { locationId: string } }
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Live queue</h2>
+          <p className="text-sm text-gray-500">Shared device · all barbers</p>
+        </div>
+        <Button variant="solid" onClick={() => setShowCloseShop(true)}>
+          Close up shop
+        </Button>
+      </div>
+
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white px-3 py-2">
         {onShiftTeam.map((t) => (
           <div key={t.locationStaffId} className="flex items-center gap-2 pr-4 border-r border-black/10 last:border-0">
@@ -216,6 +246,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                 <label className="flex flex-col items-center text-xs text-gray-500">
                   <input type="checkbox" checked={e.present} onChange={(ev) => togglePresent.mutate({ id: e.id, present: ev.target.checked })} />
                   here
+                  {e.present && e.presentCheckedAt && <span className="text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
                 </label>
                 <span className="text-sm text-gray-500 w-16 text-right">{e.isAppt ? timeLabel(e.apptAt) : `~${timeLabel(e.estimatedStart)}`}</span>
                 <Button disabled={availableStaff.length === 0} onClick={() => setStartEntry(e)}>
@@ -237,10 +268,12 @@ export default function QueuePage({ params }: { params: { locationId: string } }
 
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Activity</h2>
-        <Card>
+        {/* Capped to ~4 rows visible, scrollable beyond that — keeps the
+            page from growing unbounded as the shift goes on (item 31). */}
+        <Card className={(activity.data?.length ?? 0) > 4 ? 'max-h-[168px] overflow-y-auto' : ''}>
           {activity.data?.map((ev) => (
             <div key={ev.id} className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-2 text-sm">
-              <span>{ev.event_type.replace(/_/g, ' ')}</span>
+              <span>{activitySummary(ev)}</span>
               <div className="flex items-center gap-3 text-gray-400">
                 <span>{new Date(ev.created_at).toLocaleDateString()}</span>
                 {!ev.event_type.endsWith('_undone') && (
@@ -273,6 +306,8 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       {checkoutEntry && (
         <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} onClose={() => setCheckoutEntry(null)} onDone={invalidate} />
       )}
+
+      {showCloseShop && <CloseShopPanel onClose={() => setShowCloseShop(false)} onDone={invalidate} />}
     </div>
   );
 }
@@ -518,19 +553,26 @@ function CheckoutPanel({
 }) {
   const [tip, setTip] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'external'>('cash');
+  const [showExternal, setShowExternal] = useState(false);
   const [externalReference, setExternalReference] = useState('');
   const [discountCode, setDiscountCode] = useState('');
+  const [retailItems, setRetailItems] = useState<Product[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [processing, setProcessing] = useState(false);
 
   const config = useQuery({ queryKey: ['payments', 'config'], queryFn: () => api.get<{ activeProcessor: string; configured: boolean }>('/payments/config') });
-
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
+  const products = useQuery({ queryKey: ['settings', 'products'], queryFn: () => api.get<Product[]>('/settings/products') });
+  const taxConfig = useQuery({ queryKey: ['settings', 'tax-config'], queryFn: () => api.get<{ services_taxable: boolean }>('/settings/tax-config') });
   const discountCodes = useQuery({
     queryKey: ['settings', 'discount-codes'],
     queryFn: () => api.get<{ code: string; discount_type: 'percent' | 'flat'; value: string; active: boolean }[]>('/settings/discount-codes'),
   });
   const service = services.data?.find((s) => s.id === entry.serviceId);
-  const price = service ? Number(service.price) : 0;
+  const servicePrice = service ? Number(service.price) : 0;
+  const retailTotal = retailItems.reduce((sum, p) => sum + Number(p.price), 0);
+  // "Total (before tip)" — updates live as retail products are added/removed (item 1).
+  const beforeTip = servicePrice + retailTotal;
 
   // Client-side preview only — the server independently validates and
   // computes the real discount at checkout, this just avoids a round trip
@@ -538,43 +580,99 @@ function CheckoutPanel({
   const matchedDiscount = discountCodes.data?.find((d) => d.active && d.code === discountCode.trim().toUpperCase());
   const discountAmount = matchedDiscount
     ? matchedDiscount.discount_type === 'percent'
-      ? price * (Number(matchedDiscount.value) / 100)
-      : Math.min(Number(matchedDiscount.value), price)
+      ? beforeTip * (Number(matchedDiscount.value) / 100)
+      : Math.min(Number(matchedDiscount.value), beforeTip)
     : 0;
-  const total = price - discountAmount + tip;
+  const total = beforeTip - discountAmount + tip;
 
   const checkout = useMutation({
-    mutationFn: () =>
-      api.post('/payments/checkout', {
+    mutationFn: async () => {
+      const lineItems = [
+        { name: service?.name ?? 'Service', itemType: 'service' as const, price: servicePrice, taxable: taxConfig.data?.services_taxable ?? false },
+        ...retailItems.map((p) => ({ name: p.name, itemType: 'retail' as const, price: Number(p.price), taxable: true })),
+      ];
+      // Simulates the future Stripe API response gate (item 4) — cash and
+      // the external/manual path complete instantly, since there's no
+      // processor round trip for either of those.
+      if (paymentMethod === 'card') {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+      return api.post('/payments/checkout', {
         queueEntryId: entry.id,
-        lineItems: [{ name: service?.name ?? 'Service', itemType: 'service', price, taxable: false }],
+        lineItems,
         tip,
         paymentMethod,
         externalReference: paymentMethod === 'external' ? externalReference : undefined,
         discountCode: discountCode.trim() || undefined,
-      }),
+      });
+    },
+    onMutate: () => setProcessing(true),
     onSuccess: () => {
       onDone();
       onClose();
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.body?.message ?? 'Checkout failed' : 'Checkout failed');
+      setProcessing(false);
+      setError(err instanceof ApiError ? (err.body?.message ?? 'Checkout failed') : 'Checkout failed');
     },
   });
 
+  const busy = checkout.isPending || processing;
+
   return (
-    <Modal onClose={onClose}>
+    <Modal onClose={busy ? () => {} : onClose}>
       <h3 className="font-semibold mb-1">Complete — {displayName(entry)}</h3>
       <p className="text-sm text-gray-500 mb-4">{service?.name}</p>
 
-      <div className="flex justify-between text-sm mb-1">
-        <span>Total before tip</span>
-        <span>${price.toFixed(2)}</span>
+      {retailItems.length > 0 && (
+        <div className="mb-2 space-y-1">
+          {retailItems.map((p, i) => (
+            <div key={`${p.id}-${i}`} className="flex justify-between text-sm text-gray-600">
+              <span>+ {p.name}</span>
+              <span className="flex items-center gap-2">
+                ${Number(p.price).toFixed(2)}
+                <button
+                  className="text-gray-400 hover:text-red-600"
+                  disabled={busy}
+                  onClick={() => setRetailItems((items) => items.filter((_, idx) => idx !== i))}
+                >
+                  ✕
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {products.data && products.data.length > 0 && (
+        <select
+          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2 text-sm text-gray-500"
+          disabled={busy}
+          value=""
+          onChange={(e) => {
+            const product = products.data!.find((p) => p.id === e.target.value);
+            if (product) setRetailItems((items) => [...items, product]);
+          }}
+        >
+          <option value="">+ Add a retail product…</option>
+          {products.data.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} · ${Number(p.price).toFixed(2)}
+            </option>
+          ))}
+        </select>
+      )}
+
+      <div className="flex justify-between text-sm font-medium mb-3 pt-2 border-t border-black/5">
+        <span>Total (before tip)</span>
+        <span>${beforeTip.toFixed(2)}</span>
       </div>
+
       <input
-        className="w-full border border-black/15 rounded-lg px-3 py-2 mb-1 font-mono uppercase"
+        className="w-full border border-black/15 rounded-lg px-3 py-2 mb-1 font-mono uppercase disabled:bg-gray-50"
         placeholder="Discount code (optional)"
         value={discountCode}
+        disabled={busy}
         onChange={(e) => setDiscountCode(e.target.value)}
       />
       {discountCode.trim() && (
@@ -584,9 +682,10 @@ function CheckoutPanel({
       )}
       <input
         type="number"
-        className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
+        className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3 disabled:bg-gray-50"
         placeholder="Tip"
         value={tip}
+        disabled={busy}
         onChange={(e) => setTip(Number(e.target.value))}
       />
       <div className="flex justify-between font-semibold mb-4">
@@ -594,37 +693,181 @@ function CheckoutPanel({
         <span>${total.toFixed(2)}</span>
       </div>
 
-      <div className="flex gap-2 mb-3">
-        <Button variant={paymentMethod === 'cash' ? 'solid' : 'default'} onClick={() => setPaymentMethod('cash')}>
+      {/* Two large full-width buttons, solid-fill on the active one — must
+          be unmistakable at a glance (confirmed decision). External/manual
+          stays available but demoted to a small link below, not a third
+          equal-weight button. */}
+      <div className="flex gap-2 mb-2">
+        <button
+          disabled={busy}
+          onClick={() => setPaymentMethod('cash')}
+          className={`flex-1 rounded-lg py-4 text-base font-semibold transition disabled:opacity-50 ${
+            paymentMethod === 'cash' ? 'bg-black text-white' : 'border border-black/15 bg-white hover:border-black/40'
+          }`}
+        >
           Cash
-        </Button>
-        <Button
-          variant={paymentMethod === 'card' ? 'solid' : 'default'}
+        </button>
+        <button
+          disabled={busy || !config.data?.configured}
           onClick={() => setPaymentMethod('card')}
-          disabled={!config.data?.configured}
+          className={`flex-1 rounded-lg py-4 text-base font-semibold transition disabled:opacity-50 ${
+            paymentMethod === 'card' ? 'bg-black text-white' : 'border border-black/15 bg-white hover:border-black/40'
+          }`}
         >
           Card {config.data && !config.data.configured ? '(not configured)' : ''}
-        </Button>
-        <Button variant={paymentMethod === 'external' ? 'solid' : 'default'} onClick={() => setPaymentMethod('external')}>
-          Other terminal
-        </Button>
+        </button>
       </div>
 
-      {paymentMethod === 'external' && (
-        <input
-          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
-          placeholder="Reference/confirmation number"
-          value={externalReference}
-          onChange={(e) => setExternalReference(e.target.value)}
-        />
+      {!showExternal ? (
+        <button className="text-xs text-gray-400 underline hover:text-black mb-3" disabled={busy} onClick={() => setShowExternal(true)}>
+          Use another terminal instead
+        </button>
+      ) : (
+        <div className="mb-3">
+          <button
+            onClick={() => setPaymentMethod('external')}
+            disabled={busy}
+            className={`w-full rounded-lg py-2 text-sm font-medium mb-2 transition disabled:opacity-50 ${
+              paymentMethod === 'external' ? 'bg-black text-white' : 'border border-black/15 bg-white hover:border-black/40'
+            }`}
+          >
+            Other terminal
+          </button>
+          {paymentMethod === 'external' && (
+            <input
+              className="w-full border border-black/15 rounded-lg px-3 py-2 disabled:bg-gray-50"
+              placeholder="Reference/confirmation number"
+              value={externalReference}
+              disabled={busy}
+              onChange={(e) => setExternalReference(e.target.value)}
+            />
+          )}
+        </div>
       )}
+
+      {processing && paymentMethod === 'card' && <p className="text-sm text-gray-500 mb-3">Processing payment…</p>}
+      {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+
+      <div className="flex justify-end gap-2">
+        <Button onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+        <Button variant="solid" onClick={() => checkout.mutate()} disabled={busy}>
+          {processing && paymentMethod === 'card' ? 'Processing…' : 'Complete & record sale'}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+interface CloseShopSummary {
+  tasks: string[];
+  startingFloat: number;
+  cashSalesTotal: number;
+  expectedCash: number;
+  cardSalesTotal: number;
+  cardFeePct: number;
+  estimatedCardFee: number;
+}
+
+function CloseShopPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [checkedTasks, setCheckedTasks] = useState<Set<string>>(new Set());
+  const [actualCashCount, setActualCashCount] = useState<number | ''>('');
+  const [error, setError] = useState<string | null>(null);
+
+  const summary = useQuery({ queryKey: ['payments', 'close-shop-summary'], queryFn: () => api.get<CloseShopSummary>('/payments/close-shop-summary') });
+
+  const variance = typeof actualCashCount === 'number' && summary.data ? actualCashCount - summary.data.expectedCash : null;
+  const matches = variance !== null && Math.abs(variance) < 0.01;
+
+  const complete = useMutation({
+    mutationFn: () =>
+      api.post('/payments/close-shop', {
+        tasksCompleted: Array.from(checkedTasks),
+        actualCashCount: typeof actualCashCount === 'number' ? actualCashCount : 0,
+      }),
+    onSuccess: () => {
+      onDone();
+      onClose();
+    },
+    onError: (err) => setError(err instanceof ApiError ? (err.body?.message ?? 'Could not close shop') : 'Could not close shop'),
+  });
+
+  if (!summary.data) return null;
+
+  const allTasksChecked = summary.data.tasks.every((t) => checkedTasks.has(t));
+  const canComplete = allTasksChecked && typeof actualCashCount === 'number';
+
+  function toggleTask(task: string) {
+    setCheckedTasks((prev) => {
+      const next = new Set(prev);
+      if (next.has(task)) next.delete(task);
+      else next.add(task);
+      return next;
+    });
+  }
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="font-semibold mb-4">Close up shop</h3>
+
+      <div className="space-y-2 mb-4">
+        {summary.data.tasks.map((task) => (
+          <label key={task} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={checkedTasks.has(task)} onChange={() => toggleTask(task)} />
+            <span className={checkedTasks.has(task) ? 'line-through text-gray-400' : ''}>{task}</span>
+          </label>
+        ))}
+      </div>
+
+      <div className="border-t border-black/10 pt-3 mb-3">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Cash drawer</h4>
+        <div className="text-sm text-gray-600 space-y-1 mb-2">
+          <div className="flex justify-between">
+            <span>Starting float</span>
+            <span>${summary.data.startingFloat.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span>Cash sales today</span>
+            <span>${summary.data.cashSalesTotal.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between font-medium text-black">
+            <span>Expected in drawer</span>
+            <span>${summary.data.expectedCash.toFixed(2)}</span>
+          </div>
+        </div>
+        <input
+          type="number"
+          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2"
+          placeholder="Actual counted amount"
+          value={actualCashCount}
+          onChange={(e) => setActualCashCount(e.target.value === '' ? '' : Number(e.target.value))}
+        />
+        {variance !== null && (
+          <p className={`text-sm font-medium ${matches ? 'text-green-700' : 'text-red-600'}`}>
+            {matches ? 'Matches exactly' : variance > 0 ? `$${variance.toFixed(2)} over` : `$${Math.abs(variance).toFixed(2)} short`}
+          </p>
+        )}
+      </div>
+
+      <div className="border-t border-black/10 pt-3 mb-4">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Card sales</h4>
+        <div className="flex justify-between text-sm text-gray-600">
+          <span>Total card sales</span>
+          <span>${summary.data.cardSalesTotal.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between text-sm text-gray-600">
+          <span>Estimated processing fee ({summary.data.cardFeePct}%)</span>
+          <span>-${summary.data.estimatedCardFee.toFixed(2)}</span>
+        </div>
+      </div>
 
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="solid" onClick={() => checkout.mutate()} disabled={checkout.isPending}>
-          Complete &amp; record sale
+        <Button variant="solid" onClick={() => complete.mutate()} disabled={!canComplete || complete.isPending}>
+          Complete closing
         </Button>
       </div>
     </Modal>

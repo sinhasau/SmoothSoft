@@ -20,20 +20,15 @@ export interface CheckoutDto {
   discountCode?: string;
 }
 
-/**
- * Not exhaustively specified in the handoff PRDs (which describe the
- * behavior — "7 tasks + cash drawer reconciliation" — without naming
- * each task). These are a reasonable illustrative default; a future
- * Settings addition could make this list editable per shop.
- */
+/** Exact 7-task list from the closing-checklist critique. Cash counting is its own dedicated section below, not one of these 7. */
 export const CLOSE_SHOP_TASKS = [
-  'Count and log the cash drawer',
-  'Wipe down all stations and tools',
-  'Sweep and mop the floor',
-  'Restock retail and back-bar supplies',
-  'Turn off styling equipment',
-  'Take out the trash',
-  'Lock the front door and set the alarm',
+  'Sweep and mop',
+  'Sanitize tools and stations',
+  'Empty trash',
+  'Restock retail shelves',
+  'Turn off clippers, chargers, and TVs',
+  'Lock the front door',
+  'Set the alarm',
 ] as const;
 
 export interface CloseShopDto {

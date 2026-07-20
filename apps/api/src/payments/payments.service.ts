@@ -258,7 +258,13 @@ export class PaymentsService {
       eventType: 'shop_closed',
       entityId: closing.id,
       actorUserId,
-      payload: { closingId: closing.id, variance },
+      payload: {
+        closingId: closing.id,
+        actualCashCount: dto.actualCashCount,
+        expectedCash: summary.expectedCash,
+        cardSalesTotal: summary.cardSalesTotal,
+        variance,
+      },
     });
 
     return closing;
