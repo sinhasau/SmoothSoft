@@ -6,8 +6,10 @@ import type {
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
   UpdateQueueConfigDto,
+  UpdateSchedulingPolicyDto,
   UpdateStaffCompensationDto,
   UpdateStaffGoalsDto,
+  UpdateStaffSchedulingOverrideDto,
   UpdateTaxConfigDto,
   UpsertDiscountCodeDto,
   UpsertProductDto,
@@ -189,7 +191,14 @@ export class SettingsService {
     const staff = await trx
       .selectFrom('location_staff as ls')
       .innerJoin('users as u', 'u.id', 'ls.user_id')
-      .select(['ls.id as locationStaffId', 'u.full_name as fullName', 'ls.role as role', 'ls.classification as classification', 'ls.status as status'])
+      .select([
+        'ls.id as locationStaffId',
+        'u.full_name as fullName',
+        'ls.role as role',
+        'ls.classification as classification',
+        'ls.status as status',
+        'ls.scheduling_self_serve_override as schedulingSelfServeOverride',
+      ])
       .where('ls.location_id', '=', locationId)
       .orderBy('u.full_name')
       .execute();
@@ -371,5 +380,31 @@ export class SettingsService {
   async removeDiscountCode(locationId: string, id: string) {
     await db().deleteFrom('discount_codes').where('id', '=', id).where('location_id', '=', locationId).execute();
     return { ok: true };
+  }
+
+  // ---- Scheduling policy (org/location default + per-staff exceptions) ----
+  async schedulingPolicy(locationId: string) {
+    const row = await db().selectFrom('location_scheduling_policy').selectAll().where('location_id', '=', locationId).executeTakeFirst();
+    return { selfServeDefault: row?.self_serve_default ?? false };
+  }
+
+  async setSchedulingPolicy(locationId: string, dto: UpdateSchedulingPolicyDto) {
+    await db()
+      .insertInto('location_scheduling_policy')
+      .values({ location_id: locationId, self_serve_default: dto.selfServeDefault })
+      .onConflict((oc) => oc.column('location_id').doUpdateSet({ self_serve_default: dto.selfServeDefault, updated_at: new Date() }))
+      .execute();
+    return this.schedulingPolicy(locationId);
+  }
+
+  async setStaffSchedulingOverride(locationStaffId: string, dto: UpdateStaffSchedulingOverrideDto) {
+    const result = await db()
+      .updateTable('location_staff')
+      .set({ scheduling_self_serve_override: dto.selfServeOverride })
+      .where('id', '=', locationStaffId)
+      .returningAll()
+      .executeTakeFirst();
+    if (!result) throw new NotFoundException('Staff member not found');
+    return result;
   }
 }

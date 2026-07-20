@@ -9,8 +9,10 @@ import type {
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
   UpdateQueueConfigDto,
+  UpdateSchedulingPolicyDto,
   UpdateStaffCompensationDto,
   UpdateStaffGoalsDto,
+  UpdateStaffSchedulingOverrideDto,
   UpdateTaxConfigDto,
   UpsertDiscountCodeDto,
   UpsertProductDto,
@@ -155,5 +157,20 @@ export class SettingsController {
   @Delete('discount-codes/:id')
   removeDiscountCode(@Param('id') id: string) {
     return this.settings.removeDiscountCode(requireAuth().locationId, id);
+  }
+
+  @Get('scheduling-policy')
+  schedulingPolicy() {
+    return this.settings.schedulingPolicy(requireAuth().locationId);
+  }
+
+  @Put('scheduling-policy')
+  setSchedulingPolicy(@Body() dto: UpdateSchedulingPolicyDto) {
+    return this.settings.setSchedulingPolicy(requireAuth().locationId, dto);
+  }
+
+  @Put('staff/:id/scheduling-override')
+  setStaffSchedulingOverride(@Param('id') id: string, @Body() dto: UpdateStaffSchedulingOverrideDto) {
+    return this.settings.setStaffSchedulingOverride(id, dto);
   }
 }

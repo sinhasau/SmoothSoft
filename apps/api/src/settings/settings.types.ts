@@ -26,6 +26,15 @@ export interface UpsertDiscountCodeDto {
   expiresAt?: string | null;
 }
 
+export interface UpdateSchedulingPolicyDto {
+  selfServeDefault: boolean;
+}
+
+export interface UpdateStaffSchedulingOverrideDto {
+  /** null clears the override, falling back to the location default. */
+  selfServeOverride: boolean | null;
+}
+
 export interface UpdateTaxConfigDto {
   retailTaxPct: number;
   servicesTaxable: boolean;

@@ -187,6 +187,96 @@ export default function SchedulePage() {
           ))}
         </Card>
       </div>
+
+      <EmployeeRequestExample roster={grid.data.roster} onSubmitted={invalidate} />
+    </div>
+  );
+}
+
+/**
+ * Shows what the employee-side request experience looks like — framed as
+ * "Requesting as [name]" (item 25) — and pushes a real entry into the
+ * Pending requests list above via the same endpoint a staff member's own
+ * app would call. Illustrative only: an owner/manager is the one actually
+ * clicking Submit here, standing in for the not-yet-built staff app.
+ */
+function EmployeeRequestExample({ roster, onSubmitted }: { roster: Roster[]; onSubmitted: () => void }) {
+  const [staffId, setStaffId] = useState(roster[0]?.staffId ?? '');
+  const [requestType, setRequestType] = useState<'one_time' | 'recurring'>('one_time');
+  const [workDate, setWorkDate] = useState(new Date().toISOString().slice(0, 10));
+  const [dayOfWeek, setDayOfWeek] = useState(1);
+  const [reason, setReason] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+
+  const submit = useMutation({
+    mutationFn: () =>
+      api.post('/schedule/requests', {
+        locationStaffId: staffId,
+        requestType,
+        workDate: requestType === 'one_time' ? workDate : undefined,
+        dayOfWeek: requestType === 'recurring' ? dayOfWeek : undefined,
+        isWorking: false,
+        reason: reason || undefined,
+      }),
+    onSuccess: () => {
+      setReason('');
+      setSubmitted(true);
+      onSubmitted();
+      setTimeout(() => setSubmitted(false), 3000);
+    },
+  });
+
+  const requestingAs = roster.find((r) => r.staffId === staffId)?.fullName ?? '';
+
+  return (
+    <div>
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Employee request example</h2>
+      <Card className="p-4">
+        <p className="text-sm text-gray-500 mb-3">Requesting as {requestingAs || '—'}</p>
+
+        <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2 text-sm" value={staffId} onChange={(e) => setStaffId(e.target.value)}>
+          {roster.map((r) => (
+            <option key={r.staffId} value={r.staffId}>
+              {r.fullName}
+            </option>
+          ))}
+        </select>
+
+        <div className="flex gap-2 mb-2">
+          <Button variant={requestType === 'one_time' ? 'solid' : 'default'} onClick={() => setRequestType('one_time')}>
+            One-time
+          </Button>
+          <Button variant={requestType === 'recurring' ? 'solid' : 'default'} onClick={() => setRequestType('recurring')}>
+            Recurring
+          </Button>
+        </div>
+
+        {requestType === 'one_time' ? (
+          <input type="date" className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2" value={workDate} onChange={(e) => setWorkDate(e.target.value)} />
+        ) : (
+          <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2 text-sm" value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))}>
+            {DAY_LABELS.map((label, i) => (
+              <option key={i} value={i}>
+                Every {label}
+              </option>
+            ))}
+          </select>
+        )}
+
+        <input
+          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
+          placeholder="Reason (optional)"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+        />
+
+        <div className="flex items-center gap-3">
+          <Button variant="solid" onClick={() => submit.mutate()} disabled={!staffId || submit.isPending}>
+            Submit
+          </Button>
+          {submitted && <span className="text-sm text-green-700">Request submitted — now in Pending requests above.</span>}
+        </div>
+      </Card>
     </div>
   );
 }

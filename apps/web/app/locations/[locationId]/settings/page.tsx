@@ -29,7 +29,7 @@ interface StaffRosterRow {
   fullName: string;
   role: string;
   classification: string;
-  compensation: { commission_pct: string | null; booth_rent_weekly: string | null } | null;
+  schedulingSelfServeOverride: boolean | null;
 }
 
 interface DiscountCode {
@@ -42,6 +42,16 @@ interface DiscountCode {
   usage_count: number;
 }
 
+interface PaymentProcessorConfig {
+  starting_cash_float: string;
+  card_fee_pct: string;
+  active_processor: 'stripe' | 'square' | 'external';
+}
+
+interface SchedulingPolicy {
+  selfServeDefault: boolean;
+}
+
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
@@ -49,6 +59,8 @@ export default function SettingsPage() {
   const taxConfig = useQuery({ queryKey: ['settings', 'tax-config'], queryFn: () => api.get<TaxConfig>('/settings/tax-config') });
   const roster = useQuery({ queryKey: ['settings', 'staff'], queryFn: () => api.get<StaffRosterRow[]>('/settings/staff') });
   const discountCodes = useQuery({ queryKey: ['settings', 'discount-codes'], queryFn: () => api.get<DiscountCode[]>('/settings/discount-codes') });
+  const cashConfig = useQuery({ queryKey: ['settings', 'payment-processor-config'], queryFn: () => api.get<PaymentProcessorConfig>('/settings/payment-processor-config') });
+  const schedulingPolicy = useQuery({ queryKey: ['settings', 'scheduling-policy'], queryFn: () => api.get<SchedulingPolicy>('/settings/scheduling-policy') });
 
   const [newService, setNewService] = useState({ name: '', durationMinutes: 20, price: 28 });
   const [newProduct, setNewProduct] = useState({ name: '', price: 15, stockQty: 20 });
@@ -101,6 +113,26 @@ export default function SettingsPage() {
   const removeDiscount = useMutation({
     mutationFn: (id: string) => api.delete(`/settings/discount-codes/${id}`),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'discount-codes'] }),
+  });
+
+  const updateCashConfig = useMutation({
+    mutationFn: (dto: { startingCashFloat: number; cardFeePct: number }) =>
+      api.put('/settings/payment-processor-config', {
+        activeProcessor: cashConfig.data?.active_processor ?? 'external',
+        startingCashFloat: dto.startingCashFloat,
+        cardFeePct: dto.cardFeePct,
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'payment-processor-config'] }),
+  });
+
+  const updateSchedulingPolicy = useMutation({
+    mutationFn: (selfServeDefault: boolean) => api.put('/settings/scheduling-policy', { selfServeDefault }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'scheduling-policy'] }),
+  });
+
+  const updateStaffOverride = useMutation({
+    mutationFn: ({ id, value }: { id: string; value: boolean | null }) => api.put(`/settings/staff/${id}/scheduling-override`, { selfServeOverride: value }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'staff'] }),
   });
 
   return (
@@ -252,19 +284,65 @@ export default function SettingsPage() {
       </div>
 
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Barber roster</h2>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Cash drawer & card fees</h2>
+        {cashConfig.data && (
+          <Card className="p-4 flex items-center gap-6">
+            <label className="text-sm">
+              Starting drawer float
+              <input
+                type="number"
+                className="ml-2 border border-black/15 rounded-lg px-2 py-1 w-24"
+                defaultValue={cashConfig.data.starting_cash_float}
+                onBlur={(e) =>
+                  updateCashConfig.mutate({ startingCashFloat: Number(e.target.value), cardFeePct: Number(cashConfig.data!.card_fee_pct) })
+                }
+              />
+            </label>
+            <label className="text-sm">
+              Card processing fee %
+              <input
+                type="number"
+                step="0.1"
+                className="ml-2 border border-black/15 rounded-lg px-2 py-1 w-20"
+                defaultValue={cashConfig.data.card_fee_pct}
+                onBlur={(e) =>
+                  updateCashConfig.mutate({ startingCashFloat: Number(cashConfig.data!.starting_cash_float), cardFeePct: Number(e.target.value) })
+                }
+              />
+            </label>
+          </Card>
+        )}
+      </div>
+
+      <div>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Scheduling policy</h2>
+        <Card className="p-4 mb-2">
+          <label className="text-sm flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={schedulingPolicy.data?.selfServeDefault ?? false}
+              onChange={(e) => updateSchedulingPolicy.mutate(e.target.checked)}
+            />
+            Employees can set their own schedule directly (default: approval required)
+          </label>
+        </Card>
         <Card>
+          <div className="px-4 py-2 text-xs text-gray-400 border-b border-black/5">Per-staff exceptions to the default above</div>
           {roster.data?.map((r) => (
             <div key={r.locationStaffId} className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-3 text-sm">
               <span>{r.fullName}</span>
-              <span className="text-gray-500">
-                {r.classification.toUpperCase()} ·{' '}
-                {r.compensation?.commission_pct
-                  ? `${r.compensation.commission_pct}% commission`
-                  : r.compensation?.booth_rent_weekly
-                    ? `$${r.compensation.booth_rent_weekly}/wk booth rent`
-                    : '—'}
-              </span>
+              <select
+                className="border border-black/15 rounded-lg px-2 py-1 text-sm"
+                value={r.schedulingSelfServeOverride === null ? 'default' : r.schedulingSelfServeOverride ? 'self_serve' : 'approval'}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  updateStaffOverride.mutate({ id: r.locationStaffId, value: v === 'default' ? null : v === 'self_serve' });
+                }}
+              >
+                <option value="default">Use location default</option>
+                <option value="self_serve">Self-serve</option>
+                <option value="approval">Approval required</option>
+              </select>
             </div>
           ))}
         </Card>

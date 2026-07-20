@@ -63,7 +63,15 @@ export interface LocationStaffTable {
   is_primary: Generated<boolean>;
   permission_overrides: Generated<Record<string, boolean>>;
   status: Generated<StaffStatus>;
+  /** null = use the location's scheduling_self_serve default; true/false = explicit per-person override. */
+  scheduling_self_serve_override: boolean | null;
   created_at: TimestampTzWithDefault;
+}
+
+export interface LocationSchedulingPolicyTable {
+  location_id: string;
+  self_serve_default: Generated<boolean>;
+  updated_at: TimestampTzWithDefault;
 }
 
 export interface StaffScheduleDaysTable {
@@ -393,6 +401,7 @@ export interface DB {
   compliance_documents: ComplianceDocumentsTable;
   payment_processor_config: PaymentProcessorConfigTable;
   discount_codes: DiscountCodesTable;
+  location_scheduling_policy: LocationSchedulingPolicyTable;
   shop_closings: ShopClosingsTable;
 }
 

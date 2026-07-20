@@ -180,9 +180,12 @@ export function StatCard({ label, value, valueClassName, onClick }: { label: str
   );
 }
 
-export function TabLink({ href, children }: { href: string; children: React.ReactNode }) {
+export function TabLink({ href, children, exact }: { href: string; children: React.ReactNode; exact?: boolean }) {
   const pathname = usePathname();
-  const active = pathname === href;
+  // Sub-routes (e.g. /clients/[id], /staff/[id]) should still highlight
+  // their parent tab — exact match only for the root Dashboard tab,
+  // whose href is a literal prefix of every other tab's href.
+  const active = exact ? pathname === href : pathname === href || pathname?.startsWith(`${href}/`);
   return (
     <Link
       href={href}
@@ -225,12 +228,13 @@ export function Button({
   );
 }
 
+/** Dotted-underline clickable link for a name with a profile; plain muted text (never a boxed/grey container) when there isn't one. */
 export function ClickableName({ id, name, href }: { id: string | null; name: string | null; href: (id: string) => string }) {
   if (!id) {
     return <span className="text-gray-500">{name ?? 'Guest'} · no profile</span>;
   }
   return (
-    <Link href={href(id)} className="underline decoration-gray-300 underline-offset-2 hover:decoration-black">
+    <Link href={href(id)} className="underline decoration-dotted decoration-gray-400 underline-offset-2 hover:decoration-black">
       {name}
     </Link>
   );

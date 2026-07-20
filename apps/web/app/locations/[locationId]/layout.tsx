@@ -24,10 +24,13 @@ export default function LocationLayout({ children, params }: { children: React.R
       </div>
 
       <nav className="flex gap-2 mb-6">
-        <TabLink href={`${base}`}>Dashboard</TabLink>
+        <TabLink href={`${base}`} exact>
+          Dashboard
+        </TabLink>
         <TabLink href={`${base}/queue`}>Live queue</TabLink>
         <TabLink href={`${base}/schedule`}>Schedule</TabLink>
         <TabLink href={`${base}/clients`}>Clients</TabLink>
+        <TabLink href={`${base}/staff`}>Staff</TabLink>
         <TabLink href={`${base}/settings`}>Settings</TabLink>
       </nav>
 
