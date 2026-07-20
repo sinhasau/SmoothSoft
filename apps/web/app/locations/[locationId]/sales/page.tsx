@@ -33,24 +33,32 @@ export default function SalesPage({ params }: { params: { locationId: string } }
     (acc, r) => ({
       services: acc.services + r.serviceTotal,
       products: acc.products + r.retailTotal,
+      discount: acc.discount + Number(r.discountAmount),
       tip: acc.tip + Number(r.tip),
       tax: acc.tax + Number(r.tax),
       total: acc.total + Number(r.total),
     }),
-    { services: 0, products: 0, tip: 0, tax: 0, total: 0 },
+    { services: 0, products: 0, discount: 0, tip: 0, tax: 0, total: 0 },
   );
+  // Same figure as the Dashboard's "Revenue" stat card — services + products,
+  // net of discounts, before tax and tip. Shown explicitly here because the
+  // gross Services/Products columns don't reconcile to Revenue on their own
+  // once a discount is involved (that was a real point of confusion: the
+  // discount was previously only a small footnote under Total, not visible
+  // anywhere as a subtracted line).
+  const revenue = totals.services + totals.products - totals.discount;
 
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-bold">Today's sales</h2>
         <p className="text-sm text-gray-500">
-          {data.length} transaction{data.length === 1 ? '' : 's'} · itemized
+          {data.length} transaction{data.length === 1 ? '' : 's'} · itemized · Revenue = Services + Products − Discounts
         </p>
       </div>
 
       <Card className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-sm">
+        <table className="w-full min-w-[860px] text-sm">
           <thead>
             <tr className="border-b border-black/10 text-left text-gray-500">
               <th className="px-4 py-3 font-medium">Time</th>
@@ -58,6 +66,7 @@ export default function SalesPage({ params }: { params: { locationId: string } }
               <th className="px-4 py-3 font-medium">Barber</th>
               <th className="px-4 py-3 text-right font-medium">Services</th>
               <th className="px-4 py-3 text-right font-medium">Products</th>
+              <th className="px-4 py-3 text-right font-medium">Discount</th>
               <th className="px-4 py-3 text-right font-medium">Tip</th>
               <th className="px-4 py-3 text-right font-medium">Tax</th>
               <th className="px-4 py-3 text-right font-medium">Total</th>
@@ -78,18 +87,18 @@ export default function SalesPage({ params }: { params: { locationId: string } }
                 </td>
                 <td className="px-4 py-3 text-right">{money(r.serviceTotal)}</td>
                 <td className="px-4 py-3 text-right">{r.retailTotal > 0 ? money(r.retailTotal) : <span className="text-gray-300">—</span>}</td>
+                <td className="px-4 py-3 text-right text-green-700">
+                  {Number(r.discountAmount) > 0 ? `−${money(Number(r.discountAmount))}` : <span className="text-gray-300">—</span>}
+                </td>
                 <td className="px-4 py-3 text-right">{money(Number(r.tip))}</td>
                 <td className="px-4 py-3 text-right">{Number(r.tax) > 0 ? money(Number(r.tax)) : <span className="text-gray-300">—</span>}</td>
-                <td className="px-4 py-3 text-right font-medium">
-                  {money(Number(r.total))}
-                  {Number(r.discountAmount) > 0 && <div className="text-xs font-normal text-green-700">−{money(Number(r.discountAmount))} discount</div>}
-                </td>
+                <td className="px-4 py-3 text-right font-medium">{money(Number(r.total))}</td>
                 <td className="px-4 py-3 capitalize">{r.paymentMethod}</td>
               </tr>
             ))}
             {data.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={10} className="px-4 py-8 text-center text-gray-400">
                   No sales recorded yet today.
                 </td>
               </tr>
@@ -103,6 +112,7 @@ export default function SalesPage({ params }: { params: { locationId: string } }
                 </td>
                 <td className="px-4 py-3 text-right">{money(totals.services)}</td>
                 <td className="px-4 py-3 text-right">{money(totals.products)}</td>
+                <td className="px-4 py-3 text-right text-green-700">{totals.discount > 0 ? `−${money(totals.discount)}` : '—'}</td>
                 <td className="px-4 py-3 text-right">{money(totals.tip)}</td>
                 <td className="px-4 py-3 text-right">{money(totals.tax)}</td>
                 <td className="px-4 py-3 text-right">{money(totals.total)}</td>
@@ -112,6 +122,13 @@ export default function SalesPage({ params }: { params: { locationId: string } }
           )}
         </table>
       </Card>
+
+      {data.length > 0 && (
+        <p className="px-1 text-sm text-gray-500">
+          Revenue (matches the Dashboard stat card): {money(totals.services)} services + {money(totals.products)} products − {money(totals.discount)}{' '}
+          discounts = <span className="font-medium text-black">{money(revenue)}</span>
+        </p>
+      )}
     </div>
   );
 }
