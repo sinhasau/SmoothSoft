@@ -30,6 +30,7 @@ interface StaffRosterRow {
   role: string;
   classification: string;
   schedulingSelfServeOverride: boolean | null;
+  priceTierAmount: string;
 }
 
 interface DiscountCode {
@@ -53,6 +54,11 @@ interface SchedulingPolicy {
   selfServeDefault: boolean;
 }
 
+interface PricingPolicy {
+  barberRequestMode: 'same' | 'per_staff' | 'flat';
+  flatSurchargeAmount: number;
+}
+
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
@@ -62,6 +68,7 @@ export default function SettingsPage() {
   const discountCodes = useQuery({ queryKey: ['settings', 'discount-codes'], queryFn: () => api.get<DiscountCode[]>('/settings/discount-codes') });
   const cashConfig = useQuery({ queryKey: ['settings', 'payment-processor-config'], queryFn: () => api.get<PaymentProcessorConfig>('/settings/payment-processor-config') });
   const schedulingPolicy = useQuery({ queryKey: ['settings', 'scheduling-policy'], queryFn: () => api.get<SchedulingPolicy>('/settings/scheduling-policy') });
+  const pricingPolicy = useQuery({ queryKey: ['settings', 'pricing-policy'], queryFn: () => api.get<PricingPolicy>('/settings/pricing-policy') });
 
   const [newService, setNewService] = useState({ name: '', durationMinutes: 20, price: 28 });
   const [newProduct, setNewProduct] = useState({ name: '', price: 15, stockQty: 20 });
@@ -134,6 +141,16 @@ export default function SettingsPage() {
 
   const updateStaffOverride = useMutation({
     mutationFn: ({ id, value }: { id: string; value: boolean | null }) => api.put(`/settings/staff/${id}/scheduling-override`, { selfServeOverride: value }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'staff'] }),
+  });
+
+  const updatePricingPolicy = useMutation({
+    mutationFn: (dto: PricingPolicy) => api.put('/settings/pricing-policy', dto),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'pricing-policy'] }),
+  });
+
+  const updateStaffPriceTier = useMutation({
+    mutationFn: ({ id, priceTierAmount }: { id: string; priceTierAmount: number }) => api.put(`/settings/staff/${id}/price-tier`, { priceTierAmount }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['settings', 'staff'] }),
   });
 
@@ -320,6 +337,63 @@ export default function SettingsPage() {
                 }
               />
             </label>
+          </Card>
+        )}
+      </div>
+
+      <div>
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Barber request pricing</h2>
+        {pricingPolicy.data && (
+          <Card className="p-4 space-y-3">
+            <p className="text-sm text-gray-500">When a client requests a specific barber by name instead of "any available":</p>
+            <div className="space-y-2">
+              {(
+                [
+                  { value: 'same', label: 'Same price always' },
+                  { value: 'per_staff', label: 'Per-staff price tier — each barber sets their own premium' },
+                  { value: 'flat', label: 'Flat request surcharge — one fee regardless of who' },
+                ] as const
+              ).map((opt) => (
+                <label key={opt.value} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="barberRequestMode"
+                    checked={pricingPolicy.data.barberRequestMode === opt.value}
+                    onChange={() => updatePricingPolicy.mutate({ ...pricingPolicy.data!, barberRequestMode: opt.value })}
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+            {pricingPolicy.data.barberRequestMode === 'flat' && (
+              <label className="text-sm block">
+                Flat surcharge amount
+                <input
+                  type="number"
+                  step="0.01"
+                  className="ml-2 border border-black/15 rounded-lg px-2 py-1 w-24"
+                  defaultValue={pricingPolicy.data.flatSurchargeAmount}
+                  onBlur={(e) => updatePricingPolicy.mutate({ ...pricingPolicy.data!, flatSurchargeAmount: Number(e.target.value) })}
+                />
+              </label>
+            )}
+            {pricingPolicy.data.barberRequestMode === 'per_staff' && (
+              <div className="border-t border-black/5 pt-3 space-y-2">
+                <div className="text-xs text-gray-400">Per-staff premium when requested by name</div>
+                {roster.data?.map((r) => (
+                  <div key={r.locationStaffId} className="flex items-center justify-between text-sm">
+                    <span>{r.fullName}</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="border border-black/15 rounded-lg px-2 py-1 w-24 text-right"
+                      defaultValue={r.priceTierAmount}
+                      onBlur={(e) => updateStaffPriceTier.mutate({ id: r.locationStaffId, priceTierAmount: Number(e.target.value) })}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
           </Card>
         )}
       </div>

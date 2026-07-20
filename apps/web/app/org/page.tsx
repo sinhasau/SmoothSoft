@@ -18,6 +18,7 @@ interface OrgLocation {
   w2Count: number;
   contractorCount: number;
   serviceRevenue: number;
+  retailRevenue: number;
   tax: number;
   tips: number;
 }
@@ -33,6 +34,7 @@ interface OrgDashboard {
     w2Count: number;
     contractorCount: number;
     serviceRevenue: number;
+    retailRevenue: number;
     salesTax: number;
     tips: number;
   };
@@ -106,8 +108,9 @@ export default function OrgDashboardPage() {
 
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Financial snapshot — today, org-wide</h2>
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-5 gap-4">
           <StatCard label="Service revenue" value={`$${data.totals.serviceRevenue.toFixed(0)}`} />
+          <StatCard label="Product revenue" value={`$${data.totals.retailRevenue.toFixed(0)}`} />
           <StatCard label="Sales tax collected" value={`$${data.totals.salesTax.toFixed(0)}`} />
           <StatCard label="Tips" value={`$${data.totals.tips.toFixed(0)}`} />
           <StatCard label="Revenue today" value={`$${data.totals.revenueToday.toFixed(0)}`} />

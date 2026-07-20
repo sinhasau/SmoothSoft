@@ -24,6 +24,7 @@ interface QueueEntry {
   serviceDurationMinutes: number;
   assignedStaffId: string | null;
   assignedStaffName: string | null;
+  requestedSpecificStaff: boolean;
   present: boolean;
   presentCheckedAt: string | null;
   isAppt: boolean;
@@ -595,12 +596,33 @@ function CheckoutPanel({
     queryKey: ['settings', 'discount-codes'],
     queryFn: () => api.get<{ code: string; discount_type: 'percent' | 'flat'; value: string; active: boolean }[]>('/settings/discount-codes'),
   });
+  const pricingPolicy = useQuery({
+    queryKey: ['settings', 'pricing-policy'],
+    queryFn: () => api.get<{ barberRequestMode: 'same' | 'per_staff' | 'flat'; flatSurchargeAmount: number }>('/settings/pricing-policy'),
+  });
+  const roster = useQuery({
+    queryKey: ['settings', 'staff'],
+    queryFn: () => api.get<{ locationStaffId: string; priceTierAmount: string }[]>('/settings/staff'),
+  });
   const service = services.data?.find((s) => s.id === entry.serviceId);
   const servicePrice = service ? Number(service.price) : 0;
   const extraServicesTotal = extraServices.reduce((sum, s) => sum + Number(s.price), 0);
   const retailTotal = retailItems.reduce((sum, p) => sum + Number(p.price), 0);
+
+  // Requesting a barber by name (as opposed to "any available") can carry a
+  // premium, per the location's owner-configured pricing policy.
+  const assignedStaffTier = roster.data?.find((r) => r.locationStaffId === entry.assignedStaffId);
+  const barberPremium =
+    entry.requestedSpecificStaff && pricingPolicy.data
+      ? pricingPolicy.data.barberRequestMode === 'flat'
+        ? pricingPolicy.data.flatSurchargeAmount
+        : pricingPolicy.data.barberRequestMode === 'per_staff'
+          ? Number(assignedStaffTier?.priceTierAmount ?? 0)
+          : 0
+      : 0;
+
   // "Total (before tip)" — updates live as services/products are added or removed.
-  const beforeTip = servicePrice + extraServicesTotal + retailTotal;
+  const beforeTip = servicePrice + extraServicesTotal + retailTotal + barberPremium;
 
   // Client-side preview only — the server independently validates and
   // computes the real discount at checkout, this just avoids a round trip
@@ -620,6 +642,7 @@ function CheckoutPanel({
         { name: service?.name ?? 'Service', itemType: 'service' as const, price: servicePrice, taxable: servicesTaxable },
         ...extraServices.map((s) => ({ name: s.name, itemType: 'service' as const, price: Number(s.price), taxable: servicesTaxable })),
         ...retailItems.map((p) => ({ name: p.name, itemType: 'retail' as const, price: Number(p.price), taxable: true })),
+        ...(barberPremium > 0 ? [{ name: 'Requested barber premium', itemType: 'service' as const, price: barberPremium, taxable: servicesTaxable }] : []),
       ];
       // Simulates the future Stripe API response gate (item 4) — cash and
       // the external/manual path complete instantly, since there's no
@@ -689,6 +712,12 @@ function CheckoutPanel({
             </span>
           </div>
         ))}
+        {barberPremium > 0 && (
+          <div className="flex justify-between text-sm text-gray-600">
+            <span>+ Requested barber premium</span>
+            <span>${barberPremium.toFixed(2)}</span>
+          </div>
+        )}
       </div>
 
       <div className="mb-2 flex gap-2">

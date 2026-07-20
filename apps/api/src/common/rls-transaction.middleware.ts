@@ -1,10 +1,12 @@
-import { Inject, Injectable, NestMiddleware } from '@nestjs/common';
+import { ForbiddenException, Inject, Injectable, NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import type { Pool, PoolClient } from 'pg';
 import { verifySessionToken, SESSION_COOKIE_NAME } from '../auth/jwt';
 import { kyselyFromClient } from '../db/kysely-from-client';
 import { PG_POOL } from '../db/database.module';
 import { requestContextStorage } from './request-context';
+
+const LOCATION_OVERRIDE_HEADER = 'x-location-id';
 
 /**
  * The single place that implements the handoff's explicit RLS warning
@@ -72,6 +74,7 @@ export class RlsTransactionMiddleware implements NestMiddleware {
 
       const token = req.cookies?.[SESSION_COOKIE_NAME] as string | undefined;
       const auth = token ? verifySessionToken(token) : null;
+      let effectiveLocationId = auth?.locationId;
 
       if (auth) {
         // `SET LOCAL x = $1` is rejected by Postgres — SET is a utility
@@ -82,7 +85,30 @@ export class RlsTransactionMiddleware implements NestMiddleware {
         await client.query("select set_config('app.current_organization_id', $1, true)", [
           auth.organizationId,
         ]);
-        await client.query("select set_config('app.current_location_id', $1, true)", [auth.locationId]);
+
+        // Every location-scoped page is served from a URL like
+        // /locations/:locationId/... — the frontend sends that id back as
+        // X-Location-Id (see apps/web/lib/api.ts setActiveLocationId).
+        // Only org_owner may ever have that resolve to somewhere other
+        // than their own location: everyone else is pinned to the
+        // location baked into their signed cookie, full stop.
+        const requestedLocationId = req.header(LOCATION_OVERRIDE_HEADER);
+
+        if (requestedLocationId && requestedLocationId !== auth.locationId) {
+          if (auth.role !== 'org_owner') {
+            throw new ForbiddenException('Not permitted to access this location.');
+          }
+          // locations already has org_isolation RLS keyed on the org
+          // session var set above, so this only returns a row if the
+          // requested location actually belongs to this organization.
+          const target = await client.query('select id from locations where id = $1', [requestedLocationId]);
+          if (target.rows.length === 0) {
+            throw new ForbiddenException('Location not found in this organization.');
+          }
+          effectiveLocationId = requestedLocationId;
+        }
+
+        await client.query("select set_config('app.current_location_id', $1, true)", [effectiveLocationId]);
       }
 
       const trx = kyselyFromClient(client);
@@ -94,7 +120,15 @@ export class RlsTransactionMiddleware implements NestMiddleware {
         void finish(false);
       });
 
-      requestContextStorage.run({ trx, auth }, () => next());
+      // Every controller reads requireAuth().locationId as ITS query
+      // filter, not just as an RLS session var — so the effective (possibly
+      // overridden) location has to flow through here too, or the RLS scope
+      // and the explicit `where location_id = ...` clauses disagree and
+      // every query returns nothing. locationStaffId/userId/role are left
+      // untouched: those still refer to the real logged-in person.
+      const effectiveAuth = auth ? { ...auth, locationId: effectiveLocationId as string } : auth;
+
+      requestContextStorage.run({ trx, auth: effectiveAuth }, () => next());
     } catch (err) {
       await finish(false);
       next(err as Error);

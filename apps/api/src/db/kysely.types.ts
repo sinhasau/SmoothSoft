@@ -65,7 +65,18 @@ export interface LocationStaffTable {
   status: Generated<StaffStatus>;
   /** null = use the location's scheduling_self_serve default; true/false = explicit per-person override. */
   scheduling_self_serve_override: boolean | null;
+  /** Only applied when the location's barber_request_mode is 'per_staff' — see LocationPricingPolicyTable. */
+  price_tier_amount: NumericWithDefault;
   created_at: TimestampTzWithDefault;
+}
+
+export type BarberRequestMode = 'same' | 'per_staff' | 'flat';
+
+export interface LocationPricingPolicyTable {
+  location_id: string;
+  barber_request_mode: Generated<BarberRequestMode>;
+  flat_surcharge_amount: NumericWithDefault;
+  updated_at: TimestampTzWithDefault;
 }
 
 export interface LocationSchedulingPolicyTable {
@@ -232,6 +243,8 @@ export interface QueueEntriesTable {
   service_id: string | null;
   status: QueueEntryStatus;
   assigned_location_staff_id: string | null;
+  /** Did the client ask for this person by name at check-in, as opposed to "any available"? Independent of later reassignment. */
+  requested_specific_staff: Generated<boolean>;
   is_appt: Generated<boolean>;
   appt_at: TimestampTz | null;
   present: Generated<boolean>;
@@ -411,6 +424,7 @@ export interface DB {
   location_scheduling_policy: LocationSchedulingPolicyTable;
   shop_closings: ShopClosingsTable;
   report_favorites: ReportFavoritesTable;
+  location_pricing_policy: LocationPricingPolicyTable;
 }
 
 export type Organization = Selectable<OrganizationsTable>;

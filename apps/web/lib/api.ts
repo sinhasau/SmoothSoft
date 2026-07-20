@@ -1,5 +1,14 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
+// Set by LocationLayout to the URL's [locationId] whenever a location-scoped
+// page is mounted. Sent as X-Location-Id on every request so org_owner can
+// drill into a location other than the one baked into their login cookie —
+// see rls-transaction.middleware.ts, which is the only place that trusts it.
+let activeLocationId: string | null = null;
+export function setActiveLocationId(id: string | null) {
+  activeLocationId = id;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -15,6 +24,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...(activeLocationId ? { 'X-Location-Id': activeLocationId } : {}),
       ...options.headers,
     },
   });

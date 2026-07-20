@@ -10,6 +10,7 @@
     "seed:clients": "ts-node-dev --transpile-only -r tsconfig-paths/register src/seed-more-clients.ts",
     "seed:catalog": "ts-node-dev --transpile-only -r tsconfig-paths/register src/seed-more-catalog.ts",
     "seed:staff": "ts-node-dev --transpile-only -r tsconfig-paths/register src/seed-more-staff.ts",
+    "seed:locations-history": "ts-node-dev --transpile-only -r tsconfig-paths/register src/seed-more-locations-history.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -260,6 +260,24 @@ export class DashboardService {
             .where('status', 'in', ['needs_attention', 'overdue'])
             .execute();
 
+          const serviceRevenue = await scopedTrx
+            .selectFrom('transaction_items as ti')
+            .innerJoin('transactions as t', 't.id', 'ti.transaction_id')
+            .select(({ fn }) => [fn.sum('ti.price').as('total')])
+            .where('t.location_id', '=', loc.id)
+            .where('t.created_at', '>=', since)
+            .where('ti.item_type', '=', 'service')
+            .executeTakeFirst();
+
+          const retailRevenue = await scopedTrx
+            .selectFrom('transaction_items as ti')
+            .innerJoin('transactions as t', 't.id', 'ti.transaction_id')
+            .select(({ fn }) => [fn.sum('ti.price').as('total')])
+            .where('t.location_id', '=', loc.id)
+            .where('t.created_at', '>=', since)
+            .where('ti.item_type', '=', 'retail')
+            .executeTakeFirst();
+
           const revenue = txns.reduce((s, t) => s + Number(t.subtotal), 0);
           const staffOnShift = staff.filter((s) => s.status !== 'off').length;
           const worstCompliance = compliance.some((c) => c.status === 'overdue')
@@ -277,7 +295,8 @@ export class DashboardService {
             complianceAlerts: compliance.length,
             w2Count: staff.filter((s) => s.classification === 'w2').length,
             contractorCount: staff.filter((s) => s.classification === '1099').length,
-            serviceRevenue: txns.reduce((s, t) => s + Number(t.subtotal), 0),
+            serviceRevenue: Number(serviceRevenue?.total ?? 0),
+            retailRevenue: Number(retailRevenue?.total ?? 0),
             tax: txns.reduce((s, t) => s + Number(t.tax), 0),
             tips: txns.reduce((s, t) => s + Number(t.tip), 0),
           };
@@ -297,10 +316,23 @@ export class DashboardService {
         w2Count: acc.w2Count + l.w2Count,
         contractorCount: acc.contractorCount + l.contractorCount,
         serviceRevenue: acc.serviceRevenue + l.serviceRevenue,
+        retailRevenue: acc.retailRevenue + l.retailRevenue,
         salesTax: acc.salesTax + l.tax,
         tips: acc.tips + l.tips,
       }),
-      { revenueToday: 0, clientsServed: 0, staffOnShift: 0, staffTotal: 0, complianceAlerts: 0, w2Count: 0, contractorCount: 0, serviceRevenue: 0, salesTax: 0, tips: 0 },
+      {
+        revenueToday: 0,
+        clientsServed: 0,
+        staffOnShift: 0,
+        staffTotal: 0,
+        complianceAlerts: 0,
+        w2Count: 0,
+        contractorCount: 0,
+        serviceRevenue: 0,
+        retailRevenue: 0,
+        salesTax: 0,
+        tips: 0,
+      },
     );
 
     return { locations: perLocation, totals };

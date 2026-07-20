@@ -5,10 +5,12 @@ import type {
   ScheduleDayDto,
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
+  UpdatePricingPolicyDto,
   UpdateQueueConfigDto,
   UpdateSchedulingPolicyDto,
   UpdateStaffCompensationDto,
   UpdateStaffGoalsDto,
+  UpdateStaffPriceTierDto,
   UpdateStaffSchedulingOverrideDto,
   UpdateTaxConfigDto,
   UpsertDiscountCodeDto,
@@ -209,6 +211,7 @@ export class SettingsService {
         'ls.classification as classification',
         'ls.status as status',
         'ls.scheduling_self_serve_override as schedulingSelfServeOverride',
+        'ls.price_tier_amount as priceTierAmount',
       ])
       .where('ls.location_id', '=', locationId)
       .orderBy('u.full_name')
@@ -412,6 +415,37 @@ export class SettingsService {
     const result = await db()
       .updateTable('location_staff')
       .set({ scheduling_self_serve_override: dto.selfServeOverride })
+      .where('id', '=', locationStaffId)
+      .returningAll()
+      .executeTakeFirst();
+    if (!result) throw new NotFoundException('Staff member not found');
+    return result;
+  }
+
+  // ---- Barber-request pricing ----
+  async pricingPolicy(locationId: string) {
+    const row = await db().selectFrom('location_pricing_policy').selectAll().where('location_id', '=', locationId).executeTakeFirst();
+    return {
+      barberRequestMode: row?.barber_request_mode ?? 'same',
+      flatSurchargeAmount: Number(row?.flat_surcharge_amount ?? 0),
+    };
+  }
+
+  async setPricingPolicy(locationId: string, dto: UpdatePricingPolicyDto) {
+    await db()
+      .insertInto('location_pricing_policy')
+      .values({ location_id: locationId, barber_request_mode: dto.barberRequestMode, flat_surcharge_amount: dto.flatSurchargeAmount })
+      .onConflict((oc) =>
+        oc.column('location_id').doUpdateSet({ barber_request_mode: dto.barberRequestMode, flat_surcharge_amount: dto.flatSurchargeAmount, updated_at: new Date() }),
+      )
+      .execute();
+    return this.pricingPolicy(locationId);
+  }
+
+  async setStaffPriceTier(locationStaffId: string, dto: UpdateStaffPriceTierDto) {
+    const result = await db()
+      .updateTable('location_staff')
+      .set({ price_tier_amount: dto.priceTierAmount })
       .where('id', '=', locationStaffId)
       .returningAll()
       .executeTakeFirst();

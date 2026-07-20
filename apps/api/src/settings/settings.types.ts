@@ -35,6 +35,15 @@ export interface UpdateStaffSchedulingOverrideDto {
   selfServeOverride: boolean | null;
 }
 
+export interface UpdatePricingPolicyDto {
+  barberRequestMode: 'same' | 'per_staff' | 'flat';
+  flatSurchargeAmount: number;
+}
+
+export interface UpdateStaffPriceTierDto {
+  priceTierAmount: number;
+}
+
 export interface UpdateTaxConfigDto {
   retailTaxPct: number;
   servicesTaxable: boolean;

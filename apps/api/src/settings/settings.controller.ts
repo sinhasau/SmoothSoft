@@ -8,10 +8,12 @@ import type {
   StoreHoursDayDto,
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
+  UpdatePricingPolicyDto,
   UpdateQueueConfigDto,
   UpdateSchedulingPolicyDto,
   UpdateStaffCompensationDto,
   UpdateStaffGoalsDto,
+  UpdateStaffPriceTierDto,
   UpdateStaffSchedulingOverrideDto,
   UpdateTaxConfigDto,
   UpsertDiscountCodeDto,
@@ -172,5 +174,20 @@ export class SettingsController {
   @Put('staff/:id/scheduling-override')
   setStaffSchedulingOverride(@Param('id') id: string, @Body() dto: UpdateStaffSchedulingOverrideDto) {
     return this.settings.setStaffSchedulingOverride(id, dto);
+  }
+
+  @Get('pricing-policy')
+  pricingPolicy() {
+    return this.settings.pricingPolicy(requireAuth().locationId);
+  }
+
+  @Put('pricing-policy')
+  setPricingPolicy(@Body() dto: UpdatePricingPolicyDto) {
+    return this.settings.setPricingPolicy(requireAuth().locationId, dto);
+  }
+
+  @Put('staff/:id/price-tier')
+  setStaffPriceTier(@Param('id') id: string, @Body() dto: UpdateStaffPriceTierDto) {
+    return this.settings.setStaffPriceTier(id, dto);
   }
 }
