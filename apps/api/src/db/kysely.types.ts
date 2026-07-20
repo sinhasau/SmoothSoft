@@ -373,6 +373,12 @@ export interface ShopClosingsTable {
   created_at: TimestampTzWithDefault;
 }
 
+export interface ReportFavoritesTable {
+  location_staff_id: string;
+  report_id: string;
+  created_at: TimestampTzWithDefault;
+}
+
 export interface DB {
   organizations: OrganizationsTable;
   locations: LocationsTable;
@@ -404,6 +410,7 @@ export interface DB {
   discount_codes: DiscountCodesTable;
   location_scheduling_policy: LocationSchedulingPolicyTable;
   shop_closings: ShopClosingsTable;
+  report_favorites: ReportFavoritesTable;
 }
 
 export type Organization = Selectable<OrganizationsTable>;

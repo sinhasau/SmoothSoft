@@ -31,6 +31,7 @@ export default function LocationLayout({ children, params }: { children: React.R
         <TabLink href={`${base}/schedule`}>Schedule</TabLink>
         <TabLink href={`${base}/clients`}>Clients</TabLink>
         <TabLink href={`${base}/staff`}>Staff</TabLink>
+        <TabLink href={`${base}/reports`}>Reports</TabLink>
         <TabLink href={`${base}/settings`}>Settings</TabLink>
       </nav>
 

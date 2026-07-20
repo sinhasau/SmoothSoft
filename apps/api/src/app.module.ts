@@ -8,6 +8,7 @@ import { SettingsModule } from './settings/settings.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { ScheduleModule } from './schedule/schedule.module';
 import { ClientsModule } from './clients/clients.module';
+import { ReportsModule } from './reports/reports.module';
 import { RlsTransactionMiddleware } from './common/rls-transaction.middleware';
 import { HealthController } from './health.controller';
 
@@ -25,6 +26,7 @@ import { HealthController } from './health.controller';
     DashboardModule,
     ScheduleModule,
     ClientsModule,
+    ReportsModule,
   ],
   controllers: [HealthController],
 })
