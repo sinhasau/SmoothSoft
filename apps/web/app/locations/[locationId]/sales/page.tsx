@@ -67,8 +67,8 @@ export default function SalesPage({ params }: { params: { locationId: string } }
               <th className="px-4 py-3 text-right font-medium">Services</th>
               <th className="px-4 py-3 text-right font-medium">Products</th>
               <th className="px-4 py-3 text-right font-medium">Discount</th>
-              <th className="px-4 py-3 text-right font-medium">Tip</th>
               <th className="px-4 py-3 text-right font-medium">Tax</th>
+              <th className="px-4 py-3 text-right font-medium">Tip</th>
               <th className="px-4 py-3 text-right font-medium">Total</th>
               <th className="px-4 py-3 font-medium">Payment</th>
             </tr>
@@ -90,8 +90,8 @@ export default function SalesPage({ params }: { params: { locationId: string } }
                 <td className="px-4 py-3 text-right text-green-700">
                   {Number(r.discountAmount) > 0 ? `−${money(Number(r.discountAmount))}` : <span className="text-gray-300">—</span>}
                 </td>
-                <td className="px-4 py-3 text-right">{money(Number(r.tip))}</td>
                 <td className="px-4 py-3 text-right">{Number(r.tax) > 0 ? money(Number(r.tax)) : <span className="text-gray-300">—</span>}</td>
+                <td className="px-4 py-3 text-right">{money(Number(r.tip))}</td>
                 <td className="px-4 py-3 text-right font-medium">{money(Number(r.total))}</td>
                 <td className="px-4 py-3 capitalize">{r.paymentMethod}</td>
               </tr>
@@ -113,8 +113,8 @@ export default function SalesPage({ params }: { params: { locationId: string } }
                 <td className="px-4 py-3 text-right">{money(totals.services)}</td>
                 <td className="px-4 py-3 text-right">{money(totals.products)}</td>
                 <td className="px-4 py-3 text-right text-green-700">{totals.discount > 0 ? `−${money(totals.discount)}` : '—'}</td>
-                <td className="px-4 py-3 text-right">{money(totals.tip)}</td>
                 <td className="px-4 py-3 text-right">{money(totals.tax)}</td>
+                <td className="px-4 py-3 text-right">{money(totals.tip)}</td>
                 <td className="px-4 py-3 text-right">{money(totals.total)}</td>
                 <td />
               </tr>
