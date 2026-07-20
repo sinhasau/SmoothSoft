@@ -4,14 +4,17 @@
  * live app testing during development). That made both locations look
  * "broken" once cross-location viewing actually worked: nothing to show.
  *
- * This backfills ~30 days of realistic queue_entries/transactions/
+ * This backfills ~60 days of realistic queue_entries/transactions/
  * transaction_items for both locations, sets a distinct barber-request
  * pricing policy per location for a meaningful demo of all three modes,
  * and promotes Downtown's Alex to org_owner so there's an account that can
  * actually view other locations (see rls-transaction.middleware.ts).
  *
- * Additive; safe to re-run — skips a location if it already has
- * transactions, and pricing-policy/role changes are plain upserts.
+ * Additive; safe to re-run — skips a given CALENDAR DAY for a location if
+ * it already has a queue entry on file (not just "skip the whole location"),
+ * so re-running after raising DAYS_OF_HISTORY backfills only the newly
+ * added days instead of re-seeding (and duplicating) ones already done.
+ * Pricing-policy/role changes are plain upserts either way.
  */
 import './env';
 import { Kysely, PostgresDialect } from 'kysely';
@@ -21,7 +24,7 @@ import type { DB } from './db/kysely.types';
 const pool = new Pool({ connectionString: process.env.DATABASE_MIGRATE_URL });
 const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool }) });
 
-const DAYS_OF_HISTORY = 30;
+const DAYS_OF_HISTORY = 60;
 
 function randomInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -32,12 +35,6 @@ function pick<T>(items: T[]): T {
 
 async function seedLocationHistory(locationName: string, orgId: string, discountCode: string) {
   const location = await db.selectFrom('locations').selectAll().where('organization_id', '=', orgId).where('name', '=', locationName).executeTakeFirstOrThrow();
-
-  const existingTxn = await db.selectFrom('transactions').select('id').where('location_id', '=', location.id).executeTakeFirst();
-  if (existingTxn) {
-    console.log(`${locationName} already has transaction history — skipping.`);
-    return;
-  }
 
   const staff = await db
     .selectFrom('location_staff as ls')
@@ -51,20 +48,38 @@ async function seedLocationHistory(locationName: string, orgId: string, discount
   const taxConfig = await db.selectFrom('tax_config').selectAll().where('location_id', '=', location.id).executeTakeFirstOrThrow();
   const clients = await db.selectFrom('clients').select(['id', 'organization_id']).where('organization_id', '=', orgId).execute();
 
-  const code = await db
-    .insertInto('discount_codes')
-    .values({ location_id: location.id, code: discountCode, discount_type: 'percent', value: 10, active: true })
-    .returningAll()
-    .executeTakeFirstOrThrow();
+  const code =
+    (await db.selectFrom('discount_codes').selectAll().where('location_id', '=', location.id).where('code', '=', discountCode).executeTakeFirst()) ??
+    (await db
+      .insertInto('discount_codes')
+      .values({ location_id: location.id, code: discountCode, discount_type: 'percent', value: 10, active: true })
+      .returningAll()
+      .executeTakeFirstOrThrow());
 
   let discountUses = 0;
   let entriesCreated = 0;
   let transactionsCreated = 0;
+  let daysSkipped = 0;
 
   for (let dayOffset = DAYS_OF_HISTORY - 1; dayOffset >= 0; dayOffset--) {
     const day = new Date();
     day.setHours(0, 0, 0, 0);
     day.setDate(day.getDate() - dayOffset);
+    const dayEnd = new Date(day.getTime() + 86400000);
+
+    // Idempotency at day granularity, not location granularity — lets a
+    // re-run with a larger DAYS_OF_HISTORY backfill only the new days.
+    const alreadySeeded = await db
+      .selectFrom('queue_entries')
+      .select('id')
+      .where('location_id', '=', location.id)
+      .where('created_at', '>=', day)
+      .where('created_at', '<', dayEnd)
+      .executeTakeFirst();
+    if (alreadySeeded) {
+      daysSkipped++;
+      continue;
+    }
 
     const entriesToday = randomInt(1, 5);
     for (let i = 0; i < entriesToday; i++) {
@@ -146,10 +161,16 @@ async function seedLocationHistory(locationName: string, orgId: string, discount
   }
 
   if (discountUses > 0) {
-    await db.updateTable('discount_codes').set({ usage_count: discountUses }).where('id', '=', code.id).execute();
+    await db
+      .updateTable('discount_codes')
+      .set({ usage_count: code.usage_count + discountUses })
+      .where('id', '=', code.id)
+      .execute();
   }
 
-  console.log(`${locationName}: ${entriesCreated} queue entries, ${transactionsCreated} transactions over ${DAYS_OF_HISTORY} days.`);
+  console.log(
+    `${locationName}: ${entriesCreated} new queue entries, ${transactionsCreated} new transactions (${daysSkipped} of ${DAYS_OF_HISTORY} days already had data and were left alone).`,
+  );
 }
 
 async function main() {
