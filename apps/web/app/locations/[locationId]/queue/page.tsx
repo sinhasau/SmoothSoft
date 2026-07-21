@@ -339,7 +339,10 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                   </div>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
-                  <label className="flex flex-col items-center text-[11px] cursor-pointer">
+                  {/* Fixed width + left-aligned so the checkbox sits at the same x on
+                      every row, whether or not the "arrived at" timestamp line below it
+                      is present (its width would otherwise re-center the whole label). */}
+                  <label className="flex w-20 flex-col items-start text-[11px] cursor-pointer">
                     <span className="flex items-center gap-1">
                       <input
                         type="checkbox"
@@ -349,7 +352,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                       />
                       <span className={e.present ? 'text-green-700 font-medium' : 'text-gray-400'}>{e.present ? '✓ Arrived' : 'Arrived'}</span>
                     </span>
-                    {e.present && e.presentCheckedAt && <span className="text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
+                    {e.present && e.presentCheckedAt && <span className="pl-5 text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
                   </label>
                   <span className="text-xs text-gray-500 min-w-[92px] text-right whitespace-nowrap">
                     {e.isAppt ? (

@@ -177,6 +177,11 @@ async function main() {
   const org = await db.selectFrom('organizations').selectAll().where('name', '=', "JJ's Barbers").executeTakeFirst();
   if (!org) throw new Error("No organization named \"JJ's Barbers\" found — run `npm run seed` first.");
 
+  // Downtown's real transactions (from live testing) are sparse — just a
+  // handful of days — so its Reports would otherwise be mostly empty over a
+  // 60-day window. Day-level idempotency above means this only fills in the
+  // days that don't already have real data; nothing gets duplicated.
+  await seedLocationHistory('Downtown', org.id, 'WELCOME10');
   await seedLocationHistory('Eastside', org.id, 'EASTSIDE10');
   await seedLocationHistory('Westfield', org.id, 'WESTFIELD10');
 

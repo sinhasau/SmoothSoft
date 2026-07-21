@@ -218,7 +218,7 @@ export default function SchedulePage() {
               {columnsWithMonthSeam.map((row) => (
                 <th
                   key={row.date}
-                  className={`sticky top-0 z-20 h-9 w-16 border-b border-black/10 px-1 text-center align-middle font-medium text-gray-500 ${
+                  className={`sticky top-0 z-20 h-9 w-20 border-b border-black/10 px-1 text-center align-middle font-medium text-gray-500 ${
                     row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
                   } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
                 >
@@ -239,18 +239,22 @@ export default function SchedulePage() {
                 return (
                   <th
                     key={row.date}
-                    className={`sticky top-9 z-20 h-14 w-16 border-b border-black/10 px-1 align-middle ${
+                    className={`sticky top-9 z-20 h-14 w-20 border-b border-black/10 px-1 align-middle ${
                       row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
                     } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
                   >
-                    <div className="flex flex-col items-center gap-0.5">
+                    <div className="flex flex-col items-center gap-1">
                       {open ? (
-                        <>
-                          <div className="h-2 w-full rounded bg-gray-300" title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`} />
-                          <span className="text-[8px] leading-none text-gray-400 whitespace-nowrap">{fmtShiftRange(hours!.open_time, hours!.close_time)}</span>
-                        </>
+                        <div
+                          className="flex h-6 w-full items-center justify-center rounded bg-slate-600"
+                          title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`}
+                        >
+                          <span className="text-[9px] font-semibold text-white whitespace-nowrap">{fmtShiftRange(hours!.open_time, hours!.close_time)}</span>
+                        </div>
                       ) : (
-                        <div className="h-2 w-full rounded bg-gray-50" title="Closed" />
+                        <div className="flex h-6 w-full items-center justify-center rounded bg-gray-100" title="Closed">
+                          <span className="text-[9px] text-gray-400">Closed</span>
+                        </div>
                       )}
                       <span className={`text-[10px] font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>{row.coverageCount}</span>
                     </div>
@@ -271,29 +275,33 @@ export default function SchedulePage() {
                   const working = !!entry?.working && !!entry.startTime && !!entry.endTime;
                   let bar: React.ReactNode = null;
                   if (pending) {
-                    bar = <div className="absolute inset-y-0 inset-x-0.5 rounded border border-dashed border-amber-400 bg-amber-50" title="Requested off" />;
+                    bar = (
+                      <div
+                        className="absolute inset-y-0 inset-x-0.5 flex items-center justify-center rounded border-2 border-dashed border-amber-500 bg-amber-100"
+                        title="Requested off"
+                      >
+                        <span className="text-[9px] font-semibold text-amber-800 whitespace-nowrap">Off</span>
+                      </div>
+                    );
                   } else if (working) {
                     const left = Math.max(0, ((timeToMinutes(entry!.startTime!) - scale.start) / span) * 100);
                     const width = Math.max(8, Math.min(100 - left, ((timeToMinutes(entry!.endTime!) - timeToMinutes(entry!.startTime!)) / span) * 100));
                     bar = (
                       <div
-                        className="absolute inset-y-0 rounded bg-blue-500"
+                        className="absolute inset-y-0 flex items-center justify-center overflow-hidden rounded bg-blue-600"
                         style={{ left: `${left}%`, width: `${width}%` }}
                         title={fmtShiftRange(entry!.startTime, entry!.endTime)}
-                      />
+                      >
+                        <span className="px-0.5 text-[9px] font-semibold text-white whitespace-nowrap">{fmtShiftRange(entry!.startTime, entry!.endTime)}</span>
+                      </div>
                     );
                   }
                   return (
                     <td
                       key={row.date}
-                      className={`border-b border-black/5 px-1 py-1.5 w-16 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                      className={`border-b border-black/5 px-1 py-2 w-20 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
                     >
-                      <div className="flex flex-col items-center gap-0.5">
-                        <div className="relative h-4 w-full rounded bg-gray-100">{bar}</div>
-                        <span className="text-[8px] leading-none text-gray-400 whitespace-nowrap">
-                          {working ? fmtShiftRange(entry!.startTime, entry!.endTime) : pending ? 'off' : ''}
-                        </span>
-                      </div>
+                      <div className="relative h-6 w-full rounded bg-gray-100">{bar}</div>
                     </td>
                   );
                 })}
