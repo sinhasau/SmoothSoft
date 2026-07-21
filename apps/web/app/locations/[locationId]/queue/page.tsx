@@ -1,10 +1,20 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../../../lib/api';
 import { useLiveQueueSync } from '../../../../lib/socket';
-import { Button, Card, ClockInDropdown, RowMenu, StatusDropdown } from '../../../../components/ui';
+import { Button, Card, ClickableName, ClockInDropdown, Pill, RowMenu, StatusDropdown } from '../../../../components/ui';
+
+/** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
+function useClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
 
 interface TeamMember {
   locationStaffId: string;
@@ -31,6 +41,7 @@ interface QueueEntry {
   apptAt: string | null;
   waitingOrder: number | null;
   estimatedStart: string | null;
+  createdAt: string;
   updatedAt: string;
 }
 
@@ -76,6 +87,17 @@ function shortDate(iso: string) {
   return new Date(iso).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
+function minutesBetween(a: Date, b: Date) {
+  return Math.max(0, Math.round((b.getTime() - a.getTime()) / 60000));
+}
+
+const STAFF_DOT: Record<string, string> = {
+  available: 'bg-green-500',
+  busy: 'bg-blue-500',
+  break: 'bg-amber-500',
+  off: 'bg-gray-300',
+};
+
 export default function QueuePage({ params }: { params: { locationId: string } }) {
   useLiveQueueSync();
   const queryClient = useQueryClient();
@@ -88,6 +110,9 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const [localWaitingOrder, setLocalWaitingOrder] = useState<string[] | null>(null);
   const [showCloseShop, setShowCloseShop] = useState(false);
   const [confirmingUndo, setConfirmingUndo] = useState<string | null>(null);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const [clientPreviewId, setClientPreviewId] = useState<string | null>(null);
+  const now = useClock();
 
   const board = useQuery({ queryKey: ['queue', 'board'], queryFn: () => api.get<Board>('/queue/board'), refetchInterval: 20_000 });
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
@@ -133,6 +158,20 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     ? localWaitingOrder.map((id) => board.data!.waiting.find((w) => w.id === id)!).filter(Boolean)
     : (board.data?.waiting ?? []);
 
+  function isLate(e: QueueEntry) {
+    return e.isAppt && !!e.apptAt && new Date(e.apptAt) < now;
+  }
+  const lateCount = waitingList.filter(isLate).length;
+  const longestWaitMinutes = waitingList.reduce((max, e) => Math.max(max, minutesBetween(new Date(e.createdAt), now)), 0);
+
+  // Elapsed time for whoever's currently in someone's chair, keyed by staff —
+  // powers the "Cutting · Xm" hint on the staff-status strip.
+  const elapsedByStaffId = new Map(
+    (board.data?.nowServing ?? [])
+      .filter((e) => e.assignedStaffId)
+      .map((e) => [e.assignedStaffId as string, minutesBetween(new Date(e.updatedAt), now)]),
+  );
+
   function handleDrop(targetId: string) {
     if (!dragId || dragId === targetId || !board.data) return;
     const currentOrder = (localWaitingOrder ?? board.data.waiting.map((w) => w.id)).slice();
@@ -152,62 +191,109 @@ export default function QueuePage({ params }: { params: { locationId: string } }
           <h2 className="text-xl font-bold">Live queue</h2>
           <p className="text-sm text-gray-500">Shared device · all barbers</p>
         </div>
-        <Button variant="solid" onClick={() => setShowCloseShop(true)}>
-          Close up shop
-        </Button>
+        {/* Close up shop demoted to an overflow menu — it's an end-of-day action,
+            not something that should compete visually with Appointment/Walk-in. */}
+        <RowMenu items={[{ label: 'Close up shop', onClick: () => setShowCloseShop(true) }]} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white px-3 py-2">
-        {onShiftTeam.map((t) => (
-          <div key={t.locationStaffId} className="flex items-center gap-2 pr-4 border-r border-black/10 last:border-0">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                t.status === 'available' ? 'bg-green-500' : t.status === 'busy' ? 'bg-blue-500' : 'bg-amber-500'
-              }`}
-            />
-            <span className="font-medium text-sm">{t.fullName}</span>
-            <StatusDropdown status={t.status} onChange={(status) => setStatus.mutate({ staffId: t.locationStaffId, status })} />
-          </div>
-        ))}
+      {/* Queue-at-a-glance: the three questions reception asks most — how many
+          are waiting, who's waited longest, and is anything running late. */}
+      {waitingList.length > 0 && (
+        <div className="flex items-center gap-5 text-sm text-gray-500">
+          <span>
+            <span className="font-semibold text-black">{waitingList.length}</span> waiting
+          </span>
+          <span>
+            Longest wait <span className="font-semibold text-black">{longestWaitMinutes}m</span>
+          </span>
+          {lateCount > 0 && (
+            <span className="font-semibold text-red-600">
+              {lateCount} appointment{lateCount === 1 ? '' : 's'} running late
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Muted relative to Now serving/Waiting below — this is supporting
+          context (who's clocked in), not the main thing reception is scanning. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white/60 px-3 py-1.5">
+        {onShiftTeam.length === 0 && <span className="text-sm text-gray-400 py-0.5">No staff clocked in yet.</span>}
+        {onShiftTeam.map((t) => {
+          const elapsed = t.status === 'busy' ? elapsedByStaffId.get(t.locationStaffId) : undefined;
+          return (
+            <div key={t.locationStaffId} className="flex items-center gap-1.5 pr-4 border-r border-black/10 last:border-0">
+              <span className={`w-1.5 h-1.5 rounded-full ${STAFF_DOT[t.status]}`} />
+              <span className="text-sm text-gray-700">{t.fullName}</span>
+              {elapsed !== undefined && <span className="text-xs text-gray-400">· cutting {elapsed}m</span>}
+              <StatusDropdown status={t.status} onChange={(status) => setStatus.mutate({ staffId: t.locationStaffId, status })} />
+            </div>
+          );
+        })}
         <div className="ml-auto">
           <ClockInDropdown offStaff={offShiftTeam} onClockIn={(id) => clockIn.mutate(id)} />
         </div>
       </div>
 
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Now serving</h2>
+        <h2 className="text-sm font-bold text-black mb-2">Now serving</h2>
         <Card>
           {board.data?.nowServing.length === 0 && <div className="px-4 py-6 text-center text-gray-400 text-sm">No one in a chair right now.</div>}
-          {board.data?.nowServing.map((e) => (
-            <div key={e.id} className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-3">
-              <div>
-                <div className="font-medium">{displayName(e)}</div>
-                <div className="text-sm text-gray-500">
-                  {e.serviceName} with {e.assignedStaffName} · started {timeLabel(e.updatedAt)}
+          {board.data?.nowServing.map((e) => {
+            const started = new Date(e.updatedAt);
+            const elapsed = minutesBetween(started, now);
+            const eta = new Date(started.getTime() + e.serviceDurationMinutes * 60000);
+            const overrunning = now > eta;
+            return (
+              <div
+                key={e.id}
+                className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-3 transition-colors hover:bg-black/[0.015]"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-base font-semibold">{displayName(e)}</span>
+                    {e.isAppt && <Pill tone="gray">Appt</Pill>}
+                  </div>
+                  <div className="text-xs text-gray-400 mb-1">
+                    {e.serviceName} with {e.assignedStaffName}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-gray-500">
+                    <span>
+                      Started <span className="font-medium text-gray-700">{timeLabel(e.updatedAt)}</span>
+                    </span>
+                    <span>
+                      Elapsed <span className="font-medium text-gray-700">{elapsed}m</span>
+                    </span>
+                    <span className={overrunning ? 'font-medium text-amber-700' : ''}>
+                      {overrunning ? 'Running over · was due' : 'ETA'} <span className="font-medium">{timeLabel(eta.toISOString())}</span>
+                    </span>
+                  </div>
+                </div>
+                {/* gap-3 matches the waiting rows so Complete's right edge lines up with Start's. */}
+                <div className="flex items-center gap-3">
+                  <Button variant="solid" onClick={() => setCheckoutEntry(e)}>
+                    Complete
+                  </Button>
+                  <RowMenu
+                    items={[
+                      { label: 'Reassign', onClick: () => setReassignEntry(e) },
+                      { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'top' }) },
+                      { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'original' }) },
+                      { label: 'Cancel service', onClick: () => cancel.mutate(e.id), destructive: true },
+                    ]}
+                  />
                 </div>
               </div>
-              {/* gap-3 matches the waiting rows so Complete's right edge lines up with Start's. */}
-              <div className="flex items-center gap-3">
-                <Button variant="solid" onClick={() => setCheckoutEntry(e)}>
-                  Complete
-                </Button>
-                <RowMenu
-                  items={[
-                    { label: 'Reassign', onClick: () => setReassignEntry(e) },
-                    { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'top' }) },
-                    { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'original' }) },
-                    { label: 'Cancel service', onClick: () => cancel.mutate(e.id), destructive: true },
-                  ]}
-                />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </Card>
       </div>
 
       <div>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Waiting · drag to reorder</h2>
+          <div>
+            <h2 className="text-sm font-bold text-black">Waiting</h2>
+            <p className="text-xs text-gray-400">Drag to reorder</p>
+          </div>
           {/* mr-[60px] = card px-4 (16) + ⋮ menu w-8 (32) + gap-3 (12), so these
               buttons' right edge aligns exactly with the Start buttons below. */}
           <div className="flex gap-2 mr-[60px]">
@@ -219,61 +305,90 @@ export default function QueuePage({ params }: { params: { locationId: string } }
         </div>
         <Card>
           {waitingList.length === 0 && <div className="px-4 py-6 text-center text-gray-400 text-sm">No one waiting.</div>}
-          {waitingList.map((e, i) => (
-            <div
-              key={e.id}
-              draggable
-              onDragStart={() => setDragId(e.id)}
-              onDragOver={(ev) => ev.preventDefault()}
-              onDrop={() => handleDrop(e.id)}
-              className={`flex items-center justify-between gap-4 border-b border-black/5 last:border-0 px-4 py-3 ${dragId === e.id ? 'opacity-40' : ''}`}
-            >
-              <div className="flex items-center gap-3">
-                <span className="cursor-grab text-gray-300 select-none" title="Drag to reorder">
-                  ⠿
-                </span>
-                <span className="w-6 h-6 rounded-full bg-gray-100 text-xs flex items-center justify-center">{i + 1}</span>
-                <div>
-                  <div className="font-medium flex items-center gap-2">
-                    {displayName(e)}
-                    {e.isAppt && <span className="text-xs text-gray-400 border border-black/10 rounded px-1.5 py-0.5">appt</span>}
-                  </div>
-                  <div className="text-sm text-gray-500">
-                    {e.serviceName} · {e.assignedStaffName ?? 'Any available'}
+          {waitingList.map((e, i) => {
+            const late = isLate(e);
+            return (
+              <div
+                key={e.id}
+                draggable
+                onDragStart={() => setDragId(e.id)}
+                onDragOver={(ev) => ev.preventDefault()}
+                onDrop={() => handleDrop(e.id)}
+                className={`flex items-center justify-between gap-4 border-b border-black/5 last:border-0 px-4 py-3 transition-colors ${dragId === e.id ? 'opacity-40' : 'hover:bg-black/[0.015]'}`}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <span className="cursor-grab select-none rounded p-2 text-gray-300 hover:bg-black/5 hover:text-gray-500" title="Drag to reorder">
+                    ⠿
+                  </span>
+                  <span className="w-6 h-6 rounded-full bg-gray-100 text-xs flex items-center justify-center shrink-0">{i + 1}</span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      {e.clientId ? (
+                        <button className="text-base font-semibold underline decoration-dotted decoration-gray-400 hover:decoration-black" onClick={() => setClientPreviewId(e.clientId)}>
+                          {displayName(e)}
+                        </button>
+                      ) : (
+                        <span className="text-base font-semibold">{displayName(e)}</span>
+                      )}
+                      {e.isAppt && <Pill tone="gray">Appt</Pill>}
+                      {late && <Pill tone="red">Late</Pill>}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {e.serviceName} · {e.assignedStaffName ?? 'No preference'}
+                    </div>
                   </div>
                 </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <label className="flex flex-col items-center text-[11px] cursor-pointer">
+                    <span className="flex items-center gap-1">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={e.present}
+                        onChange={(ev) => togglePresent.mutate({ id: e.id, present: ev.target.checked })}
+                      />
+                      <span className={e.present ? 'text-green-700 font-medium' : 'text-gray-400'}>{e.present ? '✓ Arrived' : 'Arrived'}</span>
+                    </span>
+                    {e.present && e.presentCheckedAt && <span className="text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
+                  </label>
+                  <span className="text-xs text-gray-500 min-w-[92px] text-right whitespace-nowrap">
+                    {e.isAppt ? (
+                      <>
+                        Appt <span className="font-medium text-gray-700">{timeLabel(e.apptAt)}</span>
+                      </>
+                    ) : (
+                      <>
+                        Est. start <span className="font-medium text-gray-700">~{timeLabel(e.estimatedStart)}</span>
+                      </>
+                    )}
+                  </span>
+                  <Button onClick={() => setStartEntry(e)}>Start</Button>
+                  <RowMenu
+                    items={[
+                      { label: 'Reassign', onClick: () => setReassignEntry(e) },
+                      { label: 'Change service', onClick: () => setChangeServiceEntry(e) },
+                      { label: 'Mark no-show', onClick: () => noShow.mutate(e.id), hidden: e.present },
+                      { label: 'Mark abandoned', onClick: () => abandon.mutate(e.id), hidden: !e.present },
+                      { label: 'Cancel', onClick: () => cancel.mutate(e.id), destructive: true },
+                    ]}
+                  />
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <label className="flex flex-col items-center text-xs text-gray-500">
-                  <input type="checkbox" checked={e.present} onChange={(ev) => togglePresent.mutate({ id: e.id, present: ev.target.checked })} />
-                  here
-                  {e.present && e.presentCheckedAt && <span className="text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
-                </label>
-                <span className="text-sm text-gray-500 min-w-[76px] text-right whitespace-nowrap">
-                  {e.isAppt ? timeLabel(e.apptAt) : `~${timeLabel(e.estimatedStart)}`}
-                </span>
-                <Button onClick={() => setStartEntry(e)}>
-                  Start
-                </Button>
-                <RowMenu
-                  items={[
-                    { label: 'Reassign', onClick: () => setReassignEntry(e) },
-                    { label: 'Change service', onClick: () => setChangeServiceEntry(e) },
-                    { label: 'Mark no-show', onClick: () => noShow.mutate(e.id), hidden: e.present },
-                    { label: 'Mark abandoned', onClick: () => abandon.mutate(e.id), hidden: !e.present },
-                    { label: 'Cancel', onClick: () => cancel.mutate(e.id), destructive: true },
-                  ]}
-                />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </Card>
       </div>
 
       <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Activity</h2>
-        {/* Exactly 4 rows visible: each row is a fixed h-9 (36px) + 3 dividers
-            = 147px; anything past that scrolls (item 31). */}
+        <button
+          className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-600 mb-2"
+          onClick={() => setActivityOpen((v) => !v)}
+        >
+          <span className={`transition-transform ${activityOpen ? 'rotate-90' : ''}`}>›</span> Activity
+        </button>
+        {/* Collapsed by default — it's supporting/audit information, not
+            something reception needs to scan continuously like the queue above. */}
+        {activityOpen && (
         <Card className={(activity.data?.length ?? 0) > 4 ? 'max-h-[147px] overflow-y-auto' : ''}>
           {activity.data?.map((ev) => (
             <div key={ev.id} className="flex h-9 items-center justify-between gap-4 border-b border-black/5 last:border-0 px-4 text-sm">
@@ -307,7 +422,10 @@ export default function QueuePage({ params }: { params: { locationId: string } }
             </div>
           ))}
         </Card>
+        )}
       </div>
+
+      {clientPreviewId && <ClientPreviewPopover clientId={clientPreviewId} locationId={params.locationId} onClose={() => setClientPreviewId(null)} />}
 
       {showCheckIn && services.data && (
         <CheckInPanel
@@ -454,14 +572,30 @@ function CheckInPanel({
         ))}
       </select>
 
-      <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-4" value={requestedStaffId} onChange={(e) => setRequestedStaffId(e.target.value)}>
-        <option value="">Any available</option>
+      <p className="text-xs text-gray-400 uppercase tracking-wide mb-1.5">Barber</p>
+      <div className="flex flex-wrap gap-2 mb-4">
+        <button
+          type="button"
+          onClick={() => setRequestedStaffId('')}
+          className={`rounded-lg border px-4 py-2 text-sm font-medium ${
+            requestedStaffId === '' ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
+          }`}
+        >
+          No preference
+        </button>
         {team.map((t) => (
-          <option key={t.locationStaffId} value={t.locationStaffId}>
+          <button
+            key={t.locationStaffId}
+            type="button"
+            onClick={() => setRequestedStaffId(t.locationStaffId)}
+            className={`rounded-lg border px-4 py-2 text-sm font-medium ${
+              requestedStaffId === t.locationStaffId ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
+            }`}
+          >
             {t.fullName}
-          </option>
+          </button>
         ))}
-      </select>
+      </div>
 
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
@@ -571,7 +705,7 @@ function ReassignPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose:
   return (
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-1">Reassign — {displayName(entry)}</h3>
-      <p className="text-sm text-gray-500 mb-4">Currently: {entry.assignedStaffName ?? 'Any available'}</p>
+      <p className="text-sm text-gray-500 mb-4">Currently: {entry.assignedStaffName ?? 'No preference'}</p>
       {eligible.isLoading && <p className="text-sm text-gray-500 mb-3">Loading eligible barbers…</p>}
       {options.length === 0 && !eligible.isLoading && (
         <p className="text-sm text-amber-700 mb-3">
@@ -631,6 +765,83 @@ function ChangeServicePanel({
           Save
         </Button>
       </div>
+    </Modal>
+  );
+}
+
+interface ClientProfile {
+  client: {
+    id: string;
+    name: string;
+    phone_display: string | null;
+    referral_source: string | null;
+    notes: string | null;
+    allergy_flag: boolean;
+  };
+  recordedVisits: number;
+  recordedSpend: number;
+  serviceHistory: { transactionId: string; date: string; serviceName: string; staffName: string | null; price: string; tip: string }[];
+}
+
+/** Reception shouldn't have to leave the queue to see who they're talking to —
+    surfaces the same notes/allergy/history data the full Clients page shows. */
+function ClientPreviewPopover({ clientId, locationId, onClose }: { clientId: string; locationId: string; onClose: () => void }) {
+  const profile = useQuery({ queryKey: ['clients', clientId], queryFn: () => api.get<ClientProfile>(`/clients/${clientId}`) });
+
+  return (
+    <Modal onClose={onClose}>
+      {!profile.data ? (
+        <p className="text-sm text-gray-500">Loading…</p>
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="text-base font-semibold">{profile.data.client.name}</h3>
+            {profile.data.client.allergy_flag && <Pill tone="red">Allergy flag</Pill>}
+          </div>
+          <p className="text-sm text-gray-500 mb-4">{profile.data.client.phone_display}</p>
+
+          <div className="grid grid-cols-2 gap-4 text-sm mb-4">
+            <div>
+              <div className="text-gray-400 text-xs uppercase tracking-wide">Recorded visits</div>
+              <div className="font-medium">{profile.data.recordedVisits}</div>
+            </div>
+            <div>
+              <div className="text-gray-400 text-xs uppercase tracking-wide">Recorded spend</div>
+              <div className="font-medium">${profile.data.recordedSpend.toFixed(2)}</div>
+            </div>
+          </div>
+
+          {profile.data.client.notes && (
+            <div className="mb-4">
+              <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Notes</div>
+              <p className="text-sm">{profile.data.client.notes}</p>
+            </div>
+          )}
+
+          {profile.data.serviceHistory.length > 0 && (
+            <div className="mb-4">
+              <div className="text-gray-400 text-xs uppercase tracking-wide mb-1">Recent visits</div>
+              <div className="space-y-1">
+                {profile.data.serviceHistory.slice(0, 3).map((v) => (
+                  <div key={v.transactionId} className="flex justify-between text-sm text-gray-600">
+                    <span>
+                      {new Date(v.date).toLocaleDateString()} · {v.serviceName} {v.staffName ? `with ${v.staffName}` : ''}
+                    </span>
+                    <span>${Number(v.price).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between items-center">
+            <a href={`/locations/${locationId}/clients/${clientId}`} className="text-sm underline text-gray-500 hover:text-black">
+              Open full profile
+            </a>
+            <Button onClick={onClose}>Close</Button>
+          </div>
+        </>
+      )}
     </Modal>
   );
 }
