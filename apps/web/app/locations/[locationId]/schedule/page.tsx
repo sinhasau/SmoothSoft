@@ -230,7 +230,7 @@ export default function SchedulePage() {
               ))}
             </tr>
             <tr>
-              <th className="sticky left-0 top-9 z-30 h-11 border-b border-black/10 bg-white px-4 text-left align-middle text-[10px] font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap">
+              <th className="sticky left-0 top-9 z-30 h-14 border-b border-black/10 bg-white px-4 text-left align-middle text-[10px] font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap">
                 Store hours
               </th>
               {columnsWithMonthSeam.map((row) => {
@@ -239,18 +239,18 @@ export default function SchedulePage() {
                 return (
                   <th
                     key={row.date}
-                    className={`sticky top-9 z-20 h-11 w-16 border-b border-black/10 px-1 align-middle ${
+                    className={`sticky top-9 z-20 h-14 w-16 border-b border-black/10 px-1 align-middle ${
                       row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
                     } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
                   >
                     <div className="flex flex-col items-center gap-0.5">
                       {open ? (
-                        <div
-                          className="h-2.5 w-full rounded bg-gray-300"
-                          title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`}
-                        />
+                        <>
+                          <div className="h-2 w-full rounded bg-gray-300" title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`} />
+                          <span className="text-[8px] leading-none text-gray-400 whitespace-nowrap">{fmtShiftRange(hours!.open_time, hours!.close_time)}</span>
+                        </>
                       ) : (
-                        <div className="h-2.5 w-full rounded bg-gray-50" title="Closed" />
+                        <div className="h-2 w-full rounded bg-gray-50" title="Closed" />
                       )}
                       <span className={`text-[10px] font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>{row.coverageCount}</span>
                     </div>
@@ -286,9 +286,14 @@ export default function SchedulePage() {
                   return (
                     <td
                       key={row.date}
-                      className={`border-b border-black/5 px-1 py-2 w-16 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                      className={`border-b border-black/5 px-1 py-1.5 w-16 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
                     >
-                      <div className="relative h-5 rounded bg-gray-100">{bar}</div>
+                      <div className="flex flex-col items-center gap-0.5">
+                        <div className="relative h-4 w-full rounded bg-gray-100">{bar}</div>
+                        <span className="text-[8px] leading-none text-gray-400 whitespace-nowrap">
+                          {working ? fmtShiftRange(entry!.startTime, entry!.endTime) : pending ? 'off' : ''}
+                        </span>
+                      </div>
                     </td>
                   );
                 })}
