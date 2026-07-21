@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
-import { Button, Card } from '../../../../components/ui';
+import { Button, Card, Pill } from '../../../../components/ui';
 
 interface GridEntry {
   staffId: string;
@@ -100,6 +100,7 @@ export default function SchedulePage() {
   const queryClient = useQueryClient();
   const today = new Date().toISOString().slice(0, 10);
   const [dismissedGaps, setDismissedGaps] = useState<string[]>([]);
+  const [editingCell, setEditingCell] = useState<{ staffId: string; fullName: string; date: string; entry: GridEntry | undefined } | null>(null);
 
   const grid = useQuery({ queryKey: ['schedule', 'grid', today], queryFn: () => api.get<Grid>(`/schedule/grid?startDate=${today}&days=${GRID_DAYS}`) });
   const requests = useQuery({ queryKey: ['schedule', 'requests'], queryFn: () => api.get<PendingRequest[]>('/schedule/requests') });
@@ -117,16 +118,18 @@ export default function SchedulePage() {
 
   // Dates become columns now (transposed from the old date-as-rows layout) — a
   // divider row doesn't translate, so a new month just gets a left border seam
-  // on its first column instead.
+  // on its first column instead. Weeks (Mon–Sun) get their own, more visible
+  // seam so a full week reads as one clear block at a glance.
   const columnsWithMonthSeam = useMemo(() => {
     if (!grid.data) return [];
     let lastMonth = '';
-    return grid.data.rows.map((row) => {
+    return grid.data.rows.map((row, i) => {
       const d = new Date(row.date + 'T00:00:00');
       const monthKey = `${d.getFullYear()}-${d.getMonth()}`;
       const isNewMonth = monthKey !== lastMonth && lastMonth !== '';
       lastMonth = monthKey;
-      return { ...row, isNewMonth };
+      const isNewWeek = row.dayOfWeek === 1 && i !== 0;
+      return { ...row, isNewMonth, isNewWeek };
     });
   }, [grid.data]);
 
@@ -207,7 +210,8 @@ export default function SchedulePage() {
       {/* Transposed Gantt-style grid: staff are rows, dates are columns, shifts
           render as bars positioned by time-of-day against that weekday's store
           hours. Date-header row, store-hours row, and the staff-name column
-          all stay frozen while scrolling through the full 365-day range. */}
+          all stay frozen while scrolling through the full 365-day range. Every
+          bar is clickable to override that person's time for that one day. */}
       <Card className="overflow-auto max-h-[560px] bg-white">
         <table className="border-separate border-spacing-0 text-sm">
           <thead>
@@ -218,13 +222,13 @@ export default function SchedulePage() {
               {columnsWithMonthSeam.map((row) => (
                 <th
                   key={row.date}
-                  className={`sticky top-0 z-20 h-9 w-20 border-b border-black/10 px-1 text-center align-middle font-medium text-gray-500 ${
+                  className={`sticky top-0 z-20 h-9 w-48 border-b border-black/10 px-1 text-center align-middle font-medium text-gray-500 ${
                     row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
-                  } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                  } ${row.isNewWeek ? 'border-l-2 border-gray-400' : row.isNewMonth ? 'border-l border-black/10' : ''}`}
                 >
-                  <div className="flex flex-col leading-tight">
-                    <span className="text-[11px]">{fmtDateShort(row.date)}</span>
-                    <span className="text-[9px] text-gray-400">{DAY_LABELS[row.dayOfWeek]}</span>
+                  <div className="flex items-center justify-center gap-1.5 leading-tight">
+                    <span className="text-xs">{fmtDateShort(row.date)}</span>
+                    <span className="text-[10px] text-gray-400">{DAY_LABELS[row.dayOfWeek]}</span>
                   </div>
                 </th>
               ))}
@@ -239,24 +243,24 @@ export default function SchedulePage() {
                 return (
                   <th
                     key={row.date}
-                    className={`sticky top-9 z-20 h-14 w-20 border-b border-black/10 px-1 align-middle ${
+                    className={`sticky top-9 z-20 h-14 w-48 border-b border-black/10 px-1 align-middle ${
                       row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
-                    } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                    } ${row.isNewWeek ? 'border-l-2 border-gray-400' : row.isNewMonth ? 'border-l border-black/10' : ''}`}
                   >
                     <div className="flex flex-col items-center gap-1">
                       {open ? (
                         <div
-                          className="flex h-6 w-full items-center justify-center rounded bg-slate-600"
+                          className="flex h-7 w-full items-center justify-center rounded bg-slate-600"
                           title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`}
                         >
-                          <span className="text-[9px] font-semibold text-white whitespace-nowrap">{fmtShiftRange(hours!.open_time, hours!.close_time)}</span>
+                          <span className="text-xs font-semibold text-white whitespace-nowrap">{fmtShiftRange(hours!.open_time, hours!.close_time)}</span>
                         </div>
                       ) : (
-                        <div className="flex h-6 w-full items-center justify-center rounded bg-gray-100" title="Closed">
-                          <span className="text-[9px] text-gray-400">Closed</span>
+                        <div className="flex h-7 w-full items-center justify-center rounded bg-gray-100" title="Closed">
+                          <span className="text-xs text-gray-400">Closed</span>
                         </div>
                       )}
-                      <span className={`text-[10px] font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>{row.coverageCount}</span>
+                      <span className={`text-[11px] font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>{row.coverageCount}</span>
                     </div>
                   </th>
                 );
@@ -280,7 +284,7 @@ export default function SchedulePage() {
                         className="absolute inset-y-0 inset-x-0.5 flex items-center justify-center rounded border-2 border-dashed border-amber-500 bg-amber-100"
                         title="Requested off"
                       >
-                        <span className="text-[9px] font-semibold text-amber-800 whitespace-nowrap">Off</span>
+                        <span className="text-xs font-semibold text-amber-800 whitespace-nowrap">Off</span>
                       </div>
                     );
                   } else if (working) {
@@ -292,16 +296,23 @@ export default function SchedulePage() {
                         style={{ left: `${left}%`, width: `${width}%` }}
                         title={fmtShiftRange(entry!.startTime, entry!.endTime)}
                       >
-                        <span className="px-0.5 text-[9px] font-semibold text-white whitespace-nowrap">{fmtShiftRange(entry!.startTime, entry!.endTime)}</span>
+                        <span className="px-1 text-xs font-semibold text-white whitespace-nowrap">{fmtShiftRange(entry!.startTime, entry!.endTime)}</span>
                       </div>
                     );
                   }
                   return (
                     <td
                       key={row.date}
-                      className={`border-b border-black/5 px-1 py-2 w-20 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                      className={`border-b border-black/5 px-1 py-2 w-48 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewWeek ? 'border-l-2 border-gray-400' : row.isNewMonth ? 'border-l border-black/10' : ''}`}
                     >
-                      <div className="relative h-6 w-full rounded bg-gray-100">{bar}</div>
+                      <button
+                        type="button"
+                        className="relative h-7 w-full cursor-pointer rounded bg-gray-100 hover:ring-2 hover:ring-black/20"
+                        title="Click to override this day's time"
+                        onClick={() => setEditingCell({ staffId: person.staffId, fullName: person.fullName, date: row.date, entry })}
+                      >
+                        {bar}
+                      </button>
                     </td>
                   );
                 })}
@@ -310,6 +321,17 @@ export default function SchedulePage() {
           </tbody>
         </table>
       </Card>
+
+      {editingCell && (
+        <ShiftOverridePanel
+          staffId={editingCell.staffId}
+          fullName={editingCell.fullName}
+          date={editingCell.date}
+          entry={editingCell.entry}
+          onClose={() => setEditingCell(null)}
+          onDone={invalidate}
+        />
+      )}
 
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Pending requests</h2>
@@ -361,6 +383,97 @@ function useShiftRecurring(onDone: () => void) {
     },
     onSuccess: onDone,
   });
+}
+
+function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-24 backdrop-blur-[2px]" onClick={onClose}>
+      <div
+        className="max-h-[80vh] w-full max-w-sm overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Overriding a single day's time is just a one-time schedule_change_request
+ * that gets auto-approved on save (same as useShiftHere's gap-fill flow) —
+ * one_time requests never need the recurring-change confirmation, and the
+ * backend upserts schedule_exceptions on (staff, date), so submitting again
+ * for a day that already has an override just replaces it.
+ */
+function ShiftOverridePanel({
+  staffId,
+  fullName,
+  date,
+  entry,
+  onClose,
+  onDone,
+}: {
+  staffId: string;
+  fullName: string;
+  date: string;
+  entry: GridEntry | undefined;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [isWorking, setIsWorking] = useState(entry?.working ?? true);
+  const [startTime, setStartTime] = useState(entry?.startTime ?? DEFAULT_SHIFT_START);
+  const [endTime, setEndTime] = useState(entry?.endTime ?? DEFAULT_SHIFT_END);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const req = await api.post<{ id: string }>('/schedule/requests', {
+        locationStaffId: staffId,
+        requestType: 'one_time',
+        workDate: date,
+        isWorking,
+        startTime: isWorking ? startTime : undefined,
+        endTime: isWorking ? endTime : undefined,
+        reason: 'Manual override',
+      });
+      return api.post(`/schedule/requests/${req.id}/approve`, {});
+    },
+    onSuccess: () => {
+      onDone();
+      onClose();
+    },
+  });
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="font-semibold mb-1">
+        {fullName} — {fmtDate(date)}
+      </h3>
+      <p className="text-sm text-gray-500 mb-4">Override just this one day.</p>
+
+      <div className="flex gap-2 mb-4">
+        <Button variant={isWorking ? 'solid' : 'default'} onClick={() => setIsWorking(true)}>
+          Working
+        </Button>
+        <Button variant={!isWorking ? 'solid' : 'default'} onClick={() => setIsWorking(false)}>
+          Off
+        </Button>
+      </div>
+
+      {isWorking && (
+        <div className="flex gap-2 mb-4">
+          <input type="time" className="flex-1 border border-black/15 rounded-lg px-3 py-2" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+          <input type="time" className="flex-1 border border-black/15 rounded-lg px-3 py-2" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+        </div>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="solid" onClick={() => save.mutate()} disabled={save.isPending || (isWorking && startTime >= endTime)}>
+          Save
+        </Button>
+      </div>
+    </Modal>
+  );
 }
 
 /**
@@ -471,11 +584,14 @@ function PendingRequestRow({
     <div className="border-b border-black/5 last:border-0 px-4 py-3">
       <div className="flex items-center justify-between">
         <div>
-          <div className="font-medium">
-            {r.fullName} — {r.requestType === 'one_time' ? (r.workDate ? fmtDate(r.workDate.slice(0, 10)) : '') : `every ${DAY_LABELS[r.dayOfWeek ?? 0]}`}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="font-medium">{r.fullName}</span>
+            <Pill tone={r.isWorking ? 'green' : 'amber'}>{r.isWorking ? 'Wants to work' : 'Time off'}</Pill>
+            <Pill tone="gray">{r.requestType === 'recurring' ? 'Recurring' : 'One-time'}</Pill>
           </div>
           <div className="text-sm text-gray-500">
-            {r.isWorking ? 'Wants to work' : 'Requesting off'} {r.reason ? `· ${r.reason}` : ''} · {r.requestType === 'recurring' ? 'recurring change' : 'one-off'}
+            {r.requestType === 'one_time' ? (r.workDate ? fmtDate(r.workDate.slice(0, 10)) : '') : `Every ${DAY_LABELS_FULL[r.dayOfWeek ?? 0]}`}
+            {r.reason ? ` · ${r.reason}` : ''}
           </div>
         </div>
         {!confirming && (

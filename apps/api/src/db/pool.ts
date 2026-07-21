@@ -1,4 +1,15 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
+
+// node-postgres parses DATE columns (OID 1082) into JS Date objects at local
+// midnight by default — but every DATE column in kysely.types.ts is typed as
+// `DateOnly = ColumnType<string, string, string>`, and several call sites
+// build map keys like `${staffId}:${row.work_date}` expecting a plain
+// 'YYYY-MM-DD' string. A Date object there stringifies via Date.toString()
+// (e.g. "Wed Jul 22 2026 00:00:00 GMT-0400...") instead, so those lookups
+// silently never match — found via schedule_exceptions overrides never
+// showing up on the grid after being saved. Returning the raw string makes
+// the runtime value match what the type system already assumed everywhere.
+types.setTypeParser(1082, (val) => val);
 
 /**
  * The single connection pool the app uses. Every pooled client connects as
