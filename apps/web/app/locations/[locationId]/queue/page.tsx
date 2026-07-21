@@ -127,7 +127,6 @@ export default function QueuePage({ params }: { params: { locationId: string } }
 
   const onShiftTeam = board.data?.team.filter((t) => t.status !== 'off') ?? [];
   const offShiftTeam = board.data?.team.filter((t) => t.status === 'off') ?? [];
-  const availableStaff = board.data?.team.filter((t) => t.status === 'available') ?? [];
 
   const waitingList = localWaitingOrder
     ? localWaitingOrder.map((id) => board.data!.waiting.find((w) => w.id === id)!).filter(Boolean)
@@ -193,6 +192,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                 </Button>
                 <RowMenu
                   items={[
+                    { label: 'Reassign', onClick: () => setReassignEntry(e) },
                     { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'top' }) },
                     { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'original' }) },
                     { label: 'Cancel service', onClick: () => cancel.mutate(e.id), destructive: true },
@@ -251,7 +251,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                 <span className="text-sm text-gray-500 min-w-[76px] text-right whitespace-nowrap">
                   {e.isAppt ? timeLabel(e.apptAt) : `~${timeLabel(e.estimatedStart)}`}
                 </span>
-                <Button disabled={availableStaff.length === 0} onClick={() => setStartEntry(e)}>
+                <Button onClick={() => setStartEntry(e)}>
                   Start
                 </Button>
                 <RowMenu
@@ -317,11 +317,9 @@ export default function QueuePage({ params }: { params: { locationId: string } }
         />
       )}
 
-      {startEntry && <StartPanel entry={startEntry} availableStaff={availableStaff} onClose={() => setStartEntry(null)} onDone={invalidate} />}
+      {startEntry && <StartPanel entry={startEntry} onClose={() => setStartEntry(null)} onDone={invalidate} />}
 
-      {reassignEntry && (
-        <ReassignPanel entry={reassignEntry} team={board.data?.team ?? []} onClose={() => setReassignEntry(null)} onDone={invalidate} />
-      )}
+      {reassignEntry && <ReassignPanel entry={reassignEntry} onClose={() => setReassignEntry(null)} onDone={invalidate} />}
 
       {checkoutEntry && (
         <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} onClose={() => setCheckoutEntry(null)} onDone={invalidate} />
@@ -471,18 +469,48 @@ function CheckInPanel({
   );
 }
 
-function StartPanel({
-  entry,
-  availableStaff,
-  onClose,
-  onDone,
+/** Fetches who's actually pickable for this entry right now — available-only for an
+    active (in_service) entry, clocked-in for a waiting walk-in, scheduled-for-that-time
+    for a waiting appointment. See QueueService.eligibleStaffForEntry on the backend. */
+function useEligibleStaff(entryId: string) {
+  return useQuery({
+    queryKey: ['queue', 'eligible-staff', entryId],
+    queryFn: () => api.get<{ locationStaffId: string; fullName: string }[]>(`/queue/${entryId}/eligible-staff`),
+  });
+}
+
+function StaffPickerButtons({
+  options,
+  selected,
+  onSelect,
 }: {
-  entry: QueueEntry;
-  availableStaff: TeamMember[];
-  onClose: () => void;
-  onDone: () => void;
+  options: { locationStaffId: string; fullName: string }[];
+  selected: string;
+  onSelect: (id: string) => void;
 }) {
-  const [staffId, setStaffId] = useState(entry.assignedStaffId ?? availableStaff[0]?.locationStaffId ?? '');
+  return (
+    <div className="flex flex-wrap gap-2 mb-3">
+      {options.map((t) => (
+        <button
+          key={t.locationStaffId}
+          type="button"
+          onClick={() => onSelect(t.locationStaffId)}
+          className={`rounded-lg border px-4 py-2 text-sm font-medium ${
+            selected === t.locationStaffId ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
+          }`}
+        >
+          {t.fullName}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function StartPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: () => void; onDone: () => void }) {
+  const eligible = useEligibleStaff(entry.id);
+  const options = eligible.data ?? [];
+  const [pickedStaffId, setPickedStaffId] = useState<string | null>(null);
+  const staffId = pickedStaffId ?? (entry.assignedStaffId && options.some((o) => o.locationStaffId === entry.assignedStaffId) ? entry.assignedStaffId : (options[0]?.locationStaffId ?? ''));
   const [serviceNotes, setServiceNotes] = useState('');
 
   const start = useMutation({
@@ -497,20 +525,13 @@ function StartPanel({
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-1">Start — {displayName(entry)}</h3>
       <p className="text-sm text-gray-500 mb-4">{entry.serviceName}</p>
-      <div className="flex flex-wrap gap-2 mb-3">
-        {availableStaff.map((t) => (
-          <button
-            key={t.locationStaffId}
-            type="button"
-            onClick={() => setStaffId(t.locationStaffId)}
-            className={`rounded-lg border px-4 py-2 text-sm font-medium ${
-              staffId === t.locationStaffId ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
-            }`}
-          >
-            {t.fullName}
-          </button>
-        ))}
-      </div>
+      {eligible.isLoading && <p className="text-sm text-gray-500 mb-3">Loading eligible barbers…</p>}
+      {options.length === 0 && !eligible.isLoading && (
+        <p className="text-sm text-amber-700 mb-3">
+          {entry.isAppt ? 'No one is scheduled to work at this appointment time.' : 'No one is currently clocked in.'}
+        </p>
+      )}
+      <StaffPickerButtons options={options} selected={staffId} onSelect={setPickedStaffId} />
       <textarea
         className="w-full border border-black/15 rounded-lg px-3 py-2 mb-4"
         placeholder="Service notes"
@@ -527,18 +548,11 @@ function StartPanel({
   );
 }
 
-function ReassignPanel({
-  entry,
-  team,
-  onClose,
-  onDone,
-}: {
-  entry: QueueEntry;
-  team: TeamMember[];
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [staffId, setStaffId] = useState(entry.assignedStaffId ?? '');
+function ReassignPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: () => void; onDone: () => void }) {
+  const eligible = useEligibleStaff(entry.id);
+  const options = eligible.data ?? [];
+  const [pickedStaffId, setPickedStaffId] = useState<string | null>(null);
+  const staffId = pickedStaffId ?? (entry.assignedStaffId && options.some((o) => o.locationStaffId === entry.assignedStaffId) ? entry.assignedStaffId : '');
 
   const reassign = useMutation({
     mutationFn: () => api.post(`/queue/${entry.id}/reassign`, { newStaffId: staffId }),
@@ -552,14 +566,17 @@ function ReassignPanel({
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-1">Reassign — {displayName(entry)}</h3>
       <p className="text-sm text-gray-500 mb-4">Currently: {entry.assignedStaffName ?? 'Any available'}</p>
-      <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-4" value={staffId} onChange={(e) => setStaffId(e.target.value)}>
-        <option value="">Any available</option>
-        {team.map((t) => (
-          <option key={t.locationStaffId} value={t.locationStaffId}>
-            {t.fullName}
-          </option>
-        ))}
-      </select>
+      {eligible.isLoading && <p className="text-sm text-gray-500 mb-3">Loading eligible barbers…</p>}
+      {options.length === 0 && !eligible.isLoading && (
+        <p className="text-sm text-amber-700 mb-3">
+          {entry.status === 'in_service'
+            ? 'No one else is currently available.'
+            : entry.isAppt
+              ? 'No one is scheduled to work at this appointment time.'
+              : 'No one is currently clocked in.'}
+        </p>
+      )}
+      <StaffPickerButtons options={options} selected={staffId} onSelect={setPickedStaffId} />
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
         <Button variant="solid" onClick={() => reassign.mutate()} disabled={!staffId || reassign.isPending}>

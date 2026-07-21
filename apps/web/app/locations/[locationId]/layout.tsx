@@ -44,8 +44,11 @@ export default function LocationLayout({ children, params }: { children: React.R
           </p>
         </div>
         {auth.role === 'org_owner' && (
-          <a href="/org" className="text-sm underline text-gray-500 hover:text-black">
-            Owner dashboard
+          <a
+            href="/org"
+            className="flex items-center gap-1.5 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-black/85"
+          >
+            Owner dashboard <span aria-hidden="true">→</span>
           </a>
         )}
       </div>

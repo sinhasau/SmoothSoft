@@ -3,6 +3,7 @@ import { db } from '../common/request-context';
 import type {
   AddStaffDto,
   ScheduleDayDto,
+  AddComplianceDocumentDto,
   UpdateComplianceDocumentDto,
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
@@ -493,6 +494,28 @@ export class SettingsService {
       .where('id', '=', id)
       .returningAll()
       .executeTakeFirst();
+    if (!result) throw new NotFoundException('Compliance document not found');
+    return result;
+  }
+
+  /** Adds a document/license to a specific employee's profile (compensation history-style: staff detail page owns this, general Settings list just shows all of them). */
+  async addStaffComplianceDocument(locationId: string, locationStaffId: string, dto: AddComplianceDocumentDto) {
+    return db()
+      .insertInto('compliance_documents')
+      .values({
+        location_id: locationId,
+        location_staff_id: locationStaffId,
+        doc_type: dto.docType,
+        description: dto.description ?? null,
+        expires_at: dto.expiresAt ?? null,
+        status: dto.status ?? 'valid',
+      })
+      .returningAll()
+      .executeTakeFirstOrThrow();
+  }
+
+  async removeComplianceDocument(id: string) {
+    const result = await db().deleteFrom('compliance_documents').where('id', '=', id).returningAll().executeTakeFirst();
     if (!result) throw new NotFoundException('Compliance document not found');
     return result;
   }

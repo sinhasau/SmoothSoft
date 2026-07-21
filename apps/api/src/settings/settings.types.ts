@@ -111,3 +111,10 @@ export interface UpdateComplianceDocumentDto {
   expiresAt?: string | null;
   description?: string | null;
 }
+
+export interface AddComplianceDocumentDto {
+  docType: string;
+  description?: string | null;
+  expiresAt?: string | null;
+  status?: 'valid' | 'needs_attention' | 'overdue';
+}

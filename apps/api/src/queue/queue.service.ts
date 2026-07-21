@@ -198,8 +198,12 @@ export class QueueService {
       .where('location_id', '=', locationId)
       .executeTakeFirst();
     if (!staff) throw new NotFoundException('Staff member not found at this location');
-    if (staff.status !== 'available') {
-      throw new ConflictException('Selected staff member is not currently available');
+
+    const eligible = await this.eligibleStaffForEntry(locationId, entry);
+    if (!eligible.some((e) => e.locationStaffId === dto.staffId)) {
+      throw new ConflictException(
+        entry.is_appt ? 'Selected staff member is not scheduled to work at this appointment time' : 'Selected staff member is not clocked in',
+      );
     }
 
     await trx
@@ -355,6 +359,17 @@ export class QueueService {
       .where('location_id', '=', locationId)
       .executeTakeFirst();
     if (!staff) throw new NotFoundException('Staff member not found at this location');
+
+    const eligible = await this.eligibleStaffForEntry(locationId, entry);
+    if (!eligible.some((e) => e.locationStaffId === dto.newStaffId)) {
+      throw new ConflictException(
+        entry.status === 'in_service'
+          ? 'Selected staff member is not currently available'
+          : entry.is_appt
+            ? 'Selected staff member is not scheduled to work at this appointment time'
+            : 'Selected staff member is not clocked in',
+      );
+    }
 
     await trx
       .updateTable('queue_entries')
@@ -835,5 +850,69 @@ export class QueueService {
     const entry = await db().selectFrom('queue_entries').selectAll().where('id', '=', queueEntryId).executeTakeFirst();
     if (!entry) throw new NotFoundException('Queue entry not found');
     return entry;
+  }
+
+  /**
+   * Who's pickable for Start/Reassign depends on the entry's state:
+   *  - in_service (an "active" appointment) — only staff free right now.
+   *  - waiting, walk-in — anyone clocked in today (available/busy/break, not off).
+   *  - waiting, appointment — anyone scheduled to work at the appointment's time,
+   *    regardless of whether they've clocked in yet (the appt may be hours out).
+   */
+  async eligibleStaff(locationId: string, queueEntryId: string) {
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    return this.eligibleStaffForEntry(locationId, entry);
+  }
+
+  private async eligibleStaffForEntry(
+    locationId: string,
+    entry: { status: QueueEntryStatus; is_appt: boolean; appt_at: Date | null },
+  ) {
+    const trx = db();
+    const roster = await trx
+      .selectFrom('location_staff as ls')
+      .innerJoin('users as u', 'u.id', 'ls.user_id')
+      .select(['ls.id as locationStaffId', 'u.full_name as fullName', 'ls.status as status'])
+      .where('ls.location_id', '=', locationId)
+      .orderBy('u.full_name')
+      .execute();
+
+    if (entry.status === 'in_service') {
+      return roster.filter((r) => r.status === 'available');
+    }
+
+    if (entry.is_appt && entry.appt_at) {
+      const apptAt = new Date(entry.appt_at);
+      const dow = apptAt.getDay();
+      const dateStr = apptAt.toISOString().slice(0, 10);
+      const minutes = apptAt.getHours() * 60 + apptAt.getMinutes();
+      const staffIds = roster.map((r) => r.locationStaffId);
+
+      const [exceptions, weekly] = staffIds.length
+        ? await Promise.all([
+            trx.selectFrom('schedule_exceptions').selectAll().where('location_staff_id', 'in', staffIds).where('work_date', '=', dateStr).execute(),
+            trx.selectFrom('staff_schedule_days').selectAll().where('location_staff_id', 'in', staffIds).where('day_of_week', '=', dow).execute(),
+          ])
+        : [[], []];
+
+      const toMinutes = (t: string) => {
+        const [h, m] = t.split(':').map(Number);
+        return h * 60 + m;
+      };
+
+      return roster.filter((r) => {
+        const exception = exceptions.find((e) => e.location_staff_id === r.locationStaffId);
+        if (exception) {
+          if (!exception.is_working || !exception.start_time || !exception.end_time) return false;
+          return minutes >= toMinutes(exception.start_time) && minutes < toMinutes(exception.end_time);
+        }
+        const shift = weekly.find((w) => w.location_staff_id === r.locationStaffId);
+        if (!shift) return false;
+        return minutes >= toMinutes(shift.start_time) && minutes < toMinutes(shift.end_time);
+      });
+    }
+
+    // waiting, walk-in: anyone clocked in today.
+    return roster.filter((r) => r.status !== 'off');
   }
 }

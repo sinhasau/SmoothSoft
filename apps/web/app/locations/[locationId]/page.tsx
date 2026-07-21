@@ -41,6 +41,9 @@ interface LineItem {
 
 interface LocationDashboard {
   revenue: number;
+  serviceRevenue: number;
+  retailRevenue: number;
+  discount: number;
   clientsServed: number;
   avgTicket: number;
   utilizationPct: number;
@@ -56,6 +59,9 @@ interface LocationDashboard {
 
 function money(n: number) {
   return `$${n.toFixed(0)}`;
+}
+function money2(n: number) {
+  return `$${n.toFixed(2)}`;
 }
 
 export default function DashboardPage({ params }: { params: { locationId: string } }) {
@@ -79,6 +85,13 @@ export default function DashboardPage({ params }: { params: { locationId: string
         <StatCard label="Avg ticket" value={money(data.avgTicket)} onClick={goToSales} />
         <StatCard label="Utilization" value={`${data.utilizationPct}%`} valueClassName="text-red-700" />
       </div>
+
+      {data.discount > 0 && (
+        <p className="text-sm text-gray-500 -mt-2">
+          Revenue = {money2(data.serviceRevenue)} services + {money2(data.retailRevenue)} products − {money2(data.discount)} discounts ={' '}
+          <span className="font-medium text-black">{money2(data.revenue)}</span>
+        </p>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <StatCard label="Cash vs card" value={`${money(data.cashSales)} / ${money(data.cardSales)}`} onClick={goToSales} />

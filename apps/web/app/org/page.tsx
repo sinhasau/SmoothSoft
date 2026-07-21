@@ -21,6 +21,7 @@ interface OrgLocation {
   contractorCount: number;
   serviceRevenue: number;
   retailRevenue: number;
+  discount: number;
   tax: number;
   tips: number;
 }
@@ -37,6 +38,7 @@ interface OrgDashboard {
     contractorCount: number;
     serviceRevenue: number;
     retailRevenue: number;
+    discount: number;
     salesTax: number;
     tips: number;
   };
@@ -74,9 +76,17 @@ export default function OrgDashboardPage() {
 
   return (
     <div className="min-h-screen px-6 py-6 max-w-5xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">JJ's Barbers</h1>
-        <p className="text-sm text-gray-500">{data.locations.length} locations · today</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">JJ's Barbers</h1>
+          <p className="text-sm text-gray-500">{data.locations.length} locations · today</p>
+        </div>
+        <Link
+          href={`/locations/${auth.locationId}`}
+          className="flex items-center gap-1.5 rounded-lg border border-black/10 bg-white px-3 py-2 text-sm font-medium text-ink hover:border-black/30"
+        >
+          <span aria-hidden="true">←</span> Back to dashboard
+        </Link>
       </div>
 
       <div className="grid grid-cols-4 gap-4">
@@ -125,6 +135,12 @@ export default function OrgDashboardPage() {
           <StatCard label="Tips" value={`$${data.totals.tips.toFixed(0)}`} />
           <StatCard label="Revenue today" value={`$${data.totals.revenueToday.toFixed(0)}`} />
         </div>
+        {data.totals.discount > 0 && (
+          <p className="text-sm text-gray-500 mt-2">
+            Revenue today = ${data.totals.serviceRevenue.toFixed(2)} services + ${data.totals.retailRevenue.toFixed(2)} products − $
+            {data.totals.discount.toFixed(2)} discounts = <span className="font-medium text-black">${data.totals.revenueToday.toFixed(2)}</span>
+          </p>
+        )}
       </div>
     </div>
   );

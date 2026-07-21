@@ -1,9 +1,10 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../../lib/api';
 import { useRequireAuth } from '../../../../../lib/auth';
-import { Card } from '../../../../../components/ui';
+import { Button, Card, Pill } from '../../../../../components/ui';
 
 interface ScheduleDay {
   day_of_week: number;
@@ -23,6 +24,15 @@ interface StaffDetail {
   schedule: ScheduleDay[];
 }
 
+interface ComplianceDocument {
+  id: string;
+  docType: string;
+  description: string | null;
+  expiresAt: string | null;
+  status: 'valid' | 'needs_attention' | 'overdue';
+  locationStaffId: string | null;
+}
+
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function fmtTime(t: string) {
@@ -34,8 +44,37 @@ function fmtTime(t: string) {
 
 export default function StaffDetailPage({ params }: { params: { locationId: string; staffId: string } }) {
   const auth = useRequireAuth();
+  const queryClient = useQueryClient();
   const { data: roster } = useQuery({ queryKey: ['settings', 'staff'], queryFn: () => api.get<StaffDetail[]>('/settings/staff') });
   const person = roster?.find((r) => r.locationStaffId === params.staffId);
+
+  const allDocs = useQuery({ queryKey: ['settings', 'compliance-documents'], queryFn: () => api.get<ComplianceDocument[]>('/settings/compliance-documents') });
+  const docs = allDocs.data?.filter((d) => d.locationStaffId === params.staffId) ?? [];
+
+  const [newDocType, setNewDocType] = useState('');
+  const [newDocExpiry, setNewDocExpiry] = useState('');
+
+  const invalidateDocs = () => void queryClient.invalidateQueries({ queryKey: ['settings', 'compliance-documents'] });
+
+  const addDoc = useMutation({
+    mutationFn: () => api.post(`/settings/staff/${params.staffId}/compliance-documents`, { docType: newDocType, expiresAt: newDocExpiry || null }),
+    onSuccess: () => {
+      setNewDocType('');
+      setNewDocExpiry('');
+      invalidateDocs();
+    },
+  });
+
+  const updateDoc = useMutation({
+    mutationFn: ({ id, ...dto }: { id: string; status?: ComplianceDocument['status']; expiresAt?: string | null }) =>
+      api.put(`/settings/compliance-documents/${id}`, dto),
+    onSuccess: invalidateDocs,
+  });
+
+  const removeDoc = useMutation({
+    mutationFn: (id: string) => api.delete(`/settings/compliance-documents/${id}`),
+    onSuccess: invalidateDocs,
+  });
 
   if (!roster) return <p className="text-gray-500">Loading…</p>;
   if (!person) return <p className="text-gray-500">Staff member not found.</p>;
@@ -94,6 +133,46 @@ export default function StaffDetailPage({ params }: { params: { locationId: stri
               </div>
             );
           })}
+        </Card>
+      </div>
+
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Documents &amp; licenses</h3>
+        <Card>
+          {docs.length === 0 && <p className="px-4 py-3 text-sm text-gray-400">No documents on file.</p>}
+          {docs.map((d) => (
+            <div key={d.id} className="flex items-center justify-between gap-3 border-b border-black/5 last:border-0 px-4 py-3 text-sm">
+              <div>
+                <div className="font-medium">{d.docType}</div>
+                {d.description && <div className="text-gray-500">{d.description}</div>}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <Pill tone={d.status === 'overdue' ? 'red' : d.status === 'needs_attention' ? 'amber' : 'green'}>{d.status.replace(/_/g, ' ')}</Pill>
+                <input
+                  type="date"
+                  className="border border-black/15 rounded-lg px-2 py-1 text-sm"
+                  defaultValue={d.expiresAt ?? ''}
+                  onBlur={(e) => updateDoc.mutate({ id: d.id, expiresAt: e.target.value || null })}
+                />
+                {d.status !== 'valid' && <Button onClick={() => updateDoc.mutate({ id: d.id, status: 'valid' })}>Mark valid</Button>}
+                <button className="text-gray-400 hover:text-red-600" onClick={() => removeDoc.mutate(d.id)} title="Remove">
+                  ✕
+                </button>
+              </div>
+            </div>
+          ))}
+          <div className="flex items-center gap-2 px-4 py-3">
+            <input
+              className="border border-black/15 rounded-lg px-2 py-1 text-sm flex-1"
+              placeholder="Document or license name"
+              value={newDocType}
+              onChange={(e) => setNewDocType(e.target.value)}
+            />
+            <input type="date" className="border border-black/15 rounded-lg px-2 py-1 text-sm" value={newDocExpiry} onChange={(e) => setNewDocExpiry(e.target.value)} />
+            <Button variant="solid" onClick={() => addDoc.mutate()} disabled={!newDocType.trim()}>
+              Add
+            </Button>
+          </div>
         </Card>
       </div>
     </div>

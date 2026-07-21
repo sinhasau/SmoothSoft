@@ -6,6 +6,7 @@ import type {
   AddStaffDto,
   ScheduleDayDto,
   StoreHoursDayDto,
+  AddComplianceDocumentDto,
   UpdateComplianceDocumentDto,
   UpdateLocationGoalsDto,
   UpdatePaymentProcessorConfigDto,
@@ -201,5 +202,15 @@ export class SettingsController {
   @Put('compliance-documents/:id')
   updateComplianceDocument(@Param('id') id: string, @Body() dto: UpdateComplianceDocumentDto) {
     return this.settings.updateComplianceDocument(id, dto);
+  }
+
+  @Delete('compliance-documents/:id')
+  removeComplianceDocument(@Param('id') id: string) {
+    return this.settings.removeComplianceDocument(id);
+  }
+
+  @Post('staff/:id/compliance-documents')
+  addStaffComplianceDocument(@Param('id') id: string, @Body() dto: AddComplianceDocumentDto) {
+    return this.settings.addStaffComplianceDocument(requireAuth().locationId, id, dto);
   }
 }

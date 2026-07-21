@@ -65,6 +65,12 @@ export class QueueController {
     return this.queue.reassign(auth.locationId, id, auth.userId, dto);
   }
 
+  @Get('queue/:id/eligible-staff')
+  eligibleStaff(@Param('id') id: string) {
+    const auth = requireAuth();
+    return this.queue.eligibleStaff(auth.locationId, id);
+  }
+
   @Post('queue/reorder')
   reorder(@Body() dto: ReorderDto) {
     const auth = requireAuth();

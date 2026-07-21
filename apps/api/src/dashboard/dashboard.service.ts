@@ -55,6 +55,14 @@ export class DashboardService {
       .where('ti.item_type', '=', 'retail')
       .executeTakeFirst();
 
+    // `revenue` (= sum of subtotal) is already net of discounts (see
+    // payments.service.ts checkout(): subtotal = rawSubtotal - discountAmount).
+    // serviceRevenue/retailRevenue above are summed straight from
+    // transaction_items.price, which is the pre-discount, item-level price —
+    // so they're gross, not net. Without surfacing `discount` explicitly,
+    // serviceRevenue + retailRevenue looks like it should equal `revenue`
+    // and doesn't whenever any sale had a discount applied.
+    const discount = todaysTxns.reduce((s, t) => s + Number(t.discount_amount), 0);
     const revenue = todaysTxns.reduce((s, t) => s + Number(t.subtotal), 0);
     const tips = todaysTxns.reduce((s, t) => s + Number(t.tip), 0);
     const tax = todaysTxns.reduce((s, t) => s + Number(t.tax), 0);
@@ -117,6 +125,7 @@ export class DashboardService {
       revenue,
       serviceRevenue: Number(serviceRevenue?.total ?? 0),
       retailRevenue: Number(retailRevenue?.total ?? 0),
+      discount,
       tax,
       tips,
       clientsServed,
@@ -306,6 +315,9 @@ export class DashboardService {
             contractorCount: staff.filter((s) => s.classification === '1099').length,
             serviceRevenue: Number(serviceRevenue?.total ?? 0),
             retailRevenue: Number(retailRevenue?.total ?? 0),
+            // See the matching comment in locationDashboard() — serviceRevenue/
+            // retailRevenue are gross (pre-discount); revenue (subtotal) is net.
+            discount: txns.reduce((s, t) => s + Number(t.discount_amount), 0),
             tax: txns.reduce((s, t) => s + Number(t.tax), 0),
             tips: txns.reduce((s, t) => s + Number(t.tip), 0),
           };
@@ -326,6 +338,7 @@ export class DashboardService {
         contractorCount: acc.contractorCount + l.contractorCount,
         serviceRevenue: acc.serviceRevenue + l.serviceRevenue,
         retailRevenue: acc.retailRevenue + l.retailRevenue,
+        discount: acc.discount + l.discount,
         salesTax: acc.salesTax + l.tax,
         tips: acc.tips + l.tips,
       }),
@@ -339,6 +352,7 @@ export class DashboardService {
         contractorCount: 0,
         serviceRevenue: 0,
         retailRevenue: 0,
+        discount: 0,
         salesTax: 0,
         tips: 0,
       },
