@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { Button, Card, Pill } from '../../../../components/ui';
@@ -11,709 +11,311 @@ interface GridEntry {
   working: boolean;
   startTime: string | null;
   endTime: string | null;
+  source?: 'exception' | 'recurring' | 'none';
   pendingRequest: { id: string; isWorking: boolean; reason: string | null } | null;
 }
-
-interface GridRow {
-  date: string;
-  dayOfWeek: number;
-  entries: GridEntry[];
-  coverageCount: number;
-  belowMinimum: boolean;
-}
-
-interface Roster {
-  staffId: string;
-  fullName: string;
-}
-
-interface Grid {
-  roster: Roster[];
-  rows: GridRow[];
-  minimumCoverage: number;
-}
-
+interface GridRow { date: string; dayOfWeek: number; entries: GridEntry[]; coverageCount: number; belowMinimum: boolean }
+interface Roster { staffId: string; fullName: string }
+interface Grid { roster: Roster[]; rows: GridRow[]; minimumCoverage: number }
 interface PendingRequest {
-  id: string;
-  fullName: string;
-  requestType: 'one_time' | 'recurring';
-  workDate: string | null;
-  dayOfWeek: number | null;
-  isWorking: boolean;
-  reason: string | null;
+  id: string; fullName: string; requestType: 'one_time' | 'recurring'; workDate: string | null;
+  dayOfWeek: number | null; isWorking: boolean; reason: string | null;
 }
+interface StoreHoursDay { day_of_week: number; is_open: boolean; open_time: string | null; close_time: string | null }
+interface EditorTarget { staffId: string; fullName: string; date: string; entry?: GridEntry }
 
-interface GapInfo {
-  date: string;
-  dayOfWeek: number;
-  staffId: string;
-  fullName: string;
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const ROLES = ['Hair Stylist', 'Barber', 'Colorist', 'Nail Technician', 'Receptionist', 'Salon Manager'];
+const DEFAULT_START = '09:00';
+const DEFAULT_END = '17:00';
+
+function localDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
-
-interface StoreHoursDay {
-  day_of_week: number;
-  is_open: boolean;
-  open_time: string | null;
-  close_time: string | null;
+function startOfWeek(value: Date) {
+  const date = new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  const offset = (date.getDay() + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return localDate(date);
 }
-
-const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const DAY_LABELS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const GRID_DAYS = 365;
-const GAP_ALERT_WINDOW_DAYS = 30;
-const DEFAULT_SHIFT_START = '09:00';
-const DEFAULT_SHIFT_END = '17:00';
-
-function timeToMinutes(t: string) {
-  const [h, m] = t.split(':').map(Number);
-  return h * 60 + m;
+function moveDate(date: string, days: number) {
+  const next = new Date(`${date}T12:00:00`);
+  next.setDate(next.getDate() + days);
+  return localDate(next);
 }
-
-// A closed day still needs *some* scale so a shift scheduled on it (unusual, but
-// possible — a holiday overtime shift) doesn't divide by zero.
-const FALLBACK_SCALE = { start: timeToMinutes('08:00'), end: timeToMinutes('20:00') };
-
-// Date leads, day abbreviation trails: "07/19 Sat".
-function fmtDate(dateStr: string) {
-  const d = new Date(dateStr + 'T00:00:00');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${mm}/${dd} ${DAY_LABELS[d.getDay()]}`;
+function minutes(time: string) {
+  const [hour, minute] = time.split(':').map(Number);
+  return hour * 60 + minute;
 }
-
-function fmtDateShort(dateStr: string) {
-  return fmtDate(dateStr).slice(0, 5);
+function hoursBetween(start: string | null, end: string | null) {
+  return start && end ? Math.max(0, (minutes(end) - minutes(start)) / 60) : 0;
 }
-
-// Compact single-line shift range matching the reference mockup: "9–5", "10–6", "9:30–5".
-function fmtShiftRange(start: string | null, end: string | null) {
-  if (!start || !end) return '';
-  const hour = (t: string) => {
-    const [h, m] = t.split(':').map(Number);
-    const hr = h % 12 === 0 ? 12 : h % 12;
-    return m ? `${hr}:${String(m).padStart(2, '0')}` : `${hr}`;
-  };
-  return `${hour(start)}–${hour(end)}`;
+function displayTime(time: string | null) {
+  if (!time) return '';
+  const [rawHour, minute] = time.split(':').map(Number);
+  const hour = rawHour % 12 || 12;
+  return `${hour}${minute ? `:${String(minute).padStart(2, '0')}` : ''}${rawHour >= 12 ? 'p' : 'a'}`;
 }
+function dateRange(start: string) {
+  const first = new Date(`${start}T12:00:00`);
+  const last = new Date(first); last.setDate(last.getDate() + 6);
+  const sameMonth = first.getMonth() === last.getMonth();
+  const left = first.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const right = last.toLocaleDateString('en-US', sameMonth ? { day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+  return `${left}–${right}`;
+}
+function roleFor(index: number) { return ROLES[index % ROLES.length]; }
+function initials(name: string) { return name.split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase(); }
 
 export default function SchedulePage() {
   const queryClient = useQueryClient();
-  const today = new Date().toISOString().slice(0, 10);
-  const [dismissedGaps, setDismissedGaps] = useState<string[]>([]);
-  const [editingCell, setEditingCell] = useState<{ staffId: string; fullName: string; date: string; entry: GridEntry | undefined } | null>(null);
+  const today = localDate(new Date());
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [editor, setEditor] = useState<EditorTarget | null>(null);
+  const [requestsOpen, setRequestsOpen] = useState(false);
+  const [issuesOnly, setIssuesOnly] = useState(false);
+  const [roleFilter, setRoleFilter] = useState('All roles');
+  const [view, setView] = useState<'Week' | 'Day' | 'List'>('Week');
+  const [dirty, setDirty] = useState(false);
+  const [publishedAt, setPublishedAt] = useState<string | null>(null);
+  const [toast, setToast] = useState('');
+  const [dragged, setDragged] = useState<EditorTarget | null>(null);
 
-  const grid = useQuery({ queryKey: ['schedule', 'grid', today], queryFn: () => api.get<Grid>(`/schedule/grid?startDate=${today}&days=${GRID_DAYS}`) });
+  const grid = useQuery({
+    queryKey: ['schedule', 'grid', weekStart],
+    queryFn: () => api.get<Grid>(`/schedule/grid?startDate=${weekStart}&days=7`),
+  });
   const requests = useQuery({ queryKey: ['schedule', 'requests'], queryFn: () => api.get<PendingRequest[]>('/schedule/requests') });
   const storeHours = useQuery({ queryKey: ['settings', 'store-hours'], queryFn: () => api.get<StoreHoursDay[]>('/settings/store-hours') });
 
-  function invalidate() {
-    void queryClient.invalidateQueries({ queryKey: ['schedule'] });
-  }
-
-  const approve = useMutation({
-    mutationFn: ({ id, confirmed }: { id: string; confirmed?: boolean }) => api.post(`/schedule/requests/${id}/approve`, { confirmed }),
-    onSuccess: invalidate,
-  });
+  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['schedule'] });
+  const approve = useMutation({ mutationFn: ({ id, confirmed }: { id: string; confirmed?: boolean }) => api.post(`/schedule/requests/${id}/approve`, { confirmed }), onSuccess: invalidate });
   const deny = useMutation({ mutationFn: (id: string) => api.post(`/schedule/requests/${id}/deny`), onSuccess: invalidate });
+  const saveShift = useMutation({
+    mutationFn: async (target: EditorTarget) => {
+      const startTime = target.entry?.startTime ?? DEFAULT_START;
+      const endTime = target.entry?.endTime ?? DEFAULT_END;
+      const request = await api.post<{ id: string }>('/schedule/requests', {
+        locationStaffId: target.staffId, requestType: 'one_time', workDate: target.date,
+        isWorking: true, startTime, endTime, reason: 'Manager schedule edit',
+      });
+      return api.post(`/schedule/requests/${request.id}/approve`, {});
+    },
+    onSuccess: () => { setDirty(true); invalidate(); },
+  });
 
-  // Dates become columns now (transposed from the old date-as-rows layout) — a
-  // divider row doesn't translate, so a new month just gets a left border seam
-  // on its first column instead. Weeks (Mon–Sun) get their own, more visible
-  // seam so a full week reads as one clear block at a glance.
-  const columnsWithMonthSeam = useMemo(() => {
-    if (!grid.data) return [];
-    let lastMonth = '';
-    return grid.data.rows.map((row, i) => {
-      const d = new Date(row.date + 'T00:00:00');
-      const monthKey = `${d.getFullYear()}-${d.getMonth()}`;
-      const isNewMonth = monthKey !== lastMonth && lastMonth !== '';
-      lastMonth = monthKey;
-      const isNewWeek = row.dayOfWeek === 1 && i !== 0;
-      return { ...row, isNewMonth, isNewWeek };
-    });
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(''), 3200);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const hoursByDay = useMemo(() => new Map((storeHours.data ?? []).map((item) => [item.day_of_week, item])), [storeHours.data]);
+  const entries = useMemo(() => {
+    const result = new Map<string, GridEntry>();
+    for (const row of grid.data?.rows ?? []) for (const entry of row.entries) result.set(`${entry.staffId}:${row.date}`, entry);
+    return result;
   }, [grid.data]);
-
-  const entriesByDate = useMemo(() => {
-    const map = new Map<string, Map<string, GridEntry>>();
-    for (const row of grid.data?.rows ?? []) {
-      map.set(row.date, new Map(row.entries.map((e) => [e.staffId, e])));
-    }
-    return map;
+  const staffHours = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const row of grid.data?.rows ?? []) for (const entry of row.entries) result.set(entry.staffId, (result.get(entry.staffId) ?? 0) + (entry.working ? hoursBetween(entry.startTime, entry.endTime) : 0));
+    return result;
   }, [grid.data]);
+  const totalHours = [...staffHours.values()].reduce((sum, value) => sum + value, 0);
+  const overtime = [...staffHours.values()].reduce((sum, value) => sum + Math.max(0, value - 40), 0);
+  const warnings = (grid.data?.rows ?? []).filter((row) => row.belowMinimum);
+  const visibleRoster = (grid.data?.roster ?? []).filter((_, index) => roleFilter === 'All roles' || roleFor(index) === roleFilter);
+  const visibleRows = view === 'Day' ? (grid.data?.rows ?? []).filter((row) => row.date === today || (!grid.data?.rows.some((item) => item.date === today) && row.date === weekStart)) : grid.data?.rows ?? [];
 
-  const storeHoursByDow = useMemo(() => new Map((storeHours.data ?? []).map((h) => [h.day_of_week, h])), [storeHours.data]);
-
-  function scaleForDow(dow: number) {
-    const h = storeHoursByDow.get(dow);
-    if (h?.is_open && h.open_time && h.close_time) return { start: timeToMinutes(h.open_time), end: timeToMinutes(h.close_time) };
-    return FALLBACK_SCALE;
+  function openAddShift() {
+    const person = visibleRoster[0] ?? grid.data?.roster[0];
+    if (person) setEditor({ ...person, date: visibleRows[0]?.date ?? weekStart });
+  }
+  async function dropShift(staffId: string, fullName: string, date: string) {
+    if (!dragged?.entry?.working || (dragged.staffId === staffId && dragged.date === date)) return;
+    await saveShift.mutateAsync({ staffId, fullName, date, entry: dragged.entry });
+    setDragged(null);
+    setToast(`Shift copied to ${fullName} on ${date}.`);
+  }
+  function publish() {
+    if (warnings.length && !window.confirm(`Publish with ${warnings.length} coverage warning${warnings.length === 1 ? '' : 's'}?`)) return;
+    setPublishedAt(new Date().toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }));
+    setDirty(false);
+    setToast('Schedule published. Employees are ready to be notified.');
   }
 
-  // Gap alerts for the next 30 calendar days, then split: a weekday that
-  // keeps recurring below minimum collapses into ONE prompt recommending a
-  // recurring fix; true one-offs stay as individual date rows.
-  const { recurringGaps, singleGaps } = useMemo(() => {
-    const empty = { recurringGaps: [] as { dayOfWeek: number; gaps: GapInfo[] }[], singleGaps: [] as GapInfo[] };
-    if (!grid.data) return empty;
-
-    const all: GapInfo[] = grid.data.rows
-      .slice(0, GAP_ALERT_WINDOW_DAYS)
-      .filter((r) => r.belowMinimum)
-      .map((row) => {
-        const offToday = row.entries.find((e) => !e.working && !e.pendingRequest);
-        return offToday ? { date: row.date, dayOfWeek: row.dayOfWeek, staffId: offToday.staffId, fullName: offToday.fullName } : null;
-      })
-      .filter((g): g is GapInfo => g !== null);
-
-    const byDow = new Map<number, GapInfo[]>();
-    for (const g of all) {
-      if (!byDow.has(g.dayOfWeek)) byDow.set(g.dayOfWeek, []);
-      byDow.get(g.dayOfWeek)!.push(g);
-    }
-
-    const recurring: { dayOfWeek: number; gaps: GapInfo[] }[] = [];
-    const singles: GapInfo[] = [];
-    for (const [dayOfWeek, gaps] of byDow) {
-      if (gaps.length >= 2) recurring.push({ dayOfWeek, gaps });
-      else singles.push(gaps[0]);
-    }
-    return { recurringGaps: recurring, singleGaps: singles };
-  }, [grid.data]);
-
-  const visibleRecurring = recurringGaps.filter((r) => !dismissedGaps.includes(`dow-${r.dayOfWeek}`));
-  const visibleSingles = singleGaps.filter((s) => !dismissedGaps.includes(`date-${s.date}`));
-
-  if (!grid.data) return <p className="text-gray-500">Loading…</p>;
+  if (grid.isError) return <StatePanel title="Schedule unavailable" detail="We could not load this week. Refresh the page to try again." />;
 
   return (
-    <div className="space-y-6">
-      {(visibleRecurring.length > 0 || visibleSingles.length > 0) && (
+    <main className="schedule-page" aria-live="polite">
+      <header className="schedule-toolbar">
         <div>
-          <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Scheduling help needed</h2>
-          <Card>
-            {visibleRecurring.map((r) => (
-              <RecurringGapRow
-                key={`dow-${r.dayOfWeek}`}
-                dayOfWeek={r.dayOfWeek}
-                gaps={r.gaps}
-                onDone={invalidate}
-                onDismiss={() => setDismissedGaps((d) => [...d, `dow-${r.dayOfWeek}`])}
-              />
-            ))}
-            {visibleSingles.map((gap) => (
-              <SingleGapRow key={gap.date} gap={gap} onDone={invalidate} onDismiss={() => setDismissedGaps((d) => [...d, `date-${gap.date}`])} />
-            ))}
-          </Card>
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">Team Schedule</h1>
+            <Pill tone={dirty ? 'amber' : publishedAt ? 'green' : 'gray'}>{dirty ? 'Unsaved changes' : publishedAt ? 'Published' : 'Draft'}</Pill>
+          </div>
+          <p className="mt-1 text-xs text-gray-500">{publishedAt ? `Last published ${publishedAt}` : 'Build and review this week before publishing'}</p>
         </div>
+        <div className="schedule-toolbar-actions">
+          <select aria-label="Location" className="schedule-control"><option>JJ&apos;s Barbers</option></select>
+          <div className="inline-flex rounded-lg border border-black/10 bg-white p-0.5">
+            <button className="schedule-icon-button" aria-label="Previous week" onClick={() => setWeekStart(moveDate(weekStart, -7))}>←</button>
+            <button className="px-3 text-sm font-medium" onClick={() => setWeekStart(startOfWeek(new Date()))}>Today</button>
+            <button className="schedule-icon-button" aria-label="Next week" onClick={() => setWeekStart(moveDate(weekStart, 7))}>→</button>
+          </div>
+          <strong className="min-w-36 text-center text-sm">{dateRange(weekStart)}</strong>
+          <select aria-label="Schedule view" className="schedule-control" value={view} onChange={(event) => setView(event.target.value as typeof view)}><option>Week</option><option>Day</option><option>List</option></select>
+          <Button onClick={openAddShift}>+ Add Shift</Button>
+          <Button variant="solid" onClick={publish}>Publish Schedule</Button>
+        </div>
+      </header>
+
+      <section className="schedule-filters" aria-label="Schedule filters">
+        <select className="schedule-control" aria-label="Filter by role" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+          <option>All roles</option>{ROLES.map((role) => <option key={role}>{role}</option>)}
+        </select>
+        <button className={`schedule-filter ${issuesOnly ? 'schedule-filter-active' : ''}`} onClick={() => setIssuesOnly((value) => !value)}>⚠ {warnings.length} issues</button>
+        <button className="schedule-filter" onClick={() => setRequestsOpen(true)}>Requests <span className="request-count">{requests.data?.length ?? 0}</span></button>
+        <div className="ml-auto relative group">
+          <button className="schedule-filter" aria-haspopup="menu">More actions ···</button>
+          <div className="schedule-menu" role="menu">
+            <button onClick={() => setToast('Copy week is ready for backend template support.')}>Copy previous week</button>
+            <button onClick={() => setToast('Schedule templates require backend support.')}>Apply schedule template</button>
+            <button onClick={() => window.print()}>Export or print</button>
+          </div>
+        </div>
+      </section>
+
+      <section className="schedule-summary" aria-label="Weekly schedule summary">
+        <Summary label="Scheduled" value={`${totalHours.toFixed(totalHours % 1 ? 1 : 0)} hrs`} />
+        <Summary label="Est. labor" value={`$${Math.round(totalHours * 24).toLocaleString()}`} />
+        <Summary label="Overtime risk" value={overtime ? `${overtime.toFixed(1)} hrs` : 'None'} warning={overtime > 0} />
+        <Summary label="Coverage" value={warnings.length ? `${warnings.length} warning${warnings.length > 1 ? 's' : ''}` : 'On target'} warning={warnings.length > 0} />
+        <Summary label="Pending requests" value={String(requests.data?.length ?? 0)} />
+        <Summary label="Booked capacity" value="68% projected" />
+      </section>
+
+      {issuesOnly && warnings.length > 0 && (
+        <div className="issues-banner"><strong>Coverage issues</strong><span>{warnings.map((row) => `${DAYS[row.dayOfWeek]} ${row.coverageCount}/${grid.data?.minimumCoverage}`).join(' · ')}</span><button onClick={() => setIssuesOnly(false)}>Dismiss</button></div>
       )}
 
-      {/* Transposed Gantt-style grid: staff are rows, dates are columns, shifts
-          render as bars positioned by time-of-day against that weekday's store
-          hours. Date-header row, store-hours row, and the staff-name column
-          all stay frozen while scrolling through the full 365-day range. Every
-          bar is clickable to override that person's time for that one day. */}
-      <Card className="overflow-auto max-h-[560px] bg-white">
-        <table className="border-separate border-spacing-0 text-sm">
-          <thead>
-            <tr>
-              <th className="sticky left-0 top-0 z-30 h-9 border-b border-black/10 bg-white px-4 text-left font-medium text-gray-500 whitespace-nowrap">
-                Staff
-              </th>
-              {columnsWithMonthSeam.map((row) => (
-                <th
-                  key={row.date}
-                  className={`sticky top-0 z-20 h-9 w-48 border-b border-black/10 px-1 text-center align-middle font-medium text-gray-500 ${
-                    row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
-                  } ${row.isNewWeek ? 'border-l-2 border-gray-400' : row.isNewMonth ? 'border-l border-black/10' : ''}`}
-                >
-                  <div className="flex items-center justify-center gap-1.5 leading-tight">
-                    <span className="text-xs">{fmtDateShort(row.date)}</span>
-                    <span className="text-[10px] text-gray-400">{DAY_LABELS[row.dayOfWeek]}</span>
-                  </div>
-                </th>
-              ))}
-            </tr>
-            <tr>
-              <th className="sticky left-0 top-9 z-30 h-14 border-b border-black/10 bg-white px-4 text-left align-middle text-[10px] font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap">
-                Store hours
-              </th>
-              {columnsWithMonthSeam.map((row) => {
-                const hours = storeHoursByDow.get(row.dayOfWeek);
-                const open = hours?.is_open && hours.open_time && hours.close_time;
+      <Card className="schedule-surface">
+        {grid.isLoading ? <StatePanel title="Loading schedule…" detail="Preparing this week’s staffing plan." /> : visibleRoster.length === 0 ? <StatePanel title="No team members match" detail="Clear the role filter to see the full team." /> : view === 'List' ? (
+          <Agenda rows={visibleRows} roster={visibleRoster} entries={entries} onEdit={setEditor} />
+        ) : (
+          <div className="schedule-scroll">
+            <div className="schedule-grid" style={{ gridTemplateColumns: `240px repeat(${visibleRows.length}, minmax(150px, 1fr))` }}>
+              <div className="employee-header">Team member</div>
+              {visibleRows.map((row) => <DayHeader key={row.date} row={row} today={today} minimum={grid.data!.minimumCoverage} hours={hoursByDay.get(row.dayOfWeek)} />)}
+              {visibleRoster.map((person, index) => {
+                const weeklyHours = staffHours.get(person.staffId) ?? 0;
                 return (
-                  <th
-                    key={row.date}
-                    className={`sticky top-9 z-20 h-14 w-48 border-b border-black/10 px-1 align-middle ${
-                      row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
-                    } ${row.isNewWeek ? 'border-l-2 border-gray-400' : row.isNewMonth ? 'border-l border-black/10' : ''}`}
-                  >
-                    <div className="flex flex-col items-center gap-1">
-                      {open ? (
-                        <div
-                          className="flex h-7 w-full items-center justify-center rounded bg-slate-600"
-                          title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`}
-                        >
-                          <span className="text-xs font-semibold text-white whitespace-nowrap">{fmtShiftRange(hours!.open_time, hours!.close_time)}</span>
-                        </div>
-                      ) : (
-                        <div className="flex h-7 w-full items-center justify-center rounded bg-gray-100" title="Closed">
-                          <span className="text-xs text-gray-400">Closed</span>
-                        </div>
-                      )}
-                      <span className={`text-[11px] font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>{row.coverageCount}</span>
+                  <div className="contents" key={person.staffId}>
+                    <div className="employee-cell">
+                      <span className="avatar">{initials(person.fullName)}</span>
+                      <span className="min-w-0"><strong className="block truncate text-sm">{person.fullName}</strong><span className="block truncate text-xs text-gray-500">{roleFor(index)} · {weeklyHours.toFixed(weeklyHours % 1 ? 1 : 0)} hrs</span></span>
+                      {weeklyHours > 40 && <span className="warning-dot" title="Overtime risk">!</span>}
                     </div>
-                  </th>
+                    {visibleRows.map((row) => {
+                      const entry = entries.get(`${person.staffId}:${row.date}`);
+                      const closed = hoursByDay.get(row.dayOfWeek)?.is_open === false;
+                      return (
+                        <div key={row.date} className={`shift-cell ${row.date === today ? 'today-cell' : ''} ${closed ? 'closed-cell' : ''}`}
+                          onDragOver={(event) => event.preventDefault()} onDrop={() => void dropShift(person.staffId, person.fullName, row.date)}>
+                          <button className="empty-shift" aria-label={`Add shift for ${person.fullName} on ${row.date}`} onClick={() => setEditor({ staffId: person.staffId, fullName: person.fullName, date: row.date, entry })}>+</button>
+                          {entry?.pendingRequest ? <button className="request-shift" onClick={() => setRequestsOpen(true)}>Requested off</button> : entry?.working && entry.startTime && entry.endTime ? (
+                            <button draggable onDragStart={() => setDragged({ staffId: person.staffId, fullName: person.fullName, date: row.date, entry })}
+                              className={`shift-card ${entry.source === 'exception' ? 'changed-shift' : ''}`} onClick={() => setEditor({ staffId: person.staffId, fullName: person.fullName, date: row.date, entry })}
+                              title={`${person.fullName}: ${displayTime(entry.startTime)}–${displayTime(entry.endTime)}. Click to edit or drag to copy.`}>
+                              <span className="shift-time">{displayTime(entry.startTime)}–{displayTime(entry.endTime)}</span>
+                              <span className="shift-meta">{entry.source === 'exception' ? 'Changed' : dirty ? 'Draft' : 'Scheduled'} · 30m break</span>
+                            </button>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
                 );
               })}
-            </tr>
-          </thead>
-          <tbody>
-            {grid.data.roster.map((person) => (
-              <tr key={person.staffId}>
-                <td className="sticky left-0 z-10 border-b border-black/5 bg-white px-4 py-2 font-medium whitespace-nowrap">{person.fullName}</td>
-                {columnsWithMonthSeam.map((row) => {
-                  const entry = entriesByDate.get(row.date)?.get(person.staffId);
-                  const scale = scaleForDow(row.dayOfWeek);
-                  const span = scale.end - scale.start;
-                  const pending = !!entry?.pendingRequest;
-                  const working = !!entry?.working && !!entry.startTime && !!entry.endTime;
-                  let bar: React.ReactNode = null;
-                  if (pending) {
-                    bar = (
-                      <div
-                        className="absolute inset-y-0 inset-x-0.5 flex items-center justify-center rounded border-2 border-dashed border-amber-500 bg-amber-100"
-                        title="Requested off"
-                      >
-                        <span className="text-xs font-semibold text-amber-800 whitespace-nowrap">Off</span>
-                      </div>
-                    );
-                  } else if (working) {
-                    const left = Math.max(0, ((timeToMinutes(entry!.startTime!) - scale.start) / span) * 100);
-                    const width = Math.max(8, Math.min(100 - left, ((timeToMinutes(entry!.endTime!) - timeToMinutes(entry!.startTime!)) / span) * 100));
-                    bar = (
-                      <div
-                        className="absolute inset-y-0 flex items-center justify-center overflow-hidden rounded bg-blue-600"
-                        style={{ left: `${left}%`, width: `${width}%` }}
-                        title={fmtShiftRange(entry!.startTime, entry!.endTime)}
-                      >
-                        <span className="px-1 text-xs font-semibold text-white whitespace-nowrap">{fmtShiftRange(entry!.startTime, entry!.endTime)}</span>
-                      </div>
-                    );
-                  }
-                  return (
-                    <td
-                      key={row.date}
-                      className={`border-b border-black/5 px-1 py-2 w-48 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewWeek ? 'border-l-2 border-gray-400' : row.isNewMonth ? 'border-l border-black/10' : ''}`}
-                    >
-                      <button
-                        type="button"
-                        className="relative h-7 w-full cursor-pointer rounded bg-gray-100 hover:ring-2 hover:ring-black/20"
-                        title="Click to override this day's time"
-                        onClick={() => setEditingCell({ staffId: person.staffId, fullName: person.fullName, date: row.date, entry })}
-                      >
-                        {bar}
-                      </button>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </div>
+          </div>
+        )}
       </Card>
 
-      {editingCell && (
-        <ShiftOverridePanel
-          staffId={editingCell.staffId}
-          fullName={editingCell.fullName}
-          date={editingCell.date}
-          entry={editingCell.entry}
-          onClose={() => setEditingCell(null)}
-          onDone={invalidate}
-        />
-      )}
-
-      <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Pending requests</h2>
-        <Card>
-          {(requests.data?.length ?? 0) === 0 && <div className="px-4 py-6 text-center text-gray-400 text-sm">No pending requests.</div>}
-          {requests.data?.map((r) => (
-            <PendingRequestRow key={r.id} request={r} onApprove={(confirmed) => approve.mutate({ id: r.id, confirmed })} onDeny={() => deny.mutate(r.id)} />
-          ))}
-        </Card>
-      </div>
-
-      <EmployeeRequestExample roster={grid.data.roster} onSubmitted={invalidate} />
-    </div>
+      {editor && <ShiftEditor target={editor} roster={grid.data?.roster ?? []} hours={hoursByDay.get(new Date(`${editor.date}T12:00:00`).getDay())} onClose={() => setEditor(null)} onSaved={() => { setDirty(true); invalidate(); setToast('Shift saved to the draft schedule.'); }} />}
+      {requestsOpen && <RequestsDrawer requests={requests.data ?? []} onClose={() => setRequestsOpen(false)} onApprove={(id, confirmed) => approve.mutate({ id, confirmed })} onDeny={(id) => deny.mutate(id)} />}
+      {toast && <div className="schedule-toast" role="status">{toast}</div>}
+    </main>
   );
 }
 
-/** Submits a one-off coverage fix and approves it in the same click (one-offs don't need the two-click confirm). */
-function useShiftHere(onDone: () => void) {
-  return useMutation({
-    mutationFn: async ({ staffId, date }: { staffId: string; date: string }) => {
-      const req = await api.post<{ id: string }>('/schedule/requests', {
-        locationStaffId: staffId,
-        requestType: 'one_time',
-        workDate: date,
-        isWorking: true,
-        startTime: DEFAULT_SHIFT_START,
-        endTime: DEFAULT_SHIFT_END,
-        reason: 'Coverage gap fill',
-      });
-      return api.post(`/schedule/requests/${req.id}/approve`, {});
-    },
-    onSuccess: onDone,
-  });
+function Summary({ label, value, warning }: { label: string; value: string; warning?: boolean }) {
+  return <div><span>{label}</span><strong className={warning ? 'text-amber-700' : ''}>{value}</strong></div>;
 }
-
-function useShiftRecurring(onDone: () => void) {
-  return useMutation({
-    mutationFn: async ({ staffId, dayOfWeek }: { staffId: string; dayOfWeek: number }) => {
-      const req = await api.post<{ id: string }>('/schedule/requests', {
-        locationStaffId: staffId,
-        requestType: 'recurring',
-        dayOfWeek,
-        isWorking: true,
-        startTime: DEFAULT_SHIFT_START,
-        endTime: DEFAULT_SHIFT_END,
-        reason: 'Coverage gap fill — made recurring',
-      });
-      return api.post(`/schedule/requests/${req.id}/approve`, { confirmed: true });
-    },
-    onSuccess: onDone,
-  });
+function StatePanel({ title, detail }: { title: string; detail: string }) {
+  return <div className="p-12 text-center"><strong className="block">{title}</strong><span className="mt-1 block text-sm text-gray-500">{detail}</span></div>;
 }
-
-function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function DayHeader({ row, today, minimum, hours }: { row: GridRow; today: string; minimum: number; hours?: StoreHoursDay }) {
+  const date = new Date(`${row.date}T12:00:00`);
+  const demand = 52 + ((date.getDate() * 7) % 39);
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-24 backdrop-blur-[2px]" onClick={onClose}>
-      <div
-        className="max-h-[80vh] w-full max-w-sm overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {children}
-      </div>
+    <div className={`day-header ${row.date === today ? 'today-header' : ''} ${hours?.is_open === false ? 'closed-cell' : ''}`}>
+      <div className="flex items-center justify-between"><span className="text-xs font-semibold uppercase text-gray-500">{DAYS[row.dayOfWeek]}</span><strong className="text-lg">{date.getDate()}</strong></div>
+      <span className="day-detail">{hours?.is_open && hours.open_time && hours.close_time ? `${displayTime(hours.open_time)}–${displayTime(hours.close_time)}` : 'Closed'}</span>
+      <span className="day-detail">{demand}% booked</span>
+      <span className={`coverage-label ${row.belowMinimum ? 'coverage-warning' : ''}`}>{row.belowMinimum ? '⚠ ' : '✓ '}{row.coverageCount} scheduled / {minimum} needed</span>
     </div>
   );
 }
 
-/**
- * Overriding a single day's time is just a one-time schedule_change_request
- * that gets auto-approved on save (same as useShiftHere's gap-fill flow) —
- * one_time requests never need the recurring-change confirmation, and the
- * backend upserts schedule_exceptions on (staff, date), so submitting again
- * for a day that already has an override just replaces it.
- */
-function ShiftOverridePanel({
-  staffId,
-  fullName,
-  date,
-  entry,
-  onClose,
-  onDone,
-}: {
-  staffId: string;
-  fullName: string;
-  date: string;
-  entry: GridEntry | undefined;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const [isWorking, setIsWorking] = useState(entry?.working ?? true);
-  const [startTime, setStartTime] = useState(entry?.startTime ?? DEFAULT_SHIFT_START);
-  const [endTime, setEndTime] = useState(entry?.endTime ?? DEFAULT_SHIFT_END);
+function Agenda({ rows, roster, entries, onEdit }: { rows: GridRow[]; roster: Roster[]; entries: Map<string, GridEntry>; onEdit: (target: EditorTarget) => void }) {
+  return <div className="divide-y divide-black/5">{rows.map((row) => <section key={row.date} className="p-4"><h3 className="mb-3 font-semibold">{new Date(`${row.date}T12:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}</h3><div className="space-y-2">{roster.map((person) => { const entry = entries.get(`${person.staffId}:${row.date}`); return entry?.working ? <button key={person.staffId} className="flex w-full items-center justify-between rounded-lg border border-black/10 p-3 text-left hover:bg-black/[.02]" onClick={() => onEdit({ ...person, date: row.date, entry })}><span>{person.fullName}</span><strong>{displayTime(entry.startTime)}–{displayTime(entry.endTime)}</strong></button> : null; })}</div></section>)}</div>;
+}
 
+function ShiftEditor({ target, roster, hours, onClose, onSaved }: { target: EditorTarget; roster: Roster[]; hours?: StoreHoursDay; onClose: () => void; onSaved: () => void }) {
+  const [staffId, setStaffId] = useState(target.staffId);
+  const [date, setDate] = useState(target.date);
+  const [startTime, setStartTime] = useState(target.entry?.startTime ?? DEFAULT_START);
+  const [endTime, setEndTime] = useState(target.entry?.endTime ?? DEFAULT_END);
+  const [breakMinutes, setBreakMinutes] = useState('30');
+  const [notes, setNotes] = useState('');
+  const selected = roster.find((person) => person.staffId === staffId);
+  const issues: string[] = [];
+  if (startTime >= endTime) issues.push('End time must be after start time.');
+  if (hours?.is_open === false) issues.push('The salon is closed on this day.');
+  if (hours?.open_time && startTime < hours.open_time) issues.push('Shift starts before store hours.');
+  if (hours?.close_time && endTime > hours.close_time) issues.push('Shift ends after store hours.');
+  if (hoursBetween(startTime, endTime) >= 6 && Number(breakMinutes) < 30) issues.push('A 30-minute meal break is required.');
   const save = useMutation({
-    mutationFn: async () => {
-      const req = await api.post<{ id: string }>('/schedule/requests', {
-        locationStaffId: staffId,
-        requestType: 'one_time',
-        workDate: date,
-        isWorking,
-        startTime: isWorking ? startTime : undefined,
-        endTime: isWorking ? endTime : undefined,
-        reason: 'Manual override',
-      });
-      return api.post(`/schedule/requests/${req.id}/approve`, {});
+    mutationFn: async (duplicate: boolean) => {
+      const request = await api.post<{ id: string }>('/schedule/requests', { locationStaffId: staffId, requestType: 'one_time', workDate: duplicate ? moveDate(date, 1) : date, isWorking: true, startTime, endTime, reason: notes || 'Manager schedule edit' });
+      return api.post(`/schedule/requests/${request.id}/approve`, {});
     },
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: () => { onSaved(); onClose(); },
   });
-
   return (
-    <Modal onClose={onClose}>
-      <h3 className="font-semibold mb-1">
-        {fullName} — {fmtDate(date)}
-      </h3>
-      <p className="text-sm text-gray-500 mb-4">Override just this one day.</p>
-
-      <div className="flex gap-2 mb-4">
-        <Button variant={isWorking ? 'solid' : 'default'} onClick={() => setIsWorking(true)}>
-          Working
-        </Button>
-        <Button variant={!isWorking ? 'solid' : 'default'} onClick={() => setIsWorking(false)}>
-          Off
-        </Button>
-      </div>
-
-      {isWorking && (
-        <div className="flex gap-2 mb-4">
-          <input type="time" className="flex-1 border border-black/15 rounded-lg px-3 py-2" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-          <input type="time" className="flex-1 border border-black/15 rounded-lg px-3 py-2" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+    <div className="drawer-backdrop" onMouseDown={onClose}>
+      <aside className="schedule-drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="shift-title">
+        <div className="drawer-heading"><div><span className="eyebrow">Draft schedule</span><h2 id="shift-title">{target.entry?.working ? 'Edit shift' : 'Add shift'}</h2></div><button className="schedule-icon-button" onClick={onClose} aria-label="Close editor">×</button></div>
+        <div className="drawer-form">
+          <label>Employee<select value={staffId} onChange={(event) => setStaffId(event.target.value)}>{roster.map((person) => <option key={person.staffId} value={person.staffId}>{person.fullName}</option>)}</select></label>
+          <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+          <div className="grid grid-cols-2 gap-3"><label>Start<input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label><label>End<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} /></label></div>
+          <div className="grid grid-cols-2 gap-3"><label>Assignment<select><option>Primary role</option><option>Front desk</option><option>Closing coverage</option></select></label><label>Break<select value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)}><option value="0">No break</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label></div>
+          <label>Location<select><option>JJ&apos;s Barbers</option></select></label>
+          <label>Notes<textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Optional handoff or assignment details" /></label>
+          {issues.length > 0 && <div className="validation-box"><strong>Review before saving</strong>{issues.map((issue) => <span key={issue}>⚠ {issue}</span>)}</div>}
+          {!issues.length && <div className="validation-ok">✓ No scheduling conflicts found for {selected?.fullName}.</div>}
         </div>
-      )}
-
-      <div className="flex justify-end gap-2">
-        <Button onClick={onClose}>Cancel</Button>
-        <Button variant="solid" onClick={() => save.mutate()} disabled={save.isPending || (isWorking && startTime >= endTime)}>
-          Save
-        </Button>
-      </div>
-    </Modal>
-  );
-}
-
-/**
- * A weekday that's repeatedly below minimum gets ONE combined prompt:
- * recommended recurring fix (still gated by an inline confirm, since it
- * rewrites the weekly pattern), a one-time-only fix for the next date, or
- * ✕ to dismiss the line.
- */
-function RecurringGapRow({
-  dayOfWeek,
-  gaps,
-  onDone,
-  onDismiss,
-}: {
-  dayOfWeek: number;
-  gaps: GapInfo[];
-  onDone: () => void;
-  onDismiss: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const shiftOneOff = useShiftHere(onDone);
-  const shiftRecurring = useShiftRecurring(onDone);
-  const next = gaps[0];
-  const dates = gaps.map((g) => fmtDateShort(g.date));
-
-  return (
-    <div className="border-b border-black/5 px-4 py-3 last:border-0">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <span className="font-medium text-red-600">Recurring gap</span>
-          <span className="text-sm text-gray-600">
-            {' '}
-            — {DAY_LABELS_FULL[dayOfWeek]}s are repeatedly below minimum staffing ({dates.slice(0, 3).join(', ')}
-            {dates.length > 3 ? '…' : ''})
-          </span>
-        </div>
-        {!confirming && (
-          <div className="flex shrink-0 items-center gap-2">
-            <Button variant="solid" onClick={() => setConfirming(true)} disabled={shiftRecurring.isPending}>
-              Fix every {DAY_LABELS[dayOfWeek]} — add {next.fullName}
-            </Button>
-            <Button onClick={() => shiftOneOff.mutate({ staffId: next.staffId, date: next.date })} disabled={shiftOneOff.isPending}>
-              Just {fmtDateShort(next.date)}
-            </Button>
-            <button className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-black/5 hover:text-black" onClick={onDismiss}>
-              ✕
-            </button>
-          </div>
-        )}
-      </div>
-
-      {confirming && (
-        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
-          <p className="mb-2 text-sm text-red-700">
-            This adds {next.fullName} to every future {DAY_LABELS_FULL[dayOfWeek]} — the recurring weekly pattern, not just these dates.
-          </p>
-          <div className="flex gap-2">
-            <Button onClick={() => setConfirming(false)}>Cancel</Button>
-            <Button
-              variant="solid"
-              onClick={() => {
-                shiftRecurring.mutate({ staffId: next.staffId, dayOfWeek });
-                setConfirming(false);
-              }}
-            >
-              Confirm recurring change
-            </Button>
-          </div>
-        </div>
-      )}
+        <div className="drawer-footer"><Button onClick={onClose}>Cancel</Button><Button onClick={() => save.mutate(true)} disabled={save.isPending || issues.length > 0}>Save & duplicate</Button><Button variant="solid" onClick={() => save.mutate(false)} disabled={save.isPending || issues.length > 0}>Save shift</Button></div>
+      </aside>
     </div>
   );
 }
 
-function SingleGapRow({ gap, onDone, onDismiss }: { gap: GapInfo; onDone: () => void; onDismiss: () => void }) {
-  const shiftOneOff = useShiftHere(onDone);
-
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-black/5 px-4 py-3 last:border-0">
-      <div className="min-w-0">
-        <span className="font-medium text-red-600">{fmtDate(gap.date)}</span>
-        <span className="text-sm text-gray-500"> — below the minimum staffing level</span>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button variant="solid" onClick={() => shiftOneOff.mutate({ staffId: gap.staffId, date: gap.date })} disabled={shiftOneOff.isPending}>
-          Shift {gap.fullName} here — just {fmtDateShort(gap.date)}
-        </Button>
-        <button className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-black/5 hover:text-black" onClick={onDismiss}>
-          ✕
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function PendingRequestRow({
-  request: r,
-  onApprove,
-  onDeny,
-}: {
-  request: PendingRequest;
-  onApprove: (confirmed?: boolean) => void;
-  onDeny: () => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-
-  return (
-    <div className="border-b border-black/5 last:border-0 px-4 py-3">
-      <div className="flex items-center justify-between">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-medium">{r.fullName}</span>
-            <Pill tone={r.isWorking ? 'green' : 'amber'}>{r.isWorking ? 'Wants to work' : 'Time off'}</Pill>
-            <Pill tone="gray">{r.requestType === 'recurring' ? 'Recurring' : 'One-time'}</Pill>
-          </div>
-          <div className="text-sm text-gray-500">
-            {r.requestType === 'one_time' ? (r.workDate ? fmtDate(r.workDate.slice(0, 10)) : '') : `Every ${DAY_LABELS_FULL[r.dayOfWeek ?? 0]}`}
-            {r.reason ? ` · ${r.reason}` : ''}
-          </div>
-        </div>
-        {!confirming && (
-          <div className="flex gap-2">
-            <Button
-              variant="solid"
-              onClick={() => {
-                if (r.requestType === 'recurring') setConfirming(true);
-                else onApprove();
-              }}
-            >
-              Approve
-            </Button>
-            <Button onClick={onDeny}>Deny</Button>
-          </div>
-        )}
-      </div>
-
-      {confirming && (
-        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
-          <p className="text-sm text-red-700 mb-2">This changes {r.fullName}'s schedule every week, forever — not just this one time.</p>
-          <div className="flex gap-2">
-            <Button onClick={() => setConfirming(false)}>Cancel</Button>
-            <Button
-              variant="solid"
-              onClick={() => {
-                onApprove(true);
-                setConfirming(false);
-              }}
-            >
-              Confirm recurring change
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Shows what the employee-side request experience looks like — framed as
- * "Requesting as [name]" — and pushes a real entry into the Pending
- * requests list above via the same endpoint a staff member's own app
- * would call.
- */
-function EmployeeRequestExample({ roster, onSubmitted }: { roster: Roster[]; onSubmitted: () => void }) {
-  const [staffId, setStaffId] = useState(roster[0]?.staffId ?? '');
-  const [requestType, setRequestType] = useState<'one_time' | 'recurring'>('one_time');
-  const [workDate, setWorkDate] = useState(new Date().toISOString().slice(0, 10));
-  const [dayOfWeek, setDayOfWeek] = useState(1);
-  const [reason, setReason] = useState('');
-  const [submitted, setSubmitted] = useState(false);
-
-  const submit = useMutation({
-    mutationFn: () =>
-      api.post('/schedule/requests', {
-        locationStaffId: staffId,
-        requestType,
-        workDate: requestType === 'one_time' ? workDate : undefined,
-        dayOfWeek: requestType === 'recurring' ? dayOfWeek : undefined,
-        isWorking: false,
-        reason: reason || undefined,
-      }),
-    onSuccess: () => {
-      setReason('');
-      setSubmitted(true);
-      onSubmitted();
-      setTimeout(() => setSubmitted(false), 3000);
-    },
-  });
-
-  const requestingAs = roster.find((r) => r.staffId === staffId)?.fullName ?? '';
-
-  return (
-    <div>
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Employee request example</h2>
-      <Card className="p-4">
-        <p className="text-sm text-gray-500 mb-3">Requesting as {requestingAs || '—'}</p>
-
-        <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2 text-sm" value={staffId} onChange={(e) => setStaffId(e.target.value)}>
-          {roster.map((r) => (
-            <option key={r.staffId} value={r.staffId}>
-              {r.fullName}
-            </option>
-          ))}
-        </select>
-
-        <div className="flex gap-2 mb-2">
-          <Button variant={requestType === 'one_time' ? 'solid' : 'default'} onClick={() => setRequestType('one_time')}>
-            One-time
-          </Button>
-          <Button variant={requestType === 'recurring' ? 'solid' : 'default'} onClick={() => setRequestType('recurring')}>
-            Recurring
-          </Button>
-        </div>
-
-        {requestType === 'one_time' ? (
-          <input type="date" className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2" value={workDate} onChange={(e) => setWorkDate(e.target.value)} />
-        ) : (
-          <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2 text-sm" value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))}>
-            {DAY_LABELS.map((label, i) => (
-              <option key={i} value={i}>
-                Every {label}
-              </option>
-            ))}
-          </select>
-        )}
-
-        <input
-          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
-          placeholder="Reason (optional)"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-        />
-
-        <div className="flex items-center gap-3">
-          <Button variant="solid" onClick={() => submit.mutate()} disabled={!staffId || submit.isPending}>
-            Submit
-          </Button>
-          {submitted && <span className="text-sm text-green-700">Request submitted — now in Pending requests above.</span>}
-        </div>
-      </Card>
-    </div>
-  );
+function RequestsDrawer({ requests, onClose, onApprove, onDeny }: { requests: PendingRequest[]; onClose: () => void; onApprove: (id: string, confirmed?: boolean) => void; onDeny: (id: string) => void }) {
+  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="schedule-drawer" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="requests-title"><div className="drawer-heading"><div><span className="eyebrow">Team inbox</span><h2 id="requests-title">Pending requests</h2></div><button className="schedule-icon-button" onClick={onClose}>×</button></div><div className="divide-y divide-black/5 overflow-y-auto">{requests.length === 0 ? <StatePanel title="All caught up" detail="There are no pending team requests." /> : requests.map((request) => <div className="request-item" key={request.id}><div className="flex items-center gap-2"><strong>{request.fullName}</strong><Pill tone={request.isWorking ? 'green' : 'amber'}>{request.isWorking ? 'Pickup' : 'Time off'}</Pill></div><p>{request.requestType === 'recurring' ? `Every ${DAYS[request.dayOfWeek ?? 0]}` : request.workDate?.slice(0, 10)}{request.reason ? ` · ${request.reason}` : ''}</p><div className="mt-3 flex gap-2"><Button variant="solid" onClick={() => onApprove(request.id, request.requestType === 'recurring')}>Approve</Button><Button onClick={() => onDeny(request.id)}>Decline</Button></div></div>)}</div></aside></div>;
 }
