@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { Button, Card } from '../../../../components/ui';
@@ -50,13 +50,28 @@ interface GapInfo {
   fullName: string;
 }
 
+interface StoreHoursDay {
+  day_of_week: number;
+  is_open: boolean;
+  open_time: string | null;
+  close_time: string | null;
+}
+
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LABELS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const MONTH_LABELS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const GRID_DAYS = 365;
 const GAP_ALERT_WINDOW_DAYS = 30;
 const DEFAULT_SHIFT_START = '09:00';
 const DEFAULT_SHIFT_END = '17:00';
+
+function timeToMinutes(t: string) {
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+
+// A closed day still needs *some* scale so a shift scheduled on it (unusual, but
+// possible — a holiday overtime shift) doesn't divide by zero.
+const FALLBACK_SCALE = { start: timeToMinutes('08:00'), end: timeToMinutes('20:00') };
 
 // Date leads, day abbreviation trails: "07/19 Sat".
 function fmtDate(dateStr: string) {
@@ -88,6 +103,7 @@ export default function SchedulePage() {
 
   const grid = useQuery({ queryKey: ['schedule', 'grid', today], queryFn: () => api.get<Grid>(`/schedule/grid?startDate=${today}&days=${GRID_DAYS}`) });
   const requests = useQuery({ queryKey: ['schedule', 'requests'], queryFn: () => api.get<PendingRequest[]>('/schedule/requests') });
+  const storeHours = useQuery({ queryKey: ['settings', 'store-hours'], queryFn: () => api.get<StoreHoursDay[]>('/settings/store-hours') });
 
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: ['schedule'] });
@@ -99,17 +115,36 @@ export default function SchedulePage() {
   });
   const deny = useMutation({ mutationFn: (id: string) => api.post(`/schedule/requests/${id}/deny`), onSuccess: invalidate });
 
-  const rowsWithMonthHeaders = useMemo(() => {
+  // Dates become columns now (transposed from the old date-as-rows layout) — a
+  // divider row doesn't translate, so a new month just gets a left border seam
+  // on its first column instead.
+  const columnsWithMonthSeam = useMemo(() => {
     if (!grid.data) return [];
     let lastMonth = '';
     return grid.data.rows.map((row) => {
       const d = new Date(row.date + 'T00:00:00');
       const monthKey = `${d.getFullYear()}-${d.getMonth()}`;
-      const monthHeader = monthKey !== lastMonth ? `${MONTH_LABELS[d.getMonth()]} ${d.getFullYear()}` : null;
+      const isNewMonth = monthKey !== lastMonth && lastMonth !== '';
       lastMonth = monthKey;
-      return { ...row, monthHeader };
+      return { ...row, isNewMonth };
     });
   }, [grid.data]);
+
+  const entriesByDate = useMemo(() => {
+    const map = new Map<string, Map<string, GridEntry>>();
+    for (const row of grid.data?.rows ?? []) {
+      map.set(row.date, new Map(row.entries.map((e) => [e.staffId, e])));
+    }
+    return map;
+  }, [grid.data]);
+
+  const storeHoursByDow = useMemo(() => new Map((storeHours.data ?? []).map((h) => [h.day_of_week, h])), [storeHours.data]);
+
+  function scaleForDow(dow: number) {
+    const h = storeHoursByDow.get(dow);
+    if (h?.is_open && h.open_time && h.close_time) return { start: timeToMinutes(h.open_time), end: timeToMinutes(h.close_time) };
+    return FALLBACK_SCALE;
+  }
 
   // Gap alerts for the next 30 calendar days, then split: a weekday that
   // keeps recurring below minimum collapses into ONE prompt recommending a
@@ -169,55 +204,95 @@ export default function SchedulePage() {
         </div>
       )}
 
-      {/* 365-day grid: header row and date column both frozen while scrolling. */}
+      {/* Transposed Gantt-style grid: staff are rows, dates are columns, shifts
+          render as bars positioned by time-of-day against that weekday's store
+          hours. Date-header row, store-hours row, and the staff-name column
+          all stay frozen while scrolling through the full 365-day range. */}
       <Card className="overflow-auto max-h-[560px] bg-white">
-        <table className="w-full text-sm border-separate border-spacing-0">
+        <table className="border-separate border-spacing-0 text-sm">
           <thead>
-            <tr className="text-left text-gray-500">
-              <th className="sticky left-0 top-0 z-30 border-b border-black/10 bg-white px-4 py-2.5 font-medium">Date</th>
-              {grid.data.roster.map((r) => (
-                <th key={r.staffId} className="sticky top-0 z-20 border-b border-black/10 bg-white px-3 py-2.5 font-medium whitespace-nowrap">
-                  {r.fullName.split(' ')[0]}
+            <tr>
+              <th className="sticky left-0 top-0 z-30 h-9 border-b border-black/10 bg-white px-4 text-left font-medium text-gray-500 whitespace-nowrap">
+                Staff
+              </th>
+              {columnsWithMonthSeam.map((row) => (
+                <th
+                  key={row.date}
+                  className={`sticky top-0 z-20 h-9 w-16 border-b border-black/10 px-1 text-center align-middle font-medium text-gray-500 ${
+                    row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
+                  } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                >
+                  <div className="flex flex-col leading-tight">
+                    <span className="text-[11px]">{fmtDateShort(row.date)}</span>
+                    <span className="text-[9px] text-gray-400">{DAY_LABELS[row.dayOfWeek]}</span>
+                  </div>
                 </th>
               ))}
-              <th className="sticky top-0 z-20 border-b border-black/10 bg-white px-3 py-2.5 font-medium">Cov.</th>
+            </tr>
+            <tr>
+              <th className="sticky left-0 top-9 z-30 h-11 border-b border-black/10 bg-white px-4 text-left align-middle text-[10px] font-semibold uppercase tracking-wide text-gray-400 whitespace-nowrap">
+                Store hours
+              </th>
+              {columnsWithMonthSeam.map((row) => {
+                const hours = storeHoursByDow.get(row.dayOfWeek);
+                const open = hours?.is_open && hours.open_time && hours.close_time;
+                return (
+                  <th
+                    key={row.date}
+                    className={`sticky top-9 z-20 h-11 w-16 border-b border-black/10 px-1 align-middle ${
+                      row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
+                    } ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                  >
+                    <div className="flex flex-col items-center gap-0.5">
+                      {open ? (
+                        <div
+                          className="h-2.5 w-full rounded bg-gray-300"
+                          title={`Open ${fmtShiftRange(hours!.open_time, hours!.close_time)}`}
+                        />
+                      ) : (
+                        <div className="h-2.5 w-full rounded bg-gray-50" title="Closed" />
+                      )}
+                      <span className={`text-[10px] font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>{row.coverageCount}</span>
+                    </div>
+                  </th>
+                );
+              })}
             </tr>
           </thead>
           <tbody>
-            {rowsWithMonthHeaders.map((row) => (
-              <Fragment key={row.date}>
-                {row.monthHeader && (
-                  <tr>
-                    <td className="sticky left-0 z-10 bg-gray-50 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
-                      {row.monthHeader}
+            {grid.data.roster.map((person) => (
+              <tr key={person.staffId}>
+                <td className="sticky left-0 z-10 border-b border-black/5 bg-white px-4 py-2 font-medium whitespace-nowrap">{person.fullName}</td>
+                {columnsWithMonthSeam.map((row) => {
+                  const entry = entriesByDate.get(row.date)?.get(person.staffId);
+                  const scale = scaleForDow(row.dayOfWeek);
+                  const span = scale.end - scale.start;
+                  const pending = !!entry?.pendingRequest;
+                  const working = !!entry?.working && !!entry.startTime && !!entry.endTime;
+                  let bar: React.ReactNode = null;
+                  if (pending) {
+                    bar = <div className="absolute inset-y-0 inset-x-0.5 rounded border border-dashed border-amber-400 bg-amber-50" title="Requested off" />;
+                  } else if (working) {
+                    const left = Math.max(0, ((timeToMinutes(entry!.startTime!) - scale.start) / span) * 100);
+                    const width = Math.max(8, Math.min(100 - left, ((timeToMinutes(entry!.endTime!) - timeToMinutes(entry!.startTime!)) / span) * 100));
+                    bar = (
+                      <div
+                        className="absolute inset-y-0 rounded bg-blue-500"
+                        style={{ left: `${left}%`, width: `${width}%` }}
+                        title={fmtShiftRange(entry!.startTime, entry!.endTime)}
+                      />
+                    );
+                  }
+                  return (
+                    <td
+                      key={row.date}
+                      className={`border-b border-black/5 px-1 py-2 w-16 ${row.date === today ? 'bg-[#f3f7fd]' : ''} ${row.isNewMonth ? 'border-l border-black/10' : ''}`}
+                    >
+                      <div className="relative h-5 rounded bg-gray-100">{bar}</div>
                     </td>
-                    <td colSpan={grid.data!.roster.length + 1} className="bg-gray-50" />
-                  </tr>
-                )}
-                <tr className={row.date === today ? 'bg-blue-50/40' : ''}>
-                  <td
-                    className={`sticky left-0 z-10 border-b border-black/5 px-4 py-2 font-medium whitespace-nowrap ${
-                      row.date === today ? 'bg-[#f3f7fd]' : 'bg-white'
-                    }`}
-                  >
-                    {fmtDate(row.date)} {row.date === today && <span className="ml-1 text-xs font-normal text-blue-600">today</span>}
-                  </td>
-                  {row.entries.map((e) => (
-                    <td key={e.staffId} className="border-b border-black/5 px-3 py-2 whitespace-nowrap">
-                      {e.pendingRequest ? (
-                        <span className="text-amber-700">requested off</span>
-                      ) : e.working ? (
-                        <span className="text-gray-700">{fmtShiftRange(e.startTime, e.endTime)}</span>
-                      ) : (
-                        <span className="text-gray-300">off</span>
-                      )}
-                    </td>
-                  ))}
-                  <td className={`border-b border-black/5 px-3 py-2 font-semibold ${row.belowMinimum ? 'text-red-600' : 'text-green-700'}`}>
-                    {row.coverageCount}
-                  </td>
-                </tr>
-              </Fragment>
+                  );
+                })}
+              </tr>
             ))}
           </tbody>
         </table>
