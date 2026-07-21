@@ -4,6 +4,7 @@ import { appendEvent } from './event-log';
 import { estimateWaitTimes } from './wait-time';
 import { createClient, findClientByPhone, touchClientConfirmed } from '../clients/client-lookup';
 import type {
+  ChangeServiceDto,
   CheckInDto,
   ReassignDto,
   ReorderDto,
@@ -392,6 +393,34 @@ export class QueueService {
     this.broadcast(locationId);
   }
 
+  /** Changing the service while still waiting — e.g. the client decided on a different cut at the desk. */
+  async changeService(locationId: string, queueEntryId: string, actorUserId: string, dto: ChangeServiceDto) {
+    const trx = db();
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (entry.status !== 'waiting') {
+      throw new ConflictException('Only a waiting entry can have its service changed');
+    }
+
+    const service = await trx.selectFrom('services').selectAll().where('id', '=', dto.serviceId).where('location_id', '=', locationId).executeTakeFirst();
+    if (!service) throw new NotFoundException('Service not found at this location');
+
+    await trx.updateTable('queue_entries').set({ service_id: dto.serviceId, updated_at: new Date() }).where('id', '=', queueEntryId).execute();
+
+    await appendEvent(trx, {
+      locationId,
+      eventType: 'queue_entry_service_changed',
+      entityId: queueEntryId,
+      actorUserId,
+      payload: {
+        queueEntryId,
+        newServiceId: dto.serviceId,
+        reversal: { previousServiceId: entry.service_id },
+      },
+    });
+
+    this.broadcast(locationId);
+  }
+
   async reorder(locationId: string, actorUserId: string, dto: ReorderDto) {
     const trx = db();
 
@@ -695,6 +724,14 @@ export class QueueService {
           .execute();
         break;
       }
+      case 'queue_entry_service_changed': {
+        await trx
+          .updateTable('queue_entries')
+          .set({ service_id: reversal.previousServiceId, updated_at: new Date() })
+          .where('id', '=', payload.queueEntryId)
+          .execute();
+        break;
+      }
       case 'queue_entry_reordered': {
         for (const item of reversal.previousOrder as { id: string; order: number | null }[]) {
           await trx.updateTable('queue_entries').set({ waiting_order: item.order, updated_at: new Date() }).where('id', '=', item.id).execute();
@@ -766,12 +803,14 @@ export class QueueService {
 
     const entryIds = new Set<string>();
     const staffIds = new Set<string>();
+    const serviceIds = new Set<string>();
     for (const e of events) {
       const p = e.payload as any;
       if (p?.queueEntryId) entryIds.add(p.queueEntryId);
       for (const key of ['staffId', 'newStaffId', 'locationStaffId']) {
         if (p?.[key]) staffIds.add(p[key]);
       }
+      if (p?.newServiceId) serviceIds.add(p.newServiceId);
     }
 
     const entryNames = new Map<string, string>();
@@ -796,6 +835,12 @@ export class QueueService {
       for (const r of rows) staffNames.set(r.id, r.name);
     }
 
+    const serviceNames = new Map<string, string>();
+    if (serviceIds.size > 0) {
+      const rows = await trx.selectFrom('services').select(['id', 'name']).where('id', 'in', [...serviceIds]).execute();
+      for (const r of rows) serviceNames.set(r.id, r.name);
+    }
+
     const byId = new Map(events.map((e) => [String(e.id), e]));
 
     const describe = (e: (typeof events)[number]): string => {
@@ -818,6 +863,8 @@ export class QueueService {
           return `Marked ${who} as abandoned`;
         case 'queue_entry_reassigned':
           return `Reassigned ${who} to ${staff(p?.newStaffId)}`;
+        case 'queue_entry_service_changed':
+          return `Changed ${who}'s service to ${(p?.newServiceId && serviceNames.get(p.newServiceId)) || 'a different service'}`;
         case 'queue_entry_reordered':
           return 'Reordered the waiting list';
         case 'queue_entry_present_toggled':

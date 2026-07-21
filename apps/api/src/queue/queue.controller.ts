@@ -3,6 +3,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { requireAuth } from '../common/request-context';
 import { QueueService } from './queue.service';
 import type {
+  ChangeServiceDto,
   CheckInDto,
   ReassignDto,
   ReorderDto,
@@ -69,6 +70,12 @@ export class QueueController {
   eligibleStaff(@Param('id') id: string) {
     const auth = requireAuth();
     return this.queue.eligibleStaff(auth.locationId, id);
+  }
+
+  @Post('queue/:id/service')
+  changeService(@Param('id') id: string, @Body() dto: ChangeServiceDto) {
+    const auth = requireAuth();
+    return this.queue.changeService(auth.locationId, id, auth.userId, dto);
   }
 
   @Post('queue/reorder')

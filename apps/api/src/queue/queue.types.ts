@@ -31,6 +31,10 @@ export interface ReassignDto {
   newStaffId: string;
 }
 
+export interface ChangeServiceDto {
+  serviceId: string;
+}
+
 export interface TogglePresentDto {
   present: boolean;
 }

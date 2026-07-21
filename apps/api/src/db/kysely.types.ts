@@ -215,6 +215,7 @@ export type QueueEventType =
   | 'queue_entry_abandoned'
   | 'queue_entry_abandoned_undone'
   | 'queue_entry_reassigned'
+  | 'queue_entry_service_changed'
   | 'queue_entry_reordered'
   | 'queue_entry_present_toggled'
   | 'queue_entry_returned_to_waiting'

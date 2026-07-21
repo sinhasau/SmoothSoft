@@ -83,6 +83,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const [checkoutEntry, setCheckoutEntry] = useState<QueueEntry | null>(null);
   const [startEntry, setStartEntry] = useState<QueueEntry | null>(null);
   const [reassignEntry, setReassignEntry] = useState<QueueEntry | null>(null);
+  const [changeServiceEntry, setChangeServiceEntry] = useState<QueueEntry | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [localWaitingOrder, setLocalWaitingOrder] = useState<string[] | null>(null);
   const [showCloseShop, setShowCloseShop] = useState(false);
@@ -257,6 +258,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                 <RowMenu
                   items={[
                     { label: 'Reassign', onClick: () => setReassignEntry(e) },
+                    { label: 'Change service', onClick: () => setChangeServiceEntry(e) },
                     { label: 'Mark no-show', onClick: () => noShow.mutate(e.id), hidden: e.present },
                     { label: 'Mark abandoned', onClick: () => abandon.mutate(e.id), hidden: !e.present },
                     { label: 'Cancel', onClick: () => cancel.mutate(e.id), destructive: true },
@@ -320,6 +322,10 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       {startEntry && <StartPanel entry={startEntry} onClose={() => setStartEntry(null)} onDone={invalidate} />}
 
       {reassignEntry && <ReassignPanel entry={reassignEntry} onClose={() => setReassignEntry(null)} onDone={invalidate} />}
+
+      {changeServiceEntry && services.data && (
+        <ChangeServicePanel entry={changeServiceEntry} services={services.data} onClose={() => setChangeServiceEntry(null)} onDone={invalidate} />
+      )}
 
       {checkoutEntry && (
         <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} onClose={() => setCheckoutEntry(null)} onDone={invalidate} />
@@ -581,6 +587,48 @@ function ReassignPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose:
         <Button onClick={onClose}>Cancel</Button>
         <Button variant="solid" onClick={() => reassign.mutate()} disabled={!staffId || reassign.isPending}>
           Reassign
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function ChangeServicePanel({
+  entry,
+  services,
+  onClose,
+  onDone,
+}: {
+  entry: QueueEntry;
+  services: Service[];
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [serviceId, setServiceId] = useState(entry.serviceId);
+
+  const changeService = useMutation({
+    mutationFn: () => api.post(`/queue/${entry.id}/service`, { serviceId }),
+    onSuccess: () => {
+      onDone();
+      onClose();
+    },
+  });
+
+  return (
+    <Modal onClose={onClose}>
+      <h3 className="font-semibold mb-1">Change service — {displayName(entry)}</h3>
+      <p className="text-sm text-gray-500 mb-4">Currently: {entry.serviceName}</p>
+      <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-4" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+        {services.map((s) => (
+          <option key={s.id} value={s.id}>
+            {s.name} · {s.duration_minutes}min · ${s.price}
+          </option>
+        ))}
+      </select>
+      <div className="flex justify-end gap-2">
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="solid" onClick={() => changeService.mutate()} disabled={serviceId === entry.serviceId || changeService.isPending}>
+          Save
         </Button>
       </div>
     </Modal>
