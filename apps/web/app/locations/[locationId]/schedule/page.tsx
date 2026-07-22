@@ -89,7 +89,6 @@ export default function SchedulePage({ params }: { params: { locationId: string 
   const [issuesOnly, setIssuesOnly] = useState(false);
   const [roleFilter, setRoleFilter] = useState('All roles');
   const [view, setView] = useState<'Week' | 'Day' | 'List'>('Week');
-  const [daysShown, setDaysShown] = useState<3 | 5 | 7>(7);
   const [dirty, setDirty] = useState(false);
   const [dirtyCount, setDirtyCount] = useState(0);
   const [toast, setToast] = useState('');
@@ -196,7 +195,7 @@ export default function SchedulePage({ params }: { params: { locationId: string 
   ];
   const visibleRows = view === 'Day'
     ? (grid.data?.rows ?? []).filter((row) => row.date === today || (!grid.data?.rows.some((item) => item.date === today) && row.date === weekStart))
-    : (grid.data?.rows ?? []).slice(0, daysShown);
+    : grid.data?.rows ?? [];
 
   function openAddShift() {
     const person = visibleRoster[0] ?? activeRoster[0];
@@ -284,9 +283,8 @@ export default function SchedulePage({ params }: { params: { locationId: string 
             <button className="schedule-icon-button" aria-label="Previous week" onClick={() => setWeekStart(moveDate(weekStart, -7))}>←</button>
             <button className="schedule-icon-button" aria-label="Next week" onClick={() => setWeekStart(moveDate(weekStart, 7))}>→</button>
           </div>
-          <strong className="min-w-36 text-center text-sm">{dateRange(weekStart, view === 'Day' ? 1 : daysShown)}</strong>
+          <strong className="min-w-36 text-center text-sm">{dateRange(weekStart, view === 'Day' ? 1 : 7)}</strong>
           <select aria-label="Schedule view" className="schedule-control" value={view} onChange={(event) => setView(event.target.value as typeof view)}><option>Week</option><option>Day</option><option>List</option></select>
-          {view !== 'Day' && <select aria-label="Days shown" className="schedule-control" value={daysShown} onChange={(event) => setDaysShown(Number(event.target.value) as 3 | 5 | 7)}><option value="3">3 days</option><option value="5">5 days</option><option value="7">7 days</option></select>}
           {canManage && undoStack.length > 0 && <ScheduleUndoButton onUndo={() => { const action = undoStack[undoStack.length - 1]; if (action) undoShift.mutate(action); }} pending={undoShift.isPending} />}
           {canManage && <Button onClick={openAddShift}>+ Add Shift <span className="ml-1 text-xs opacity-50">N</span></Button>}
           {canManage && <Button variant="solid" onClick={() => setPublishReviewOpen(true)} disabled={publishSchedule.isPending}>{dirtyCount ? `Publish (${dirtyCount})` : 'Review & publish'}</Button>}
