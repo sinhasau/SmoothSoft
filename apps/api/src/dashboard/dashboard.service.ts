@@ -4,12 +4,7 @@ import { db } from '../common/request-context';
 import { PG_POOL } from '../db/database.module';
 import { runInLocationScope } from '../db/scoped-query';
 import type { StaffRole } from '../db/kysely.types';
-
-function startOfToday(): Date {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
+import { dayOfWeekInTimezone, startOfDayInTimezone } from '../common/time';
 
 /** W2/1099 classification is payroll-sensitive — only management should see it about other staff. */
 function canViewClassification(role: StaffRole): boolean {
@@ -28,7 +23,8 @@ export class DashboardService {
 
   async locationDashboard(locationId: string, requesterRole: StaffRole) {
     const trx = db();
-    const since = startOfToday();
+    const location = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const since = startOfDayInTimezone(location.timezone);
 
     const todaysTxns = await trx
       .selectFrom('transactions')
@@ -83,7 +79,7 @@ export class DashboardService {
     const abandoned = cancelledToday.filter((e) => e.abandoned).length;
     const cancels = cancelledToday.filter((e) => e.status === 'cancelled' && !e.abandoned).length;
 
-    const staffTodayRaw = await this.staffToday(locationId, since);
+    const staffTodayRaw = await this.staffToday(locationId, since, location.timezone);
     const utilization = this.computeUtilization(staffTodayRaw);
     const staffToday = canViewClassification(requesterRole)
       ? staffTodayRaw
@@ -114,6 +110,7 @@ export class DashboardService {
         'ti.price as billed',
         't.tip as tip',
         't.payment_method as paymentMethod',
+        't.receipt_number as receiptNumber',
         't.created_at as createdAt',
       ])
       .where('t.location_id', '=', locationId)
@@ -121,28 +118,21 @@ export class DashboardService {
       .orderBy('t.created_at', 'desc')
       .execute();
 
+    const managerView = canViewClassification(requesterRole);
     return {
-      revenue,
-      serviceRevenue: Number(serviceRevenue?.total ?? 0),
-      retailRevenue: Number(retailRevenue?.total ?? 0),
-      discount,
-      tax,
-      tips,
+      ...(managerView ? { revenue, serviceRevenue: Number(serviceRevenue?.total ?? 0), retailRevenue: Number(retailRevenue?.total ?? 0), discount, tax, tips, avgTicket, cashSales, cardSales } : {}),
       clientsServed,
-      avgTicket,
       utilizationPct: utilization,
-      cashSales,
-      cardSales,
       noShows,
       cancels,
       abandoned,
       staffToday,
-      compliance,
-      lineItems,
+      compliance: managerView ? compliance : [],
+      lineItems: managerView ? lineItems : [],
     };
   }
 
-  private async staffToday(locationId: string, since: Date) {
+  private async staffToday(locationId: string, since: Date, timezone: string) {
     const trx = db();
     const roster = await trx
       .selectFrom('location_staff as ls')
@@ -151,7 +141,7 @@ export class DashboardService {
       .where('ls.location_id', '=', locationId)
       .execute();
 
-    const todayDow = new Date().getDay();
+    const todayDow = dayOfWeekInTimezone(timezone);
 
     const results = [];
     for (const person of roster) {
@@ -215,9 +205,11 @@ export class DashboardService {
    * its service/retail split, tip, tax, discount, and total. Backs the
    * drill-down screen the Revenue / Clients-served stat cards link to.
    */
-  async salesBreakdown(locationId: string) {
+  async salesBreakdown(locationId: string, days = 1) {
     const trx = db();
-    const since = startOfToday();
+    const location = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const since = startOfDayInTimezone(location.timezone);
+    since.setUTCDate(since.getUTCDate() - (days - 1));
 
     const txns = await trx
       .selectFrom('transactions as t')
@@ -235,6 +227,7 @@ export class DashboardService {
         't.discount_amount as discountAmount',
         't.total as total',
         't.payment_method as paymentMethod',
+        't.receipt_number as receiptNumber',
         't.created_at as createdAt',
       ])
       .where('t.location_id', '=', locationId)
@@ -244,8 +237,11 @@ export class DashboardService {
 
     const ids = txns.map((t) => t.transactionId);
     const items = ids.length
-      ? await trx.selectFrom('transaction_items').select(['transaction_id', 'item_type', 'price']).where('transaction_id', 'in', ids).execute()
+      ? await trx.selectFrom('transaction_items').select(['transaction_id', 'name', 'item_type', 'price']).where('transaction_id', 'in', ids).execute()
       : [];
+    const refunds = ids.length ? await trx.selectFrom('refunds').select(['id', 'original_transaction_id', 'amount', 'reason', 'status', 'created_at']).where('original_transaction_id', 'in', ids).execute() : [];
+    const refundedTotals = new Map<string, number>();
+    for (const refund of refunds) if (refund.status === 'succeeded') refundedTotals.set(refund.original_transaction_id, (refundedTotals.get(refund.original_transaction_id) ?? 0) + Number(refund.amount));
 
     const serviceTotals = new Map<string, number>();
     const retailTotals = new Map<string, number>();
@@ -258,6 +254,9 @@ export class DashboardService {
       ...t,
       serviceTotal: serviceTotals.get(t.transactionId) ?? 0,
       retailTotal: retailTotals.get(t.transactionId) ?? 0,
+      refundedAmount: refundedTotals.get(t.transactionId) ?? 0,
+      items: items.filter((item) => item.transaction_id === t.transactionId).map((item) => ({ name: item.name, itemType: item.item_type, price: Number(item.price) })),
+      refunds: refunds.filter((refund) => refund.original_transaction_id === t.transactionId).map((refund) => ({ id: refund.id, amount: Number(refund.amount), reason: refund.reason, status: refund.status, createdAt: refund.created_at })),
     }));
   }
 
@@ -268,7 +267,7 @@ export class DashboardService {
     const perLocation = await Promise.all(
       locations.map(async (loc) => {
         const stats = await runInLocationScope(this.pool, organizationId, loc.id, async (scopedTrx) => {
-          const since = startOfToday();
+          const since = startOfDayInTimezone(loc.timezone);
           const txns = await scopedTrx.selectFrom('transactions').selectAll().where('location_id', '=', loc.id).where('created_at', '>=', since).execute();
           const staff = await scopedTrx.selectFrom('location_staff').selectAll().where('location_id', '=', loc.id).execute();
           const compliance = await scopedTrx

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Kysely } from 'kysely';
 import type { DB } from '../db/kysely.types';
 import type { AuthClaims } from '../auth/auth.types';
+import { ForbiddenException } from '@nestjs/common';
 
 export interface RequestContext {
   trx: Kysely<DB>;
@@ -38,6 +39,23 @@ export function requireAuth(): AuthClaims {
   const auth = currentAuth();
   if (!auth) {
     throw new Error('requireAuth() called with no authenticated session in context.');
+  }
+  return auth;
+}
+
+export function requireManager(): AuthClaims {
+  const auth = requireAuth();
+  if (auth.role !== 'org_owner' && auth.role !== 'location_manager') {
+    throw new ForbiddenException('Manager access is required for this action.');
+  }
+  return auth;
+}
+
+/** Read-only operational records used at reception, such as receipts. */
+export function requireFrontDeskOrManager(): AuthClaims {
+  const auth = requireAuth();
+  if (!['org_owner', 'location_manager', 'front_desk'].includes(auth.role)) {
+    throw new ForbiddenException('Front desk or manager access is required for this action.');
   }
   return auth;
 }

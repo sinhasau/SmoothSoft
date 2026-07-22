@@ -1,8 +1,8 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { requireAuth } from '../common/request-context';
+import { requireAuth, requireManager } from '../common/request-context';
 import { PaymentsService } from './payments.service';
-import type { CheckoutDto, CloseShopDto } from './payments.types';
+import type { CheckoutDto, CloseShopDto, OpenShopDto, RefundDto } from './payments.types';
 
 @Controller('payments')
 @UseGuards(AuthGuard)
@@ -15,6 +15,11 @@ export class PaymentsController {
     return this.payments.getConfig(auth.locationId);
   }
 
+  @Get('shop-status')
+  shopStatus() {
+    return this.payments.shopStatus(requireAuth().locationId);
+  }
+
   @Post('checkout')
   checkout(@Body() dto: CheckoutDto) {
     const auth = requireAuth();
@@ -23,13 +28,30 @@ export class PaymentsController {
 
   @Get('close-shop-summary')
   closeShopSummary() {
-    const auth = requireAuth();
+    const auth = requireManager();
     return this.payments.closeShopSummary(auth.locationId);
   }
 
   @Post('close-shop')
   closeShop(@Body() dto: CloseShopDto) {
-    const auth = requireAuth();
+    const auth = requireManager();
     return this.payments.closeShop(auth.locationId, auth.userId, dto);
+  }
+
+  @Get('open-shop-summary')
+  openShopSummary() {
+    return this.payments.openShopSummary(requireAuth().locationId);
+  }
+
+  @Post('open-shop')
+  openShop(@Body() dto: OpenShopDto) {
+    const auth = requireAuth();
+    return this.payments.openShop(auth.locationId, auth.userId, dto);
+  }
+
+  @Post('transactions/:id/refund')
+  refund(@Param('id') id: string, @Body() dto: RefundDto) {
+    const auth = requireManager();
+    return this.payments.refund(auth.locationId, auth.userId, id, dto);
   }
 }

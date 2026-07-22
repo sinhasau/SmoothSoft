@@ -159,12 +159,12 @@ export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: { locationS
 
 export function Pill({ tone, children }: { tone: 'amber' | 'red' | 'green' | 'gray'; children: React.ReactNode }) {
   const tones: Record<string, string> = {
-    amber: 'bg-amber-100 text-amber-800',
-    red: 'bg-red-100 text-red-700',
-    green: 'bg-green-100 text-green-700',
-    gray: 'bg-gray-100 text-gray-600',
+    amber: 'border border-amber-200/70 bg-amber-50 text-amber-800',
+    red: 'border border-red-200/70 bg-red-50 text-red-700',
+    green: 'border border-emerald-200/70 bg-emerald-50 text-emerald-800',
+    gray: 'border border-stone-200/80 bg-stone-50 text-stone-600',
   };
-  return <span className={`inline-block rounded-full px-3 py-1 text-sm font-medium ${tones[tone]}`}>{children}</span>;
+  return <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-semibold ${tones[tone]}`}>{children}</span>;
 }
 
 export function StatCard({ label, value, valueClassName, onClick }: { label: string; value: React.ReactNode; valueClassName?: string; onClick?: () => void }) {
@@ -172,7 +172,7 @@ export function StatCard({ label, value, valueClassName, onClick }: { label: str
   return (
     <Comp
       onClick={onClick}
-      className={`rounded-xl bg-white/60 border border-black/5 px-5 py-4 text-left ${onClick ? 'cursor-pointer hover:bg-white' : ''}`}
+      className={`rounded-2xl border border-black/[0.06] bg-gradient-to-br from-white/90 to-[#fbfaf6]/90 px-5 py-4 text-left shadow-[0_8px_24px_rgba(60,48,30,0.045)] transition ${onClick ? 'cursor-pointer hover:-translate-y-0.5 hover:border-[#9bb5aa]/60 hover:shadow-[0_12px_28px_rgba(48,82,68,0.08)]' : ''}`}
     >
       <div className="text-sm text-gray-500">{label}</div>
       <div className={`text-2xl font-semibold mt-1 ${valueClassName ?? ''}`}>{value}</div>
@@ -190,7 +190,7 @@ export function TabLink({ href, children, exact }: { href: string; children: Rea
     <Link
       href={href}
       className={`rounded-lg border px-4 py-2 text-sm font-medium ${
-        active ? 'border-black bg-black text-white' : 'border-black/10 bg-white text-ink hover:border-black/30'
+        active ? 'border-[#315c4f] bg-[#315c4f] text-white shadow-sm' : 'border-black/10 bg-white/80 text-ink hover:border-[#78988d] hover:bg-white'
       }`}
     >
       {children}
@@ -199,7 +199,7 @@ export function TabLink({ href, children, exact }: { href: string; children: Rea
 }
 
 export function Card({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={`rounded-xl border border-black/10 bg-white/60 ${className ?? ''}`}>{children}</div>;
+  return <div className={`rounded-2xl border border-black/[0.07] bg-white/80 shadow-[0_8px_24px_rgba(60,48,30,0.04)] ${className ?? ''}`}>{children}</div>;
 }
 
 export function Button({
@@ -215,11 +215,11 @@ export function Button({
   disabled?: boolean;
   type?: 'button' | 'submit';
 }) {
-  const base = 'rounded-lg px-4 py-2 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed';
+  const base = 'rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed';
   const variants: Record<string, string> = {
-    default: 'border border-black/15 bg-white hover:border-black/40',
-    solid: 'bg-black text-white hover:bg-black/85',
-    ghost: 'hover:bg-black/5',
+    default: 'border border-black/10 bg-white/90 shadow-sm hover:border-[#78988d] hover:bg-white',
+    solid: 'bg-[#294f44] text-[#fffdf7] shadow-sm hover:bg-[#1f4037] hover:shadow-md',
+    ghost: 'hover:bg-[#edf3f0] hover:text-[#244a40]',
   };
   return (
     <button type={type} onClick={onClick} disabled={disabled} className={`${base} ${variants[variant]}`}>

@@ -40,15 +40,15 @@ interface LineItem {
 }
 
 interface LocationDashboard {
-  revenue: number;
-  serviceRevenue: number;
-  retailRevenue: number;
-  discount: number;
+  revenue?: number;
+  serviceRevenue?: number;
+  retailRevenue?: number;
+  discount?: number;
   clientsServed: number;
-  avgTicket: number;
+  avgTicket?: number;
   utilizationPct: number;
-  cashSales: number;
-  cardSales: number;
+  cashSales?: number;
+  cardSales?: number;
   noShows: number;
   cancels: number;
   abandoned: number;
@@ -56,6 +56,7 @@ interface LocationDashboard {
   compliance: ComplianceAlert[];
   lineItems: LineItem[];
 }
+interface WaitAccuracy { sampleSize: number; medianAbsoluteErrorMinutes: number | null; withinTenMinutesPct: number | null; windowDays: number }
 
 function money(n: number) {
   return `$${n.toFixed(0)}`;
@@ -71,30 +72,40 @@ export default function DashboardPage({ params }: { params: { locationId: string
     queryKey: ['dashboard', 'location', params.locationId],
     queryFn: () => api.get<LocationDashboard>('/dashboard/location'),
   });
+  const accuracy = useQuery({ queryKey: ['queue', 'accuracy', 30], queryFn: () => api.get<WaitAccuracy>('/queue/accuracy?days=30') });
 
   if (isLoading || !data) return <p className="text-gray-500">Loading…</p>;
   const showClassification = auth?.role === 'org_owner' || auth?.role === 'location_manager';
+  const managerView = showClassification;
 
   const goToSales = () => router.push(`/locations/${params.locationId}/sales`);
+  const accuracyReady = (accuracy.data?.sampleSize ?? 0) >= 10 && accuracy.data?.medianAbsoluteErrorMinutes != null;
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-4 gap-4">
-        <StatCard label="Revenue" value={money(data.revenue)} onClick={goToSales} />
-        <StatCard label="Clients served" value={data.clientsServed} onClick={goToSales} />
-        <StatCard label="Avg ticket" value={money(data.avgTicket)} onClick={goToSales} />
+      <header>
+        <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Business pulse</p>
+        <h1 className="font-serif text-4xl font-medium tracking-tight text-[#171d1a]">Overview</h1>
+        <p className="mt-1 text-sm text-gray-500">A clear look at how the shop is moving today.</p>
+      </header>
+      <div className={`grid gap-3 sm:grid-cols-2 ${managerView ? 'xl:grid-cols-5' : 'lg:grid-cols-3'}`}>
+        {managerView && <StatCard label="Revenue" value={money(data.revenue ?? 0)} onClick={goToSales} />}
+        <StatCard label="Clients served" value={data.clientsServed} onClick={managerView ? goToSales : undefined} />
+        {managerView && <StatCard label="Avg ticket" value={money(data.avgTicket ?? 0)} onClick={goToSales} />}
         <StatCard label="Utilization" value={`${data.utilizationPct}%`} valueClassName="text-red-700" />
+        <StatCard label="Wait accuracy" value={accuracyReady ? `±${accuracy.data!.medianAbsoluteErrorMinutes} min` : 'Learning'} valueClassName={accuracyReady && accuracy.data!.medianAbsoluteErrorMinutes! <= 10 ? 'text-green-700' : ''} />
       </div>
+      {accuracy.data && <p className="-mt-4 text-xs text-gray-500">{accuracyReady ? `Based on ${accuracy.data.sampleSize} completed visits in the last 30 days · ${accuracy.data.withinTenMinutesPct}% started within 10 minutes of the estimate.` : `${accuracy.data.sampleSize} of 10 completed visits collected. Accuracy appears once there is enough data to avoid a misleading result.`}</p>}
 
-      {data.discount > 0 && (
+      {managerView && (data.discount ?? 0) > 0 && (
         <p className="text-sm text-gray-500 -mt-2">
-          Revenue = {money2(data.serviceRevenue)} services + {money2(data.retailRevenue)} products − {money2(data.discount)} discounts ={' '}
-          <span className="font-medium text-black">{money2(data.revenue)}</span>
+          Revenue = {money2(data.serviceRevenue ?? 0)} services + {money2(data.retailRevenue ?? 0)} products − {money2(data.discount ?? 0)} discounts ={' '}
+          <span className="font-medium text-black">{money2(data.revenue ?? 0)}</span>
         </p>
       )}
 
-      <div className="grid grid-cols-2 gap-4">
-        <StatCard label="Cash vs card" value={`${money(data.cashSales)} / ${money(data.cardSales)}`} onClick={goToSales} />
+      <div className={`grid gap-4 ${managerView ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        {managerView && <StatCard label="Cash vs card" value={`${money(data.cashSales ?? 0)} / ${money(data.cardSales ?? 0)}`} onClick={goToSales} />}
         <StatCard label="No-shows / cancels / abandoned" value={`${data.noShows} / ${data.cancels} / ${data.abandoned}`} />
       </div>
 
@@ -107,7 +118,7 @@ export default function DashboardPage({ params }: { params: { locationId: string
                 <th className="px-4 py-3 font-medium">Staff</th>
                 {showClassification && <th className="px-4 py-3 font-medium">Classification</th>}
                 <th className="px-4 py-3 font-medium">Clients</th>
-                <th className="px-4 py-3 font-medium">Revenue</th>
+                {managerView && <th className="px-4 py-3 font-medium">Revenue</th>}
                 <th className="px-4 py-3 font-medium">Status</th>
               </tr>
             </thead>
@@ -115,11 +126,11 @@ export default function DashboardPage({ params }: { params: { locationId: string
               {data.staffToday.map((s) => (
                 <tr key={s.locationStaffId} className="border-b border-black/5 last:border-0">
                   <td className="px-4 py-3">
-                    <ClickableName id={s.locationStaffId} name={s.fullName} href={(id) => `/locations/${params.locationId}/staff/${id}`} />
+                    {managerView || s.locationStaffId === auth?.locationStaffId ? <ClickableName id={s.locationStaffId} name={s.fullName} href={(id) => `/locations/${params.locationId}/staff/${id}`} /> : <span>{s.fullName}</span>}
                   </td>
                   {showClassification && <td className="px-4 py-3 text-gray-500">{s.classification?.toUpperCase()}</td>}
                   <td className="px-4 py-3">{s.clients}</td>
-                  <td className="px-4 py-3">{money(s.revenue)}</td>
+                  {managerView && <td className="px-4 py-3">{money(s.revenue)}</td>}
                   <td className="px-4 py-3">
                     {s.status === 'off' ? <span className="text-gray-400">Off today</span> : <span className="text-green-700">On shift</span>}
                   </td>

@@ -1,8 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
-import type { DecideScheduleRequestDto, SubmitScheduleRequestDto } from './schedule.types';
-
-const MIN_COVERAGE = 2;
+import type { DecideScheduleRequestDto, PublishScheduleDto, SubmitScheduleRequestDto } from './schedule.types';
 
 function dateKey(d: Date): string {
   return d.toISOString().slice(0, 10);
@@ -21,13 +19,30 @@ function dateKey(d: Date): string {
  */
 @Injectable()
 export class ScheduleService {
-  async grid(locationId: string, startDate: string, days: number) {
+  publication(locationId: string, weekStart: string) {
+    return db().selectFrom('schedule_publications').selectAll().where('location_id', '=', locationId).where('week_start', '=', weekStart).where('status', '=', 'published').executeTakeFirst();
+  }
+
+  async publish(locationId: string, actorUserId: string, dto: PublishScheduleDto) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dto.weekStart)) throw new BadRequestException('weekStart must be YYYY-MM-DD');
     const trx = db();
+    await trx.updateTable('schedule_publications').set({ status: 'superseded' }).where('location_id', '=', locationId).where('week_start', '=', dto.weekStart).where('status', '=', 'published').execute();
+    return trx.insertInto('schedule_publications').values({ location_id: locationId, week_start: dto.weekStart, status: 'published', warning_count: dto.warningCount ?? 0, notify_scope: dto.notifyScope ?? 'all', published_by_user_id: actorUserId }).returningAll().executeTakeFirstOrThrow();
+  }
+
+  async grid(locationId: string, startDate: string, days: number, managerView = true) {
+    const trx = db();
+    const policy = await trx.selectFrom('location_scheduling_policy').select(['minimum_coverage', 'overtime_threshold_hours', 'chair_count', 'base_hourly_labor_cost', 'payroll_burden_pct']).where('location_id', '=', locationId).executeTakeFirst();
+    const minimumCoverage = policy?.minimum_coverage ?? 2;
+    const overtimeThresholdHours = Number(policy?.overtime_threshold_hours ?? 40);
+    const chairCount = policy?.chair_count ?? 4;
+    const baseHourlyLaborCost = Number(policy?.base_hourly_labor_cost ?? 24);
+    const payrollBurdenPct = Number(policy?.payroll_burden_pct ?? 0);
 
     const roster = await trx
       .selectFrom('location_staff as ls')
       .innerJoin('users as u', 'u.id', 'ls.user_id')
-      .select(['ls.id as staffId', 'u.full_name as fullName'])
+      .select(['ls.id as staffId', 'u.full_name as fullName', 'ls.role as role', 'ls.employment_status as employmentStatus'])
       .where('ls.location_id', '=', locationId)
       .orderBy('u.full_name')
       .execute();
@@ -106,22 +121,65 @@ export class ScheduleService {
           startTime,
           endTime,
           source,
-          pendingRequest: pending ? { id: pending.id, isWorking: pending.is_working, reason: pending.reason } : null,
+          pendingRequest: managerView && pending ? { id: pending.id, isWorking: pending.is_working, reason: pending.reason } : null,
         };
       });
 
-      const coverageCount = entries.filter((e) => e.working).length;
+      const activeServiceStaffIds = new Set(roster.filter((person) => person.employmentStatus === 'active' && person.role !== 'front_desk').map((person) => person.staffId));
+      const coverageCount = entries.filter((e) => e.working && activeServiceStaffIds.has(e.staffId)).length;
+      const chairEvents = entries.filter((entry) => entry.working && activeServiceStaffIds.has(entry.staffId) && entry.startTime && entry.endTime).flatMap((entry) => [
+        { minute: Number(entry.startTime!.slice(0, 2)) * 60 + Number(entry.startTime!.slice(3, 5)), delta: 1 },
+        { minute: Number(entry.endTime!.slice(0, 2)) * 60 + Number(entry.endTime!.slice(3, 5)), delta: -1 },
+      ]).sort((a, b) => a.minute - b.minute || a.delta - b.delta);
+      let activeChairs = 0;
+      let peakChairUsage = 0;
+      for (const event of chairEvents) { activeChairs += event.delta; peakChairUsage = Math.max(peakChairUsage, activeChairs); }
 
       rows.push({
         date: key,
         dayOfWeek: dow,
         entries,
         coverageCount,
-        belowMinimum: coverageCount < MIN_COVERAGE,
+        belowMinimum: coverageCount < minimumCoverage,
+        peakChairUsage,
+        overChairCapacity: peakChairUsage > chairCount,
       });
     }
 
-    return { roster, rows, minimumCoverage: MIN_COVERAGE };
+    const [storeHours, specialHours, bookedAppointments] = await Promise.all([
+      trx.selectFrom('store_hours').selectAll().where('location_id', '=', locationId).execute(),
+      trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '>=', startDate).where('special_date', '<', endKey).execute(),
+      trx.selectFrom('appointments as a').innerJoin('services as s', 's.id', 'a.service_id').select(['a.id as id', 's.duration_minutes as primaryDurationMinutes', 'a.starts_at as startsAt']).where('a.location_id', '=', locationId).where('a.starts_at', '>=', start).where('a.starts_at', '<', end).where('a.status', 'in', ['booked', 'confirmed']).execute(),
+    ]);
+    const bookedAppointmentIds = bookedAppointments.map((appointment) => appointment.id);
+    const appointmentServiceLines = bookedAppointmentIds.length
+      ? await trx.selectFrom('appointment_services as aps').innerJoin('services as s', 's.id', 'aps.service_id').select(['aps.appointment_id as appointmentId', 's.duration_minutes as durationMinutes']).where('aps.appointment_id', 'in', bookedAppointmentIds).execute()
+      : [];
+    const appointmentDurationById = new Map<string, number>();
+    for (const line of appointmentServiceLines) appointmentDurationById.set(line.appointmentId, (appointmentDurationById.get(line.appointmentId) ?? 0) + line.durationMinutes);
+    const hoursByDay = new Map(storeHours.map((item) => [item.day_of_week, item]));
+    const specialByDate = new Map(specialHours.map((item) => [item.special_date, item]));
+    const availableChairMinutes = rows.reduce((sum, row) => {
+      const special = specialByDate.get(row.date);
+      const hours = special ? { is_open: !special.is_closed, open_time: special.open_time, close_time: special.close_time } : hoursByDay.get(row.dayOfWeek);
+      if (!hours?.is_open || !hours.open_time || !hours.close_time) return sum;
+      const [openHour, openMinute] = hours.open_time.split(':').map(Number);
+      const [closeHour, closeMinute] = hours.close_time.split(':').map(Number);
+      return sum + Math.max(0, closeHour * 60 + closeMinute - openHour * 60 - openMinute) * chairCount;
+    }, 0);
+    const bookedMinutes = bookedAppointments.reduce((sum, appointment) => sum + (appointmentDurationById.get(appointment.id) ?? appointment.primaryDurationMinutes), 0);
+    const bookedCapacityPct = availableChairMinutes ? Math.min(100, Math.round((bookedMinutes / availableChairMinutes) * 100)) : 0;
+    const bookedMinutesByDate = new Map<string, number>();
+    for (const appointment of bookedAppointments) { const key = dateKey(appointment.startsAt); bookedMinutesByDate.set(key, (bookedMinutesByDate.get(key) ?? 0) + (appointmentDurationById.get(appointment.id) ?? appointment.primaryDurationMinutes)); }
+    for (const row of rows) {
+      const special = specialByDate.get(row.date);
+      const hours = special ? { is_open: !special.is_closed, open_time: special.open_time, close_time: special.close_time } : hoursByDay.get(row.dayOfWeek);
+      if (!hours?.is_open || !hours.open_time || !hours.close_time) { Object.assign(row, { bookedCapacityPct: 0 }); continue; }
+      const [openHour, openMinute] = hours.open_time.split(':').map(Number); const [closeHour, closeMinute] = hours.close_time.split(':').map(Number);
+      const capacityMinutes = Math.max(0, closeHour * 60 + closeMinute - openHour * 60 - openMinute) * chairCount;
+      Object.assign(row, { bookedCapacityPct: capacityMinutes ? Math.min(100, Math.round(((bookedMinutesByDate.get(row.date) ?? 0) / capacityMinutes) * 100)) : 0 });
+    }
+    return { roster, rows, minimumCoverage, overtimeThresholdHours, chairCount, ...(managerView ? { baseHourlyLaborCost, payrollBurdenPct } : {}), bookedCapacityPct, bookedMinutes, availableChairMinutes };
   }
 
   pendingRequests(locationId: string) {

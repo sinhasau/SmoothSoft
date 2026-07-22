@@ -11,6 +11,7 @@ import { ClientsModule } from './clients/clients.module';
 import { ReportsModule } from './reports/reports.module';
 import { RlsTransactionMiddleware } from './common/rls-transaction.middleware';
 import { HealthController } from './health.controller';
+import { BookingModule } from './booking/booking.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { HealthController } from './health.controller';
     ScheduleModule,
     ClientsModule,
     ReportsModule,
+    BookingModule,
   ],
   controllers: [HealthController],
 })

@@ -27,6 +27,7 @@ interface StaffSeed {
   fullName: string;
   role: StaffRole;
   classification: StaffClassification;
+  employmentStatus?: 'active' | 'inactive' | 'resigned';
   commissionPct?: number;
   boothRentWeekly?: number;
   schedule: { day: number; start: string; end: string }[];
@@ -38,19 +39,20 @@ const DOWNTOWN_ROSTER: StaffSeed[] = [
     role: 'staff',
     classification: 'w2',
     commissionPct: 50,
-    schedule: [1, 2, 3, 4, 5, 6].map((day) => ({ day, start: '09:00', end: '17:00' })),
+    schedule: [1, 2, 4, 5, 6].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
   {
     fullName: 'Joel',
     role: 'staff',
     classification: '1099',
     boothRentWeekly: 250,
-    schedule: [2, 3, 4, 5, 6].map((day) => ({ day, start: '10:00', end: '18:00' })),
+    schedule: [3, 4, 6].map((day) => ({ day, start: '10:00', end: '18:00' })).concat([{ day: 5, start: '13:00', end: '18:00' }]),
   },
   {
     fullName: 'Alex',
     role: 'location_manager',
     classification: 'w2',
+    employmentStatus: 'inactive',
     commissionPct: 55,
     schedule: [0, 3, 4, 5, 6].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
@@ -59,7 +61,7 @@ const DOWNTOWN_ROSTER: StaffSeed[] = [
     role: 'staff',
     classification: 'w2',
     commissionPct: 50,
-    schedule: [1, 2, 3, 4, 5].map((day) => ({ day, start: '09:00', end: '17:00' })),
+    schedule: [1, 2, 3, 5].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
 ];
 
@@ -69,21 +71,21 @@ const EASTSIDE_ROSTER: StaffSeed[] = [
     role: 'staff',
     classification: '1099',
     boothRentWeekly: 250,
-    schedule: [1, 2, 3, 4, 5].map((day) => ({ day, start: '09:00', end: '17:00' })),
+    schedule: [1, 2, 3, 4].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
   {
     fullName: 'Devon Ellis',
     role: 'location_manager',
     classification: 'w2',
     commissionPct: 50,
-    schedule: [1, 2, 3, 4, 5, 6].map((day) => ({ day, start: '09:00', end: '17:00' })),
+    schedule: [0, 1, 2, 3].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
   {
     fullName: 'Sam Ortiz',
     role: 'staff',
     classification: 'w2',
     commissionPct: 50,
-    schedule: [2, 3, 4, 5, 6].map((day) => ({ day, start: '10:00', end: '18:00' })),
+    schedule: [4, 5, 6].map((day) => ({ day, start: '10:00', end: '18:00' })),
   },
 ];
 
@@ -190,6 +192,7 @@ async function seedLocation(organizationId: string, name: string, roster: StaffS
         user_id: user.id,
         role: person.role,
         classification: person.classification,
+        employment_status: person.employmentStatus ?? 'active',
         is_primary: true,
         status: 'off',
       })
@@ -247,42 +250,6 @@ async function main() {
   const downtown = await seedLocation(org.id, 'Downtown', DOWNTOWN_ROSTER);
   await seedLocation(org.id, 'Eastside', EASTSIDE_ROSTER);
   await seedLocation(org.id, 'Westfield', WESTFIELD_ROSTER);
-
-  // Compliance alert matching the reference screenshot: "Joel's insurance
-  // certificate expires in 12 days."
-  const expiresIn12Days = new Date();
-  expiresIn12Days.setDate(expiresIn12Days.getDate() + 12);
-  await db
-    .insertInto('compliance_documents')
-    .values({
-      location_id: downtown.location.id,
-      location_staff_id: downtown.staffIds['Joel'],
-      doc_type: 'insurance_certificate',
-      description: '1099 booth renter proof of insurance, due for renewal.',
-      expires_at: expiresIn12Days.toISOString().slice(0, 10),
-      status: 'needs_attention',
-    })
-    .execute();
-
-  // Matches the Eastside "Overdue" pill in the owner dashboard screenshot.
-  const eastsideLocation = await db
-    .selectFrom('locations')
-    .selectAll()
-    .where('organization_id', '=', org.id)
-    .where('name', '=', 'Eastside')
-    .executeTakeFirstOrThrow();
-
-  await db
-    .insertInto('compliance_documents')
-    .values({
-      location_id: eastsideLocation.id,
-      location_staff_id: null,
-      doc_type: 'sanitation_log',
-      description: 'Sanitation log not updated in 40 days.',
-      expires_at: null,
-      status: 'overdue',
-    })
-    .execute();
 
   // Alex's pending one-off "requested off" for the Monday after next,
   // matching the amber "requested off" cell in the schedule screenshot.

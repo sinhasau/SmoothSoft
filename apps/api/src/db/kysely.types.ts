@@ -53,6 +53,7 @@ export interface UsersTable {
 export type StaffRole = 'org_owner' | 'location_manager' | 'staff' | 'front_desk';
 export type StaffClassification = 'w2' | '1099';
 export type StaffStatus = 'available' | 'busy' | 'break' | 'off';
+export type EmploymentStatus = 'active' | 'inactive' | 'resigned';
 
 export interface LocationStaffTable {
   id: Generated<string>;
@@ -63,6 +64,9 @@ export interface LocationStaffTable {
   is_primary: Generated<boolean>;
   permission_overrides: Generated<Record<string, boolean>>;
   status: Generated<StaffStatus>;
+  employment_status: Generated<EmploymentStatus>;
+  hire_date: DateOnly | null;
+  job_role_id: ColumnType<string | null, string | null | undefined, string | null>;
   /** null = use the location's scheduling_self_serve default; true/false = explicit per-person override. */
   scheduling_self_serve_override: boolean | null;
   /** Only applied when the location's barber_request_mode is 'per_staff' — see LocationPricingPolicyTable. */
@@ -76,12 +80,63 @@ export interface LocationPricingPolicyTable {
   location_id: string;
   barber_request_mode: Generated<BarberRequestMode>;
   flat_surcharge_amount: NumericWithDefault;
+  credit_surcharge_to_staff: Generated<boolean>;
   updated_at: TimestampTzWithDefault;
 }
 
 export interface LocationSchedulingPolicyTable {
   location_id: string;
   self_serve_default: Generated<boolean>;
+  overtime_threshold_hours: NumericWithDefault;
+  minimum_coverage: Generated<number>;
+  chair_count: Generated<number>;
+  base_hourly_labor_cost: NumericWithDefault;
+  payroll_burden_pct: NumericWithDefault;
+  updated_at: TimestampTzWithDefault;
+}
+
+export interface LocationFeatureSettingsTable {
+  location_id: string;
+  retail_products_enabled: Generated<boolean>;
+  discount_codes_enabled: Generated<boolean>;
+  updated_at: TimestampTzWithDefault;
+}
+
+export interface LocationCommunicationSettingsTable {
+  location_id: string;
+  enabled: Generated<boolean>;
+  booking_confirmations: Generated<boolean>;
+  appointment_reminders: Generated<boolean>;
+  updated_at: TimestampTzWithDefault;
+}
+
+export interface LocationSanitationSettingsTable {
+  location_id: string;
+  enabled: Generated<boolean>;
+  interval_hours: Generated<number>;
+  next_due_at: TimestampTz | null;
+  updated_at: TimestampTzWithDefault;
+}
+
+export interface SanitationReminderEventsTable {
+  id: Generated<string>;
+  location_id: string;
+  action: 'completed' | 'snoozed';
+  scheduled_for: TimestampTz | null;
+  next_due_at: TimestampTz;
+  actor_user_id: string | null;
+  acted_at: TimestampTzWithDefault;
+}
+
+export interface LocationPayrollSettingsTable {
+  location_id: string;
+  period_length_days: Generated<number>;
+  anchor_date: DateOnly;
+  payday_offset_days: Generated<number>;
+  schedule_name: Generated<string>;
+  frequency: Generated<'weekly' | 'biweekly' | 'semimonthly' | 'monthly'>;
+  workweek_starts_on: Generated<number>;
+  payday_offset_business_days: Generated<number>;
   updated_at: TimestampTzWithDefault;
 }
 
@@ -99,8 +154,39 @@ export interface StaffCompensationHistoryTable {
   classification: StaffClassification;
   commission_pct: Numeric | null;
   booth_rent_weekly: Numeric | null;
+  hourly_rate: ColumnType<string | null, string | number | null | undefined, string | number | null>;
+  annual_salary: ColumnType<string | null, string | number | null | undefined, string | number | null>;
+  custom_pay_model_id: ColumnType<string | null, string | null | undefined, string | null>;
+  custom_pay_model_name: ColumnType<string | null, string | null | undefined, string | null>;
   effective_from: TimestampTzWithDefault;
   effective_to: TimestampTz | null;
+}
+
+export interface LocationPayModelsTable {
+  id: Generated<string>;
+  location_id: string;
+  name: string;
+  calculation_type: 'commission' | 'booth_rent' | 'hourly' | 'salary';
+  default_amount: Numeric;
+  active: Generated<boolean>;
+  created_at: TimestampTzWithDefault;
+}
+
+export interface LocationJobRolesTable {
+  id: Generated<string>;
+  location_id: string;
+  name: string;
+  permission_role: 'location_manager' | 'staff' | 'front_desk';
+  active: Generated<boolean>;
+  created_at: TimestampTzWithDefault;
+}
+
+export interface EmployeeTaxIdentitiesTable {
+  location_staff_id: string;
+  ssn_ciphertext: string;
+  ssn_last_four: string;
+  encryption_key_version: Generated<number>;
+  updated_at: TimestampTzWithDefault;
 }
 
 export interface StaffGoalsTable {
@@ -125,6 +211,8 @@ export interface ClientsTable {
   phone_display: string | null;
   referral_source: string | null;
   notes: string | null;
+  email: string | null;
+  marketing_opt_in: Generated<boolean>;
   allergy_flag: Generated<boolean>;
   last_confirmed_at: TimestampTz | null;
   created_at: TimestampTzWithDefault;
@@ -179,6 +267,18 @@ export interface StoreHoursTable {
   close_time: TimeOnly | null;
 }
 
+export interface LocationSpecialHoursTable {
+  id: Generated<string>;
+  location_id: string;
+  special_date: DateOnly;
+  label: string | null;
+  is_closed: Generated<boolean>;
+  open_time: TimeOnly | null;
+  close_time: TimeOnly | null;
+  created_at: TimestampTzWithDefault;
+  updated_at: TimestampTzWithDefault;
+}
+
 export interface TaxConfigTable {
   location_id: string;
   retail_tax_pct: NumericWithDefault;
@@ -194,6 +294,7 @@ export interface QueueConfigTable {
   max_break_minutes: Generated<number>;
   appointment_max_wait_minutes: Generated<number>;
   appt_atrisk_notify_minutes: Generated<number>;
+  client_continuity_weight: Generated<number>;
 }
 
 export interface LocationSequenceCountersTable {
@@ -221,7 +322,8 @@ export type QueueEventType =
   | 'queue_entry_returned_to_waiting'
   | 'staff_status_changed'
   | 'staff_clocked_in'
-  | 'shop_closed';
+  | 'shop_closed'
+  | 'shop_opened';
 
 export interface EventsTable {
   id: Generated<string>;
@@ -246,17 +348,35 @@ export interface QueueEntriesTable {
   assigned_location_staff_id: string | null;
   /** Did the client ask for this person by name at check-in, as opposed to "any available"? Independent of later reassignment. */
   requested_specific_staff: Generated<boolean>;
+  /** Original staff member requested by name; never changes when assignment changes. */
+  requested_location_staff_id: string | null;
   is_appt: Generated<boolean>;
   appt_at: TimestampTz | null;
+  /** Set when this entry came from (or was matched back to) an appointments-table booking — see 0044_appointment_queue_link.sql. */
+  appointment_id: string | null;
   present: Generated<boolean>;
   present_checked_at: TimestampTz | null;
   present_projected_at: TimestampTz | null;
+  /** null = automatic matching, true = manually ready, false = explicitly kept waiting. */
+  ready_override: Generated<boolean | null>;
   abandoned: Generated<boolean>;
   waiting_order: number | null;
   original_waiting_order: number | null;
   service_notes: string | null;
+  estimated_start_at: TimestampTz | null;
+  service_started_at: TimestampTz | null;
+  service_completed_at: TimestampTz | null;
   created_at: TimestampTzWithDefault;
   updated_at: TimestampTzWithDefault;
+}
+
+export interface QueueEntryServicesTable {
+  id: Generated<string>;
+  location_id: string;
+  queue_entry_id: string;
+  service_id: string;
+  sort_order: Generated<number>;
+  created_at: TimestampTzWithDefault;
 }
 
 export type PaymentMethod = 'card' | 'cash' | 'external';
@@ -272,9 +392,11 @@ export interface TransactionsTable {
   tip: NumericWithDefault;
   total: Numeric;
   payment_method: PaymentMethod;
+  payment_processor: Generated<'stripe' | 'square' | 'external' | null>;
   payment_processor_ref: string | null;
   discount_code_id: string | null;
   discount_amount: NumericWithDefault;
+  receipt_number: string | null;
   created_at: TimestampTzWithDefault;
 }
 
@@ -306,7 +428,99 @@ export interface RefundsTable {
   original_transaction_id: string;
   amount: Numeric;
   reason: string | null;
+  refunded_by_user_id: string | null;
+  processor_ref: string | null;
+  idempotency_key: Generated<string | null>;
+  status: Generated<'pending' | 'succeeded' | 'failed'>;
   created_at: TimestampTzWithDefault;
+}
+
+export interface SchedulePublicationsTable {
+  id: Generated<string>;
+  location_id: string;
+  week_start: DateOnly;
+  status: 'published' | 'superseded';
+  warning_count: Generated<number>;
+  notify_scope: Generated<'all' | 'affected'>;
+  published_by_user_id: string | null;
+  published_at: TimestampTzWithDefault;
+}
+
+export interface ClientConsentsTable {
+  id: Generated<string>;
+  organization_id: string;
+  client_id: string;
+  consent_type: string;
+  version: string;
+  accepted: boolean;
+  captured_by_user_id: string | null;
+  captured_at: TimestampTzWithDefault;
+  notes: string | null;
+}
+
+export interface AppointmentsTable {
+  id: Generated<string>;
+  location_id: string;
+  client_id: string;
+  service_id: string;
+  location_staff_id: string | null;
+  starts_at: TimestampTz;
+  status: Generated<'booked' | 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'>;
+  source: Generated<'staff_rebook' | 'public_booking' | 'walk_in_conversion'>;
+  notes: string | null;
+  created_by_user_id: string | null;
+  created_at: TimestampTzWithDefault;
+  confirmation_code: string | null;
+  cancelled_at: TimestampTz | null;
+}
+
+export interface AppointmentServicesTable {
+  id: Generated<string>;
+  appointment_id: string;
+  service_id: string;
+  sort_order: Generated<number>;
+  created_at: TimestampTzWithDefault;
+}
+
+export interface PublicBookingSettingsTable {
+  location_id: string;
+  enabled: Generated<boolean>;
+  minimum_lead_hours: Generated<number>;
+  booking_horizon_days: Generated<number>;
+  slot_interval_minutes: Generated<number>;
+  updated_at: TimestampTzWithDefault;
+}
+
+export interface CommunicationMessagesTable {
+  id: Generated<string>;
+  location_id: string;
+  client_id: string | null;
+  appointment_id: string | null;
+  channel: 'sms' | 'email';
+  message_type: 'booking_confirmation' | 'appointment_reminder' | 'you_are_next' | 'barber_ready' | 'review_request' | 'schedule_publication';
+  destination: string;
+  body: string;
+  status: Generated<'queued' | 'sent' | 'failed' | 'cancelled'>;
+  provider_ref: string | null;
+  scheduled_for: TimestampTzWithDefault;
+  sent_at: TimestampTz | null;
+  error_message: string | null;
+  created_at: TimestampTzWithDefault;
+}
+
+export interface PaymentAttemptsTable {
+  id: Generated<string>;
+  location_id: string;
+  queue_entry_id: string;
+  idempotency_key: string;
+  status: Generated<'pending' | 'succeeded' | 'failed' | 'requires_action'>;
+  amount_cents: number;
+  processor: string;
+  processor_ref: string | null;
+  error_message: string | null;
+  transaction_id: string | null;
+  created_at: TimestampTzWithDefault;
+  updated_at: TimestampTzWithDefault;
 }
 
 export interface ScheduleExceptionsTable {
@@ -350,10 +564,23 @@ export interface ComplianceDocumentsTable {
   location_staff_id: string | null;
   doc_type: string;
   description: string | null;
+  issued_at: DateOnly | null;
   expires_at: DateOnly | null;
   last_updated_at: TimestampTzWithDefault;
   status: Generated<ComplianceDocStatus>;
   created_at: TimestampTzWithDefault;
+}
+
+export interface ComplianceDocumentFilesTable {
+  id: Generated<string>;
+  location_id: string;
+  compliance_document_id: string;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
+  content: Buffer;
+  uploaded_by_user_id: string | null;
+  uploaded_at: TimestampTzWithDefault;
 }
 
 export type ActiveProcessor = 'stripe' | 'square' | 'external';
@@ -387,10 +614,47 @@ export interface ShopClosingsTable {
   created_at: TimestampTzWithDefault;
 }
 
+export interface ShopOpeningsTable {
+  id: Generated<string>;
+  location_id: string;
+  opened_by_user_id: string | null;
+  opening_date: DateOnly;
+  default_starting_float: Numeric;
+  actual_starting_float: Numeric;
+  variance: Numeric;
+  tasks_completed: Generated<string[]>;
+  created_at: TimestampTzWithDefault;
+}
+
 export interface ReportFavoritesTable {
   location_staff_id: string;
   report_id: string;
   created_at: TimestampTzWithDefault;
+}
+
+export interface StaffPayRunsTable {
+  id: Generated<string>;
+  location_id: string;
+  period_start: DateOnly;
+  period_end: DateOnly;
+  status: Generated<'logged' | 'paid'>;
+  notes: string | null;
+  snapshot: Record<string, unknown>;
+  logged_by_user_id: string | null;
+  logged_at: TimestampTzWithDefault;
+  paid_at: TimestampTz | null;
+}
+
+export interface ReportExportsTable {
+  id: Generated<string>;
+  location_id: string;
+  report_id: string;
+  format: 'pdf' | 'xlsx';
+  period_start: DateOnly | null;
+  period_end: DateOnly | null;
+  exported_by_user_id: string | null;
+  exported_at: TimestampTzWithDefault;
+  parameters: Generated<Record<string, unknown>>;
 }
 
 export interface DB {
@@ -409,23 +673,44 @@ export interface DB {
   services: ServicesTable;
   products: ProductsTable;
   store_hours: StoreHoursTable;
+  location_special_hours: LocationSpecialHoursTable;
   tax_config: TaxConfigTable;
   queue_config: QueueConfigTable;
   location_sequence_counters: LocationSequenceCountersTable;
   events: EventsTable;
   queue_entries: QueueEntriesTable;
+  queue_entry_services: QueueEntryServicesTable;
   transactions: TransactionsTable;
   transaction_items: TransactionItemsTable;
   refunds: RefundsTable;
   schedule_exceptions: ScheduleExceptionsTable;
   schedule_change_requests: ScheduleChangeRequestsTable;
   compliance_documents: ComplianceDocumentsTable;
+  compliance_document_files: ComplianceDocumentFilesTable;
   payment_processor_config: PaymentProcessorConfigTable;
   discount_codes: DiscountCodesTable;
   location_scheduling_policy: LocationSchedulingPolicyTable;
+  location_feature_settings: LocationFeatureSettingsTable;
+  location_communication_settings: LocationCommunicationSettingsTable;
+  location_sanitation_settings: LocationSanitationSettingsTable;
+  sanitation_reminder_events: SanitationReminderEventsTable;
+  location_payroll_settings: LocationPayrollSettingsTable;
+  location_pay_models: LocationPayModelsTable;
+  location_job_roles: LocationJobRolesTable;
+  employee_tax_identities: EmployeeTaxIdentitiesTable;
   shop_closings: ShopClosingsTable;
+  shop_openings: ShopOpeningsTable;
   report_favorites: ReportFavoritesTable;
   location_pricing_policy: LocationPricingPolicyTable;
+  schedule_publications: SchedulePublicationsTable;
+  client_consents: ClientConsentsTable;
+  appointments: AppointmentsTable;
+  appointment_services: AppointmentServicesTable;
+  payment_attempts: PaymentAttemptsTable;
+  staff_pay_runs: StaffPayRunsTable;
+  report_exports: ReportExportsTable;
+  public_booking_settings: PublicBookingSettingsTable;
+  communication_messages: CommunicationMessagesTable;
 }
 
 export type Organization = Selectable<OrganizationsTable>;
