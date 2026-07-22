@@ -1,7 +1,7 @@
 # PRD — Salon/Barbershop Management Platform
 
 **Positioning:** A Shortcuts Software competitor built around a genuinely accurate live queue, with the rest of the modules a shop owner needs to run the business end to end.
-**Status:** Module 1 built as an interactive prototype. Everything else in this document is scoped but not built.
+**Status (updated July 21, 2026):** Phases 1–3 now have working local vertical slices. Core queue, scheduling, client, appointment handoff, checkout, payroll reporting, public booking, and communication-outbox flows are implemented. Browser-tokenized Stripe/Square payment and processor-routed refund foundations are wired, but production credentials, webhooks, reconciliation, identity, and operational hardening remain launch gates.
 
 ---
 
@@ -11,19 +11,19 @@ This is the high-level list — what's being proposed across the whole platform,
 
 | # | Module | Status | Headline features |
 |---|---|---|---|
-| 1 | **Live Queue & Check-In** | ✅ Built (prototype); 🟡 new-client onboarding at check-in identified as a gap | Real-time wait estimates, drag-reorder queue, walk-in/appointment intake, staff status board, inline undo, full audit trail |
+| 1 | **Live Queue & Check-In** | ✅ Pilot-ready | Real-time wait estimates, stale-entry handling, drag reorder, walk-in/appointment intake, clocked-in staff eligibility, reassignment, service corrections, undo and audit trail |
 | 2 | **Shop Configuration** | ✅ Built (prototype) | Store hours, services & pricing, barber schedules, queue tuning, performance goals |
-| 3 | **Scheduling & Online Booking** | 🟡 Partially built | Store hours/barber schedules exist internally; customer-facing booking site/flow not built |
-| 4 | **Staff Management & Payroll** | 🟡 Partially built | Roster + schedule + goals exist; full HR lifecycle (hiring, CE/license tracking, discipline, offboarding) and commission/payroll calculation not built |
-| 5 | **Point of Sale & Payments** | ❌ Not built | Checkout, card processing, tipping, receipts, refunds, deposits & no-show fee enforcement |
-| 6 | **Client Relationship Management** | 🟡 Partially built | Per-client notes/history exist; no packages/memberships/gift cards, no marketing/loyalty, client-data ownership undecided |
-| 7 | **Reporting & Business Intelligence** | ❌ Not built | Revenue/utilization/no-show/rebooking reports, trend & cohort analysis, forecasting, owner dashboard, BI-tool export |
-| 8 | **Client Communications** | ❌ Not built | Appointment reminders, wait-time texts, marketing campaigns, review requests |
-| 9 | **Inventory & Retail** | ❌ Not built | Product stock, retail sales, reorder alerts |
-| 10 | **Online Presence** | ❌ Not built | Public booking page, Google/Maps integration, review aggregation |
-| 11 | **Admin, Roles & Compliance** | ❌ Not built | User permissions, license/insurance tracking, data privacy, multi-location |
-| 12 | **Tax & Financial Management** | ❌ Not built | Sales tax by jurisdiction, W-2/1099 generation, tip reporting, payroll tax withholding, accounting software sync, P&L/budgeting/cash flow, owner's draw tracking |
-| 13 | **Legal, Risk & Industry Compliance** | ❌ Not built | Worker classification risk documentation, liability/workers-comp/booth-renter insurance tracking, sanitation & chemical-safety logs, consultation/patch-test waivers, non-compete tracking |
+| 3 | **Scheduling & Online Booking** | ✅ Phase 3 slice | Staff scheduling, responsive multi-service public booking, collision recheck, confirmation code, operational appointment list and Floor check-in |
+| 4 | **Staff Management & Payroll** | ✅ Phase 2 slice | Roster, schedules, compensation rules, payroll-ready staff revenue, immutable pay-run reviews, PDF/XLSX export; full HR lifecycle remains |
+| 5 | **Point of Sale & Payments** | ✅ Phase 2 slice | Itemized checkout, service correction, products/inventory, tax, discount, tips, cash/manual/linked-processor configuration and refunds |
+| 6 | **Client Relationship Management** | 🟡 Operational core | Profiles, contact details, history, notes, allergies, consent, rebooking and public-booking creation; loyalty/packages remain |
+| 7 | **Reporting & Business Intelligence** | 🟡 Operational core | Dashboard, revenue, staff/pay, utilization, no-show, rebooking and tax reporting; forecasting/cohorts remain |
+| 8 | **Client Communications** | ✅ Phase 3 outbox | Booking confirmations/reminders are durably queued and visible; provider delivery worker and campaign tooling remain |
+| 9 | **Inventory & Retail** | 🟡 Operational core | Catalog, stock validation and decrement during checkout; purchasing and reorder automation remain |
+| 10 | **Online Presence** | 🟡 Booking foundation | Public booking is live locally; branded shop pages, Google/Maps integration and review aggregation remain |
+| 11 | **Admin, Roles & Compliance** | 🟡 Foundation | Role enforcement, employment status, license/document storage and renewal views exist; production identity, privacy controls and multi-location administration remain |
+| 12 | **Tax & Financial Management** | 🟡 Reporting foundation | Sales tax, structured tips, pay-period records and tax-readiness guidance exist; withholding, filings, accounting sync and financial statements require integrations/deeper work |
+| 13 | **Legal, Risk & Industry Compliance** | 🟡 Early foundation | Worker classification, credential records and sanitation reminders exist; policy evidence, waivers, insurance and broader safety workflows remain |
 
 **Read this as a roadmap, not a backlog dump** — section 9 proposes a phased build order.
 
@@ -50,23 +50,21 @@ A shop owner should be able to run the entire business — the line at the door,
 ### Module 1 — Live Queue & Check-In ✅ *(see `PRD-live-queue-checkin.md` for full detail)*
 Real-time queue board, wait-time estimation, walk-in/appointment intake, staff status, undo-everything activity log. This is the wedge — the thing Shortcuts is worst at.
 
-**Gap identified:** check-in currently treats an unrecognized phone number as just a display string for the queue, not a trigger to actually create a client record. See `PRD-live-queue-checkin.md` §5.4 for the proposed new-client intake flow, which ties into Module 6 (client profile as a first-class object) and Module 13 (consultation/waiver capture where a service requires it).
+Unrecognized phone numbers now trigger new-client intake, including name, referral source and allergy flag. Walk-in staff choice is limited to clocked-in professionals; service choice can be corrected at start and completion.
 
 ### Module 2 — Shop Configuration ✅
 Store hours, services/pricing, barber weekly schedules, queue-algorithm tuning, and shop-wide + per-barber performance goals. Built as a Settings tab feeding directly into Module 1's live behavior (e.g., appointment booking now respects actual barber schedules and store hours instead of hardcoded values).
 
-### Module 3 — Scheduling & Online Booking 🟡
-**Built:** internal store hours and barber schedules (Module 2), which are the data online booking would need to consume.
+### Module 3 — Scheduling & Online Booking ✅ Phase 3 slice
+**Built:** internal schedules, public multi-service/professional/date/time booking, availability overlap protection, client upsert, confirmation code, communication outbox, operational appointment list, cancellation control and one-step Floor check-in.
 **Not built:**
-- Public-facing booking page/flow (a customer picks a service, barber, date, time — no staff involvement)
 - Google Business Profile "Book" button integration
 - Waitlist/notify-me for fully-booked days
 - Recurring appointment support ("same time every 4 weeks")
 
-### Module 4 — Staff Management & Payroll 🟡
-**Built:** roster, per-barber weekly schedule, per-barber goals (Module 2).
+### Module 4 — Staff Management & Payroll ✅ Phase 2 slice
+**Built:** roster, weekly schedule, goals, compensation classifications/rules, scheduled hours, attributed service/retail/refund/tip totals, estimated pay, pay-review logs and PDF/XLSX exports.
 **Not built:**
-- Commission/booth-rent calculation rules (percentage of service, percentage of retail, flat booth rent, or hybrid)
 - Payroll export/integration (Gusto, ADP, ezPayroll, etc.)
 - Time-off requests and approval
 - Onboarding checklist for new hires (licensing, tax forms, profile setup)
@@ -76,18 +74,18 @@ Store hours, services/pricing, barber weekly schedules, queue-algorithm tuning, 
 - **Disciplinary action tracking and offboarding checklist** — documented process for write-ups and terminations, which also matters for Module 13's worker-classification and non-compete concerns below
 - **Benefits management** — health insurance enrollment, PTO accrual, for shops that offer them (mostly relevant to W-2 staff, not booth renters)
 
-### Module 5 — Point of Sale & Payments ❌
-- Checkout flow that turns "Complete" (currently a free-text charge/tip field) into a real transaction: itemized services + retail, tax, discounts, tips, split payment
-- Card processing integration (Square, Stripe Terminal, or similar)
-- Digital + printed receipts
+### Module 5 — Point of Sale & Payments ✅ Phase 2 slice
+**Built:** itemized services/retail, authoritative product pricing/stock, service correction, requested-professional premium rules, tax, discounts, tips, cash/manual-card records, browser-tokenized Stripe/Square configuration, processor attribution and processor-routed refunds.
+**Not built:**
+- Production terminal credentials/webhook reconciliation and split tender
+- Customer-delivered digital receipts (operator print receipts are built)
 - Refunds and voids with manager approval
 - Gift cards
 - **Deposits and no-show fee enforcement** — a cancellation/no-show policy is only real if it can actually charge a card on file; this requires storing a payment method at booking time for appointments, which has its own privacy/PCI handling implications (see Module 13)
 
 ### Module 6 — Client Relationship Management 🟡
-**Built:** per-client general notes and service history (Module 1), captured at Start/Complete.
+**Built:** first-class profiles, contact details, notes, history, allergy flag, referral source, consent capture and rebooking.
 **Not built:**
-- Client profiles as a first-class object (contact info, preferences, allergy/sensitivity flags, referral source) — currently a check-in with an unrecognized phone number just becomes a display string, not a real profile; see Module 1's identified gap
 - Segmentation (e.g. "hasn't been in 6+ weeks," "top spenders")
 - Loyalty/rewards program
 - Birthday/anniversary campaigns
@@ -96,10 +94,12 @@ Store hours, services/pricing, barber weekly schedules, queue-algorithm tuning, 
 - **Consultation/intake forms** — allergy disclosures and patch-test consent for color and other chemical services, captured once as part of the client profile rather than re-asked every visit; reduces liability exposure (see Module 13)
 - **Client-data ownership policy** — an unresolved question, not just a missing feature: when a barber leaves the shop (employed or booth-rented), is the client history and contact info the shop's asset or the barber's? This needs a decision before the data model can be considered final. See open questions.
 
-### Module 7 — Reporting & Business Intelligence ❌
+### Module 7 — Reporting & Business Intelligence 🟡
 This is the direct payoff of the goals infrastructure already built in Module 2, split into two tiers: operational reporting (what happened) and business intelligence (what it means and what's next).
 
-**Operational reporting** — needed regardless of shop size:
+**Operational reporting built:** revenue, staff/pay, service mix, utilization, no-show/cancellation, rebooking, tax and wait-accuracy views. Payroll PDF/XLSX export and immutable review logs are included.
+
+**Business intelligence remaining** — turns the reports above into decisions:
 - Revenue: daily/weekly/monthly, by barber, by service, by payment type
 - Utilization: chair time booked vs. available, against the utilization goal
 - No-show and cancellation rate, by client and by barber
@@ -119,31 +119,30 @@ This is the direct payoff of the goals infrastructure already built in Module 2,
 
 **Dependency note:** BI is only as good as the underlying event log. This is the strongest argument for prioritizing the event-sourced backend called out in the Live Queue PRD §9 — snapshot-based undo doesn't produce the clean event history that trend/cohort/forecasting features need.
 
-### Module 8 — Client Communications ❌
-- Automated appointment confirmations and reminders (SMS/email)
+### Module 8 — Client Communications ✅ Phase 3 outbox
+- Automated appointment confirmations and reminders are queued and manager-visible; provider delivery/retry worker remains
 - "You're next" / "your barber is ready" texts — a genuine Shortcuts-competitive feature given how good the live queue already is
 - At-risk appointment alerts to staff (the `appt_atrisk_notify_minutes` setting already exists in Module 2 and has nowhere to fire yet)
 - Post-visit review requests
 - Marketing campaigns (promotions, new-service announcements)
 
-### Module 9 — Inventory & Retail ❌
-- Product catalog and stock levels
-- Retail sales through the POS (Module 5)
+### Module 9 — Inventory & Retail 🟡
+- Product catalog, stock levels and atomic retail checkout are built
 - Low-stock alerts and reorder suggestions
 - Barber-attributed retail sales (feeds commission in Module 4)
 
-### Module 10 — Online Presence ❌
+### Module 10 — Online Presence 🟡 Booking foundation
 - Public shop page (hours, services, staff, location) — the role the current `jjsbarbers.com` WordPress shell plays
 - Google/Apple Maps and Business Profile sync
 - Review aggregation and display (Google, Yelp)
 
-### Module 11 — Admin, Roles & Compliance ❌
-- Role-based permissions (owner, manager, barber, front desk — not everyone should see revenue or edit settings)
-- License and insurance expiration tracking per barber, with renewal alerts
+### Module 11 — Admin, Roles & Compliance 🟡 Foundation
+- Role-based owner, manager, professional and front-desk data/control boundaries are implemented locally; production identity and an automated endpoint authorization matrix remain
+- License/document issue and expiration tracking, attachments, history access and renewal visibility are implemented; insurance templates and automated renewal delivery remain
 - Data privacy/retention controls for client PII
 - Multi-location support, if/when the business grows past one shop
 
-### Module 12 — Tax & Financial Management ❌
+### Module 12 — Tax & Financial Management 🟡 Reporting foundation
 Depends heavily on Module 4 (Staff/Payroll) and Module 5 (POS/Payments) for source data, and on the business's legal structure and how staff are classified (see open questions below).
 
 **Tax compliance:**
@@ -166,7 +165,7 @@ Depends heavily on Module 4 (Staff/Payroll) and Module 5 (POS/Payments) for sour
 
 **This module should not be built as original tax logic.** Tax rate tables, filing rules, and forms change constantly and vary by jurisdiction — the practical path is integrating a tax-calculation provider (e.g. Avalara, TaxJar) for sales tax and a payroll provider (Gusto, ADP, Justworks, etc.) for payroll tax/withholding/W-2/1099 generation, rather than the platform maintaining that logic itself. The financial-management features above are more reasonable to build natively, since they're mostly reporting over data Modules 1, 2, 4, 5, and 9 already produce — closer to Module 7 (BI) than to tax computation.
 
-### Module 13 — Legal, Risk & Industry Compliance ❌
+### Module 13 — Legal, Risk & Industry Compliance 🟡 Early foundation
 This module exists because a few risks in this specific industry are common enough, and expensive enough when they go wrong, that the platform should actively help the owner manage them rather than leave them to a filing cabinet.
 
 - **Worker classification risk** — booth rental is extremely common in barbershops/salons, and the IRS and state labor departments actively audit this industry for misclassifying employees as independent contractors (or the reverse) to avoid payroll tax. This is the single highest-risk item in this entire document. The platform should: (a) make the classification an explicit, documented choice per staff member rather than an implicit side effect of how they're paid, (b) surface the DOL/IRS classification criteria at the point that choice is made, and (c) keep the supporting evidence (contracts, schedule control, tool ownership, etc.) attached to that staff record for audit defense.
@@ -192,12 +191,27 @@ This module exists because a few risks in this specific industry are common enou
 - Native mobile apps (assume responsive web first)
 - Booth-rental sub-leasing marketplace features
 
-## 7. Suggested phasing
+## 7. Delivery status and next phasing
 
-1. **Now:** Finish Module 1/2 backend (real persistence, multi-device sync, event-sourced undo) — the prototype needs to survive a real shop before anything else matters, and an event-sourced backend is also the foundation Module 12 (Tax) and Module 7 (BI) both need. Also resolve Module 13's worker-classification question now, on paper, independent of software — it's a legal risk today, not a future feature.
-2. **Next:** Module 5 (POS/Payments) and Module 4's payroll piece, built together with a thin slice of Module 12 (Tax) — sales tax and tip capture need to be correct from the first real transaction, not retrofitted. Pull forward Module 13's consultation/waiver capture and insurance tracking alongside this, since they're cheap to build and the liability exposure exists from day one, not just at scale. Basic Module 7 operational reporting rides along, since it's mostly querying data these modules already produce.
-3. **Then:** Module 3 (online booking) and Module 8 (communications) — the highest-leverage growth/retention features and the most direct Shortcuts-competitive differentiators. Module 1's new-client onboarding gap (see §4, Module 1) is worth fixing in this phase too, since it's the moment a client profile is actually created and everything in Module 6 depends on that data existing.
-4. **Later:** Module 12's deeper tax integrations (accounting sync, year-end forms, provider integrations) and financial-management reporting, Module 7's full BI layer (forecasting, cohorts, anomaly detection), Module 4's remaining HR lifecycle (hiring, reviews, benefits), Module 6's packages/memberships/loyalty depth, Module 9 inventory, Module 10 online presence, Module 11 compliance/multi-location, and Module 13's remaining lower-urgency items (non-compete contract tracking, PCI formalization) — valuable, but the business can run without them longer than it can run without 1–3 above.
+1. **Completed locally — Phase 1:** durable multi-tenant queue, real-time synchronization, event/audit history, client intake, staff eligibility and a simplified operator interface.
+2. **Completed locally — Phase 2:** itemized checkout, canonical product inventory, requested-professional pricing protection, configurable manual/linked card mode, tips/tax/discounts/refunds, compliance records, payroll-ready reporting, review snapshots and PDF/XLSX exports.
+3. **Completed locally — Phase 3:** responsive public booking, schedule-aware availability, collision protection, client creation/update, confirmation codes, and a durable confirmation/reminder outbox with manager visibility.
+4. **Next — launch hardening (recommended):** upgrade vulnerable framework dependencies; add production identity/session management, rate limiting and bot protection; connect one payment processor and one SMS/email provider; add background delivery/retry/dead-letter processing; complete timezone/DST test coverage; add observability, backups, restore drills, accessibility checks and CI browser tests.
+5. **After a controlled pilot:** deposits/cancellation policy, receipt delivery, low-stock/reorder workflows, payroll-provider handoff, accounting export, loyalty/packages, forecasting and multi-location controls. Prioritize these from measured pilot pain, not assumed demand.
+
+### Latest E2E audit closure
+
+- Floor now exposes one state-aware store action at a time (open, close, or reopen) and records the location-local business date.
+- Public/client rebooking supports multiple services and professional-aware availability; appointments have a staff-facing list and explicit Floor handoff.
+- Staff can view only their own private employment details. Coworker compensation, documents, tax identity, labor cost, payroll burden and manager schedule controls are withheld.
+- Front-desk access is operational: Floor, appointments, clients, schedule, messages and read-only receipt review are available without granting reports, settings or refund authority. Front-desk staff never count as chairs or appear as service matches.
+- Revenue-by-staff distinguishes money payable to staff from booth rent due to the shop; negative settlements are no longer presented as negative wages.
+- Business-day reporting, receipt numbering and open/close records use each location’s timezone rather than the server’s UTC date.
+- Production builds no longer depend on downloading Google Fonts.
+
+### Phase acceptance boundaries
+
+“Completed locally” means the product workflow and durable data model exist and pass local build/type/unit/manual E2E checks. It does **not** mean the system is ready for unattended production money movement or regulated payroll/tax filing. Those require the provider integrations and hardening in step 4.
 
 ## 8. Open questions for the owner
 

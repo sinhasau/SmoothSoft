@@ -21,3 +21,9 @@ export interface DecideScheduleRequestDto {
    */
   confirmed?: boolean;
 }
+
+export interface PublishScheduleDto {
+  weekStart: string;
+  warningCount?: number;
+  notifyScope?: 'all' | 'affected';
+}

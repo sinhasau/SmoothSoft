@@ -109,12 +109,25 @@ export class RlsTransactionMiddleware implements NestMiddleware {
         }
 
         await client.query("select set_config('app.current_location_id', $1, true)", [effectiveLocationId]);
+      } else {
+        const publicMatch = req.originalUrl.match(/^\/public\/locations\/([0-9a-f-]{36})(?:\/|\?|$)/i);
+        if (publicMatch) {
+          const scope = await client.query('select * from public_booking_scope($1::uuid)', [publicMatch[1]]);
+          if (scope.rows.length > 0) {
+            effectiveLocationId = scope.rows[0].location_id;
+            await client.query("select set_config('app.current_organization_id', $1, true)", [scope.rows[0].organization_id]);
+            await client.query("select set_config('app.current_location_id', $1, true)", [scope.rows[0].location_id]);
+          }
+        }
       }
 
       const trx = kyselyFromClient(client);
 
       res.once('finish', () => {
-        void finish(res.statusCode < 500);
+        // Commit only successful responses. Validation, authorization and
+        // conflict errors are 4xx responses and must never preserve writes
+        // performed earlier in the request.
+        void finish(res.statusCode >= 200 && res.statusCode < 400);
       });
       res.once('close', () => {
         void finish(false);

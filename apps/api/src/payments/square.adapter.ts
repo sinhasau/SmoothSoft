@@ -1,5 +1,5 @@
 import { Client, Environment } from 'square';
-import type { ChargeParams, ChargeResult, PaymentProcessor } from './processor.interface';
+import type { ChargeParams, ChargeResult, PaymentProcessor, RefundParams, RefundResult } from './processor.interface';
 import { ProcessorNotConfiguredError } from './processor.interface';
 
 /**
@@ -48,6 +48,22 @@ export class SquareAdapter implements PaymentProcessor {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Square error';
       return { success: false, processorRef: '', errorMessage: message };
+    }
+  }
+
+  async refund(params: RefundParams): Promise<RefundResult> {
+    if (!this.client) throw new ProcessorNotConfiguredError('Square');
+    try {
+      const response = await this.client.refundsApi.refundPayment({
+        idempotencyKey: params.idempotencyKey,
+        amountMoney: { amount: BigInt(params.amountCents), currency: params.currency.toUpperCase() },
+        paymentId: params.processorRef,
+      });
+      const refund = response.result.refund;
+      const success = refund?.status === 'COMPLETED' || refund?.status === 'PENDING';
+      return { success, processorRef: refund?.id ?? '', errorMessage: success ? undefined : `Refund status: ${refund?.status ?? 'unknown'}` };
+    } catch (err) {
+      return { success: false, processorRef: '', errorMessage: err instanceof Error ? err.message : 'Unknown Square refund error' };
     }
   }
 }

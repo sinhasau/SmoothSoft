@@ -1,5 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
+import { buildStaffPayPdf, buildStaffPayWorkbook, StaffPayReport } from './staff-pay-export';
 
 export const REPORT_IDS = [
   'revenue_trend',
@@ -12,6 +13,7 @@ export const REPORT_IDS = [
   'top_clients',
   'new_vs_returning',
   'top_services_products',
+  'tax_documentation',
 ] as const;
 
 export type ReportId = (typeof REPORT_IDS)[number];
@@ -48,6 +50,36 @@ function minutesBetween(start: string, end: string): number {
  */
 @Injectable()
 export class ReportsService {
+  async taxDocumentation(locationId: string) {
+    const trx = db();
+    const [location, staff, featureSettings] = await Promise.all([
+      trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow(),
+      trx.selectFrom('location_staff as ls').leftJoin('employee_tax_identities as eti', 'eti.location_staff_id', 'ls.id').select(['ls.classification as classification', 'eti.location_staff_id as taxIdentityOnFile']).where('ls.location_id', '=', locationId).where('ls.employment_status', '=', 'active').execute(),
+      trx.selectFrom('location_feature_settings').select('retail_products_enabled').where('location_id', '=', locationId).executeTakeFirst(),
+    ]);
+    const w2Count = staff.filter((person) => person.classification === 'w2').length;
+    const contractorCount = staff.filter((person) => person.classification === '1099').length;
+    const w2TaxIdentityCount = staff.filter((person) => person.classification === 'w2' && person.taxIdentityOnFile).length;
+    const missingW2TaxIdentityCount = Math.max(0, w2Count - w2TaxIdentityCount);
+    const rows = [
+      { area: 'Federal payroll', form: 'Form 941', cadence: 'Quarterly', deadline: 'Apr 30 · Jul 31 · Oct 31 · Jan 31', applies: w2Count > 0, readiness: 'needs_payroll_provider', detail: 'Federal withholding, Social Security, Medicare, wages, and reported tips.', officialUrl: 'https://www.irs.gov/forms-pubs/about-form-941' },
+      { area: 'Federal unemployment', form: 'Form 940', cadence: 'Annual', deadline: 'Generally Jan 31', applies: w2Count > 0, readiness: 'needs_payroll_provider', detail: 'Federal unemployment wages and tax.', officialUrl: 'https://www.irs.gov/forms-pubs/about-form-940' },
+      { area: 'Employee statements', form: 'Forms W-2 / W-3', cadence: 'Annual', deadline: 'Jan 31', applies: w2Count > 0, readiness: missingW2TaxIdentityCount > 0 ? 'missing_employee_tax_identity' : 'needs_payroll_provider', detail: `${w2Count} active W-2 employee${w2Count === 1 ? '' : 's'}. ${missingW2TaxIdentityCount ? `${missingW2TaxIdentityCount} still need${missingW2TaxIdentityCount === 1 ? 's' : ''} an SSN on file. ` : ''}Filing also requires your legal employer details, wages, withholding, and reported tips.`, officialUrl: 'https://www.ssa.gov/employer/filingDeadlines.htm' },
+      { area: 'Contractor statements', form: 'Form 1099-NEC', cadence: 'Annual', deadline: 'Generally Jan 31', applies: contractorCount > 0, readiness: 'needs_payout_data', detail: `${contractorCount} active 1099 contractor${contractorCount === 1 ? '' : 's'}. Filing requires verified payments and a completed W-9 for each contractor.`, officialUrl: 'https://www.irs.gov/forms-pubs/about-form-1099-nec' },
+      { area: 'Michigan sales & withholding', form: 'SUW return / worksheet', cadence: 'Assigned monthly, quarterly, or annual', deadline: 'Generally the 20th after the period', applies: true, readiness: 'supporting_report_ready', detail: `SmoothSoft tracks taxable retail sales${featureSettings?.retail_products_enabled === false ? ', although retail is currently disabled' : ''}; withholding still requires payroll data.`, officialUrl: 'https://www.michigan.gov/taxes/business-taxes/sales-use-tax/information/filing-requirements-faq' },
+      { area: 'Michigan annual reconciliation', form: 'Form 5081', cadence: 'Annual', deadline: 'Feb 28', applies: true, readiness: 'supporting_report_ready', detail: 'Annual reconciliation does not replace assigned monthly or quarterly SUW returns.', officialUrl: 'https://www.michigan.gov/taxes/-/media/Project/Websites/taxes/Forms/SUW/TY2026/5081.pdf' },
+      { area: 'Michigan unemployment', form: 'UIA quarterly wage/tax report', cadence: 'Quarterly', deadline: 'Jan 25 · Apr 25 · Jul 25 · Oct 25', applies: w2Count > 0, readiness: 'needs_payroll_provider', detail: 'Requires covered-worker wages and unemployment account information.', officialUrl: 'https://www.michigan.gov/leo/bureaus-agencies/uia/employers/frequently-asked-questions-for-employers/for-employers/quarterly-reports' },
+      { area: 'Business income tax', form: 'Entity return / owner schedules', cadence: 'Annual', deadline: 'Depends on tax election and fiscal year', applies: true, readiness: 'needs_tax_profile', detail: 'Your filing depends on the business tax election, not only whether the business is an LLC.', officialUrl: 'https://www.irs.gov/businesses/small-businesses-self-employed/filing-and-paying-your-business-taxes' },
+    ].filter((row) => row.applies);
+    const setup = [
+      { label: 'Classify active workers', complete: staff.every((person) => person.classification === 'w2' || person.classification === '1099'), detail: `${w2Count} W-2 · ${contractorCount} 1099` },
+      { label: 'Collect W-2 employee SSNs', complete: missingW2TaxIdentityCount === 0, detail: w2Count === 0 ? 'No active W-2 employees' : `${w2TaxIdentityCount} of ${w2Count} stored securely` },
+      { label: 'Connect an authorized payroll provider', complete: false, detail: 'Required for withholding, tax deposits, filings, and W-2 delivery' },
+      { label: 'Complete employer tax profile', complete: false, detail: 'Legal name, EIN, federal/state deposit schedules, Michigan withholding and UIA accounts' },
+      { label: 'Verify actual wages, hours, and tips', complete: false, detail: 'Scheduled hours are not verified time worked' },
+    ];
+    return { rows, setup, jurisdiction: location.timezone === 'America/Detroit' ? 'Federal + Michigan' : 'Federal; state setup required', warnings: ['SmoothSoft organizes supporting records but does not file taxes or provide tax advice.', 'Connect a payroll provider and complete the employer tax profile before issuing W-2s.'] };
+  }
   async revenueTrend(locationId: string, from?: string, to?: string) {
     const trx = db();
     const { start, endExclusive, days } = parseRange(from, to);
@@ -105,36 +137,85 @@ export class ReportsService {
 
   async revenueByStaff(locationId: string, from?: string, to?: string) {
     const trx = db();
-    const { start, endExclusive } = parseRange(from, to);
+    const { start, endExclusive, days } = parseRange(from, to);
 
     const roster = await trx
       .selectFrom('location_staff as ls')
       .innerJoin('users as u', 'u.id', 'ls.user_id')
-      .select(['ls.id as locationStaffId', 'u.full_name as fullName'])
+      .select(['ls.id as locationStaffId', 'u.full_name as fullName', 'ls.classification as classification'])
       .where('ls.location_id', '=', locationId)
       .execute();
 
     const txns = await trx
       .selectFrom('transactions')
-      .select(['id', 'location_staff_id', 'tip', 'total'])
+      .select(['id', 'location_staff_id', 'tip', 'total', 'created_at'])
       .where('location_id', '=', locationId)
       .where('created_at', '>=', start)
       .where('created_at', '<', endExclusive)
       .execute();
 
     const ids = txns.map((t) => t.id);
+    const pricingPolicy = await trx.selectFrom('location_pricing_policy').select('credit_surcharge_to_staff').where('location_id', '=', locationId).executeTakeFirst();
+    const creditRequestPremiumToStaff = pricingPolicy?.credit_surcharge_to_staff ?? true;
     const items = ids.length
-      ? await trx.selectFrom('transaction_items').select(['transaction_id', 'item_type', 'price']).where('transaction_id', 'in', ids).execute()
+      ? await trx.selectFrom('transaction_items').select(['transaction_id', 'item_type', 'name', 'price']).where('transaction_id', 'in', ids).execute()
       : [];
     const serviceByTxn = new Map<string, number>();
     const retailByTxn = new Map<string, number>();
     for (const item of items) {
+      if (!creditRequestPremiumToStaff && item.name === 'Requested barber premium') continue;
       const map = item.item_type === 'service' ? serviceByTxn : retailByTxn;
       map.set(item.transaction_id, (map.get(item.transaction_id) ?? 0) + Number(item.price));
     }
 
+    const refunds = ids.length
+      ? await trx
+          .selectFrom('refunds')
+          .select(['original_transaction_id', 'amount'])
+          .where('original_transaction_id', 'in', ids)
+          .where('status', '=', 'succeeded')
+          .execute()
+      : [];
+    const refundByTxn = new Map<string, number>();
+    for (const refund of refunds) refundByTxn.set(refund.original_transaction_id, (refundByTxn.get(refund.original_transaction_id) ?? 0) + Number(refund.amount));
+
+    const scheduled = await this.staffScheduledHours(locationId, from, to);
+    const scheduledHoursByStaff = new Map(scheduled.rows.map((row) => [row.locationStaffId, row.scheduledHours]));
+
+    const compensationByStaff = new Map<string, { commissionPct: number | null; boothRentWeekly: number | null; hourlyRate: number | null; annualSalary: number | null; customPayModelName: string | null; effectiveFrom: Date }>();
+    for (const person of roster) {
+      const compensation = await trx
+        .selectFrom('staff_compensation_history')
+        .select(['commission_pct', 'booth_rent_weekly', 'hourly_rate', 'annual_salary', 'custom_pay_model_name', 'effective_from'])
+        .where('location_staff_id', '=', person.locationStaffId)
+        .where('effective_from', '<', endExclusive)
+        .where((eb) => eb.or([eb('effective_to', 'is', null), eb('effective_to', '>=', start)]))
+        .orderBy('effective_from', 'desc')
+        .executeTakeFirst();
+      if (compensation) {
+        compensationByStaff.set(person.locationStaffId, {
+          commissionPct: compensation.commission_pct === null ? null : Number(compensation.commission_pct),
+          boothRentWeekly: compensation.booth_rent_weekly === null ? null : Number(compensation.booth_rent_weekly),
+          hourlyRate: compensation.hourly_rate === null ? null : Number(compensation.hourly_rate),
+          annualSalary: compensation.annual_salary === null ? null : Number(compensation.annual_salary),
+          customPayModelName: compensation.custom_pay_model_name,
+          effectiveFrom: compensation.effective_from,
+        });
+      }
+    }
+
     const byStaff = new Map(
-      roster.map((s) => [s.locationStaffId, { locationStaffId: s.locationStaffId, fullName: s.fullName, clients: 0, services: 0, products: 0, tips: 0, total: 0 }]),
+      roster.map((s) => [s.locationStaffId, {
+        locationStaffId: s.locationStaffId,
+        fullName: s.fullName,
+        classification: s.classification,
+        clients: 0,
+        services: 0,
+        products: 0,
+        tips: 0,
+        refunds: 0,
+        collected: 0,
+      }]),
     );
     for (const t of txns) {
       if (!t.location_staff_id) continue;
@@ -144,11 +225,125 @@ export class ReportsService {
       row.services += serviceByTxn.get(t.id) ?? 0;
       row.products += retailByTxn.get(t.id) ?? 0;
       row.tips += Number(t.tip);
-      row.total += Number(t.total);
+      row.refunds += refundByTxn.get(t.id) ?? 0;
+      row.collected += Number(t.total);
     }
 
-    const rows = Array.from(byStaff.values()).sort((a, b) => b.total - a.total);
-    return { rows };
+    const periodWeeks = days.length / 7;
+    const rows = Array.from(byStaff.values()).map((row) => {
+      const comp = compensationByStaff.get(row.locationStaffId);
+      const revenueBeforeRefunds = row.services + row.products;
+      const refundRatio = revenueBeforeRefunds > 0 ? Math.min(1, row.refunds / revenueBeforeRefunds) : 0;
+      const netServices = row.services * (1 - refundRatio);
+      const netProducts = row.products * (1 - refundRatio);
+      const netRevenue = netServices + netProducts;
+      const commissionPay = comp?.commissionPct == null ? 0 : netServices * (comp.commissionPct / 100);
+      const boothRent = comp?.boothRentWeekly == null ? 0 : comp.boothRentWeekly * periodWeeks;
+      const scheduledHours = scheduledHoursByStaff.get(row.locationStaffId) ?? 0;
+      const hourlyPay = comp?.hourlyRate == null ? 0 : comp.hourlyRate * scheduledHours;
+      const salaryPay = comp?.annualSalary == null ? 0 : comp.annualSalary * (days.length / 365);
+      const baseCompensationModel = comp?.annualSalary != null ? 'salary' : comp?.hourlyRate != null ? 'hourly' : comp?.boothRentWeekly != null ? 'booth_rent' : comp?.commissionPct != null ? 'commission' : 'not_configured';
+      const compensationModel = comp?.customPayModelName ?? baseCompensationModel;
+      const estimatedPay = baseCompensationModel === 'booth_rent'
+        ? netRevenue + row.tips - boothRent
+        : baseCompensationModel === 'commission'
+          ? commissionPay + row.tips
+          : baseCompensationModel === 'hourly'
+            ? hourlyPay + row.tips
+            : baseCompensationModel === 'salary'
+              ? salaryPay + row.tips
+          : null;
+      return {
+        ...row,
+        scheduledHours,
+        netServices,
+        netProducts,
+        netRevenue,
+        compensationModel,
+        commissionPct: comp?.commissionPct ?? null,
+        commissionPay,
+        boothRent,
+        hourlyRate: comp?.hourlyRate ?? null,
+        hourlyPay,
+        annualSalary: comp?.annualSalary ?? null,
+        salaryPay,
+        basePay: baseCompensationModel === 'commission' ? commissionPay : baseCompensationModel === 'hourly' ? hourlyPay : baseCompensationModel === 'salary' ? salaryPay : 0,
+        tipsPayable: row.tips,
+        estimatedPay,
+        needsConfiguration: baseCompensationModel === 'not_configured',
+      };
+    }).sort((a, b) => (b.estimatedPay ?? -1) - (a.estimatedPay ?? -1));
+
+    const totals = rows.reduce((acc, row) => ({
+      clients: acc.clients + row.clients,
+      services: acc.services + row.services,
+      products: acc.products + row.products,
+      refunds: acc.refunds + row.refunds,
+      netRevenue: acc.netRevenue + row.netRevenue,
+      tips: acc.tips + row.tips,
+      estimatedPay: acc.estimatedPay + (row.estimatedPay ?? 0),
+      payableToStaff: acc.payableToStaff + Math.max(row.estimatedPay ?? 0, 0),
+      dueToShop: acc.dueToShop + Math.max(-(row.estimatedPay ?? 0), 0),
+      scheduledHours: acc.scheduledHours + row.scheduledHours,
+    }), { clients: 0, services: 0, products: 0, refunds: 0, netRevenue: 0, tips: 0, estimatedPay: 0, payableToStaff: 0, dueToShop: 0, scheduledHours: 0 });
+
+    return {
+      rows,
+      totals,
+      period: { from: toDayKey(start), to: toDayKey(new Date(endExclusive.getTime() - 86400000)), days: days.length },
+      warnings: [
+        'Estimated settlement does not include taxes, withholding, benefits, overtime, or unverified hours.',
+        'Confirm actual hours worked before running payroll; scheduled hours are planning estimates.',
+        'Refunds are allocated proportionally across service and retail revenue.',
+        creditRequestPremiumToStaff ? 'Earned requested-professional premiums are credited to staff service revenue.' : 'Requested-professional premiums remain shop revenue and are excluded from staff commission calculations.',
+      ],
+    };
+  }
+
+  async logStaffPayRun(locationId: string, actorUserId: string, from: string, to: string, notes?: string) {
+    const snapshot = await this.revenueByStaff(locationId, from, to);
+    return db().insertInto('staff_pay_runs').values({
+      location_id: locationId,
+      period_start: from,
+      period_end: to,
+      notes: notes?.trim() || null,
+      snapshot: snapshot as unknown as Record<string, unknown>,
+      logged_by_user_id: actorUserId,
+      paid_at: null,
+    }).returning(['id', 'period_start as periodStart', 'period_end as periodEnd', 'status', 'logged_at as loggedAt']).executeTakeFirstOrThrow();
+  }
+
+  async getStaffPayRuns(locationId: string) {
+    const runs = await db().selectFrom('staff_pay_runs as spr').leftJoin('users as u', 'u.id', 'spr.logged_by_user_id').select(['spr.id as id', 'spr.period_start as periodStart', 'spr.period_end as periodEnd', 'spr.status as status', 'spr.notes as notes', 'spr.snapshot as snapshot', 'spr.logged_at as loggedAt', 'spr.paid_at as paidAt', 'u.full_name as loggedBy']).where('spr.location_id', '=', locationId).orderBy('spr.logged_at', 'desc').limit(25).execute();
+    return runs.map(({ snapshot, ...run }) => { const report = snapshot as unknown as StaffPayReport; return { ...run, staffCount: report.rows?.length ?? 0, totals: report.totals ?? {} }; });
+  }
+
+  async exportLoggedStaffPayRun(locationId: string, actorUserId: string, id: string, format: 'pdf' | 'xlsx') {
+    const [run, location] = await Promise.all([
+      db().selectFrom('staff_pay_runs').selectAll().where('id', '=', id).where('location_id', '=', locationId).executeTakeFirst(),
+      db().selectFrom('locations').select('name').where('id', '=', locationId).executeTakeFirstOrThrow(),
+    ]);
+    if (!run) throw new NotFoundException('Logged pay period not found');
+    const report = run.snapshot as unknown as StaffPayReport;
+    const buffer = format === 'xlsx' ? await buildStaffPayWorkbook(report, location.name) : await buildStaffPayPdf(report, location.name);
+    await db().insertInto('report_exports').values({ location_id: locationId, report_id: 'staff_pay_run', format, period_start: run.period_start, period_end: run.period_end, exported_by_user_id: actorUserId, parameters: { staffPayRunId: id, immutableSnapshot: true } }).execute();
+    return { buffer, period: report.period };
+  }
+
+  async exportStaffPayReport(locationId: string, actorUserId: string, format: 'pdf' | 'xlsx', from?: string, to?: string) {
+    const report = await this.revenueByStaff(locationId, from, to) as StaffPayReport;
+    const location = await db().selectFrom('locations').select('name').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const buffer = format === 'xlsx' ? await buildStaffPayWorkbook(report, location.name) : await buildStaffPayPdf(report, location.name);
+    await db().insertInto('report_exports').values({
+      location_id: locationId,
+      report_id: 'revenue_by_staff',
+      format,
+      period_start: report.period.from,
+      period_end: report.period.to,
+      exported_by_user_id: actorUserId,
+      parameters: { warnings: report.warnings },
+    }).execute();
+    return { buffer, period: report.period };
   }
 
   async paymentMix(locationId: string, from?: string, to?: string) {
@@ -292,15 +487,17 @@ export class ReportsService {
 
   async complianceStatus(locationId: string) {
     const trx = db();
-    const rows = await trx
+    const [staff, documents] = await Promise.all([trx.selectFrom('location_staff as ls').innerJoin('users as u', 'u.id', 'ls.user_id').select(['ls.id as locationStaffId', 'u.full_name as staffName']).where('ls.location_id', '=', locationId).where('ls.employment_status', '=', 'active').orderBy('u.full_name').execute(), trx
       .selectFrom('compliance_documents as cd')
       .leftJoin('location_staff as ls', 'ls.id', 'cd.location_staff_id')
       .leftJoin('users as u', 'u.id', 'ls.user_id')
-      .select(['cd.id as id', 'cd.doc_type as docType', 'cd.description as description', 'cd.expires_at as expiresAt', 'cd.status as status', 'u.full_name as staffName'])
+      .select(['cd.id as id', 'cd.location_staff_id as locationStaffId', 'cd.doc_type as docType', 'cd.description as description', 'cd.expires_at as expiresAt', 'cd.status as status', 'u.full_name as staffName'])
       .where('cd.location_id', '=', locationId)
       .orderBy((eb) => eb.case().when('cd.status', '=', 'overdue').then(0).when('cd.status', '=', 'needs_attention').then(1).else(2).end())
       .orderBy('cd.expires_at', 'asc')
-      .execute();
+      .execute()]);
+    const staffWithDocuments = new Set(documents.map((document) => document.locationStaffId).filter(Boolean));
+    const rows = [...documents, ...staff.filter((person) => !staffWithDocuments.has(person.locationStaffId)).map((person) => ({ id: `missing-${person.locationStaffId}`, locationStaffId: person.locationStaffId, staffName: person.staffName, docType: 'No documents on file', description: null, expiresAt: null, status: 'not_on_file' as const }))];
     return { rows };
   }
 
@@ -382,18 +579,18 @@ export class ReportsService {
       .execute();
 
     const byItem = new Map<string, { name: string; itemType: string; unitsSold: number; revenue: number }>();
-    let grandTotal = 0;
+    const categoryTotals = new Map<string, number>();
     for (const item of items) {
       const key = `${item.itemType}:${item.name}`;
       const row = byItem.get(key) ?? { name: item.name, itemType: item.itemType, unitsSold: 0, revenue: 0 };
       row.unitsSold += 1;
       row.revenue += Number(item.price);
-      grandTotal += Number(item.price);
+      categoryTotals.set(item.itemType, (categoryTotals.get(item.itemType) ?? 0) + Number(item.price));
       byItem.set(key, row);
     }
 
     const rows = Array.from(byItem.values())
-      .map((r) => ({ ...r, pctOfTotal: grandTotal > 0 ? Math.round((r.revenue / grandTotal) * 1000) / 10 : 0 }))
+      .map((r) => ({ ...r, pctOfCategory: (categoryTotals.get(r.itemType) ?? 0) > 0 ? Math.round((r.revenue / categoryTotals.get(r.itemType)!) * 1000) / 10 : 0 }))
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 25);
     return { rows };
@@ -421,6 +618,8 @@ export class ReportsService {
         return this.newVsReturning(locationId, from, to);
       case 'top_services_products':
         return this.topServicesAndProducts(locationId, from, to);
+      case 'tax_documentation':
+        return this.taxDocumentation(locationId);
     }
   }
 

@@ -1,4 +1,4 @@
-import type { ChargeParams, ChargeResult, PaymentProcessor } from './processor.interface';
+import type { ChargeParams, ChargeResult, PaymentProcessor, RefundParams, RefundResult } from './processor.interface';
 
 /**
  * The manual/unsupported-partner fallback. Staff mark a sale as paid via
@@ -20,5 +20,9 @@ export class ExternalAdapter implements PaymentProcessor {
       return { success: false, processorRef: '', errorMessage: 'A reference number is required for the external payment path.' };
     }
     return { success: true, processorRef: params.paymentToken.trim() };
+  }
+
+  async refund(params: RefundParams): Promise<RefundResult> {
+    return { success: true, processorRef: `manual-refund:${params.idempotencyKey}` };
   }
 }

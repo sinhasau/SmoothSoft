@@ -6,7 +6,10 @@ export interface CheckInDto {
   newClientName?: string;
   referralSource?: string;
   allergyFlag?: boolean;
+  /** Primary service; retained for backwards-compatible clients. */
   serviceId: string;
+  /** Ordered services requested for this visit. The first is the primary service. */
+  serviceIds?: string[];
   /** null/omitted = "Any available" (Next available). */
   requestedStaffId?: string | null;
   isAppointment: boolean;
@@ -19,6 +22,8 @@ export interface CheckInDto {
 
 export interface StartDto {
   staffId: string;
+  serviceId?: string;
+  serviceIds?: string[];
   serviceNotes?: string;
 }
 
@@ -33,10 +38,15 @@ export interface ReassignDto {
 
 export interface ChangeServiceDto {
   serviceId: string;
+  serviceIds?: string[];
 }
 
 export interface TogglePresentDto {
   present: boolean;
+}
+
+export interface ToggleReadyDto {
+  ready: boolean;
 }
 
 export interface ReturnToWaitingDto {

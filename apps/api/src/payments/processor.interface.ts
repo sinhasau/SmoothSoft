@@ -21,10 +21,25 @@ export interface ChargeResult {
   errorMessage?: string;
 }
 
+export interface RefundParams {
+  amountCents: number;
+  currency: string;
+  /** The original Stripe PaymentIntent id or Square payment id. */
+  processorRef: string;
+  idempotencyKey: string;
+}
+
+export interface RefundResult {
+  success: boolean;
+  processorRef: string;
+  errorMessage?: string;
+}
+
 export interface PaymentProcessor {
   readonly name: 'stripe' | 'square' | 'external';
   isConfigured(): boolean;
   charge(params: ChargeParams): Promise<ChargeResult>;
+  refund(params: RefundParams): Promise<RefundResult>;
 }
 
 export class ProcessorNotConfiguredError extends Error {

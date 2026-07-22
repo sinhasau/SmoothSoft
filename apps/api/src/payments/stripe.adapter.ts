@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import type { ChargeParams, ChargeResult, PaymentProcessor } from './processor.interface';
+import type { ChargeParams, ChargeResult, PaymentProcessor, RefundParams, RefundResult } from './processor.interface';
 import { ProcessorNotConfiguredError } from './processor.interface';
 
 /**
@@ -58,6 +58,20 @@ export class StripeAdapter implements PaymentProcessor {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Stripe error';
       return { success: false, processorRef: '', errorMessage: message };
+    }
+  }
+
+  async refund(params: RefundParams): Promise<RefundResult> {
+    if (!this.client) throw new ProcessorNotConfiguredError('Stripe');
+    try {
+      const refund = await this.client.refunds.create(
+        { payment_intent: params.processorRef, amount: params.amountCents },
+        { idempotencyKey: params.idempotencyKey, ...(this.connectedAccountId ? { stripeAccount: this.connectedAccountId } : {}) },
+      );
+      const success = refund.status === 'succeeded' || refund.status === 'pending';
+      return { success, processorRef: refund.id, errorMessage: success ? undefined : `Refund status: ${refund.status}` };
+    } catch (err) {
+      return { success: false, processorRef: '', errorMessage: err instanceof Error ? err.message : 'Unknown Stripe refund error' };
     }
   }
 }

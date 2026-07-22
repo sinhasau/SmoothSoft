@@ -2,6 +2,9 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { db } from '../common/request-context';
 import { appendEvent } from './event-log';
 import { estimateWaitTimes } from './wait-time';
+import { rollingServiceAverages } from './service-performance';
+import { chooseBestMatch } from './best-match';
+import { reorderForAppointmentSla } from './appointment-sla';
 import { createClient, findClientByPhone, touchClientConfirmed } from '../clients/client-lookup';
 import type {
   ChangeServiceDto,
@@ -12,6 +15,7 @@ import type {
   SetStaffStatusDto,
   StartDto,
   TogglePresentDto,
+  ToggleReadyDto,
 } from './queue.types';
 import type { QueueEventType, QueueEntryStatus } from '../db/kysely.types';
 import { QueueGateway } from './queue.gateway';
@@ -19,6 +23,37 @@ import { QueueGateway } from './queue.gateway';
 @Injectable()
 export class QueueService {
   constructor(private readonly gateway: QueueGateway) {}
+
+  private async serviceIdsForEntry(queueEntryId: string) {
+    const rows = await db()
+      .selectFrom('queue_entry_services')
+      .select('service_id')
+      .where('queue_entry_id', '=', queueEntryId)
+      .orderBy('sort_order')
+      .execute();
+    return rows.map((row) => row.service_id);
+  }
+
+  /** Public: also called by AppointmentsService when a reschedule changes services on a linked, not-yet-present queue entry. */
+  async setServiceLines(locationId: string, queueEntryId: string, serviceIds: string[]) {
+    const uniqueIds = [...new Set(serviceIds)];
+    await db().deleteFrom('queue_entry_services').where('queue_entry_id', '=', queueEntryId).execute();
+    if (uniqueIds.length) {
+      await db().insertInto('queue_entry_services').values(
+        uniqueIds.map((serviceId, sortOrder) => ({
+          location_id: locationId,
+          queue_entry_id: queueEntryId,
+          service_id: serviceId,
+          sort_order: sortOrder,
+        })),
+      ).execute();
+    }
+  }
+
+  private async replacePrimaryService(locationId: string, queueEntryId: string, serviceId: string) {
+    const current = await this.serviceIdsForEntry(queueEntryId);
+    await this.setServiceLines(locationId, queueEntryId, [serviceId, ...current.slice(1).filter((id) => id !== serviceId)]);
+  }
 
   private broadcast(locationId: string) {
     // Fire and forget from the caller's perspective — the board is cheap to
@@ -29,6 +64,7 @@ export class QueueService {
 
   async getBoard(locationId: string) {
     const trx = db();
+    const location = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
 
     const team = await trx
       .selectFrom('location_staff as ls')
@@ -37,6 +73,15 @@ export class QueueService {
       .where('ls.location_id', '=', locationId)
       .orderBy('u.full_name')
       .execute();
+
+    const backlogRows = await trx
+      .selectFrom('queue_entries as qe')
+      .leftJoin('services as s', 's.id', 'qe.service_id')
+      .select(['s.duration_minutes as durationMinutes'])
+      .where('qe.location_id', '=', locationId)
+      .where('qe.status', '=', 'waiting')
+      .execute();
+    await this.autoMaterializeDueAppointments(locationId, backlogRows.map((row) => row.durationMinutes ?? 20));
 
     const entryBase = trx
       .selectFrom('queue_entries as qe')
@@ -56,12 +101,15 @@ export class QueueService {
         'qe.assigned_location_staff_id as assignedStaffId',
         'u.full_name as assignedStaffName',
         'qe.requested_specific_staff as requestedSpecificStaff',
+        'qe.requested_location_staff_id as requestedStaffId',
         'qe.is_appt as isAppt',
         'qe.appt_at as apptAt',
         'qe.present as present',
         'qe.present_checked_at as presentCheckedAt',
+        'qe.ready_override as readyOverride',
         'qe.waiting_order as waitingOrder',
         'qe.service_notes as serviceNotes',
+        'qe.service_started_at as serviceStartedAt',
         'qe.created_at as createdAt',
         'qe.updated_at as updatedAt',
         'qe.original_waiting_order as originalWaitingOrder',
@@ -75,18 +123,132 @@ export class QueueService {
       .orderBy('qe.waiting_order')
       .execute();
 
-    const estimates = estimateWaitTimes(
-      waiting.map((w) => ({
+    const activeIds = [...nowServing, ...waiting].map((entry) => entry.id);
+    const serviceLines = activeIds.length
+      ? await trx
+        .selectFrom('queue_entry_services as qes')
+        .innerJoin('services as service', 'service.id', 'qes.service_id')
+        .select([
+          'qes.queue_entry_id as queueEntryId',
+          'service.id as id',
+          'service.name as name',
+          'service.duration_minutes as durationMinutes',
+          'service.price as price',
+          'qes.sort_order as sortOrder',
+        ])
+        .where('qes.queue_entry_id', 'in', activeIds)
+        .orderBy('qes.sort_order')
+        .execute()
+      : [];
+    const servicesByEntry = new Map<string, typeof serviceLines>();
+    for (const line of serviceLines) {
+      const lines = servicesByEntry.get(line.queueEntryId) ?? [];
+      lines.push(line);
+      servicesByEntry.set(line.queueEntryId, lines);
+    }
+    const withServices = <T extends (typeof waiting)[number]>(entry: T) => {
+      const lines = servicesByEntry.get(entry.id) ?? (entry.serviceId ? [{
+        queueEntryId: entry.id,
+        id: entry.serviceId,
+        name: entry.serviceName ?? 'Service',
+        durationMinutes: entry.serviceDurationMinutes ?? 20,
+        price: '0',
+        sortOrder: 0,
+      }] : []);
+      return {
+        ...entry,
+        serviceId: lines[0]?.id ?? entry.serviceId,
+        serviceIds: lines.map((line) => line.id),
+        serviceName: lines.map((line) => line.name).join(' + '),
+        serviceDurationMinutes: lines.reduce((sum, line) => sum + line.durationMinutes, 0),
+        services: lines.map(({ id, name, durationMinutes, price }) => ({ id, name, durationMinutes, price })),
+      };
+    };
+    const waitingWithServices = waiting.map(withServices);
+    const nowServingWithServices = nowServing.map(withServices);
+
+    const queueConfig = await trx.selectFrom('queue_config').select(['client_continuity_weight', 'appointment_max_wait_minutes']).where('location_id', '=', locationId).executeTakeFirst();
+    const continuityWeight = queueConfig?.client_continuity_weight ?? 60;
+    const appointmentMaxWaitMinutes = queueConfig?.appointment_max_wait_minutes ?? 10;
+    const availableStaff = team.filter((member) => member.status === 'available' && member.role !== 'front_desk');
+    const clientIds = [...new Set(waitingWithServices.map((entry) => entry.clientId).filter((id): id is string => Boolean(id)))];
+    const historyRows = clientIds.length
+      ? await trx.selectFrom('transactions').select(['client_id as clientId', 'location_staff_id as staffId']).where('location_id', '=', locationId).where('client_id', 'in', clientIds).where('location_staff_id', 'is not', null).orderBy('created_at', 'desc').limit(5000).execute()
+      : [];
+    const historyCounts = new Map<string, number>();
+    for (const row of historyRows) {
+      if (!row.clientId || !row.staffId) continue;
+      const key = `${row.clientId}:${row.staffId}`;
+      historyCounts.set(key, (historyCounts.get(key) ?? 0) + 1);
+    }
+
+    const completedTimings = await trx.selectFrom('queue_entries').select([
+      'assigned_location_staff_id as staffId', 'service_id as serviceId', 'service_started_at as serviceStartedAt', 'service_completed_at as serviceCompletedAt',
+    ]).where('location_id', '=', locationId).where('status', '=', 'completed').where('assigned_location_staff_id', 'is not', null).where('service_id', 'is not', null).where('service_started_at', 'is not', null).where('service_completed_at', 'is not', null).orderBy('service_completed_at', 'desc').limit(1000).execute();
+    const performance = rollingServiceAverages(completedTimings.map((row) => ({ staffId: row.staffId!, serviceId: row.serviceId!, serviceStartedAt: row.serviceStartedAt!, serviceCompletedAt: row.serviceCompletedAt! })));
+    const performanceByPair = new Map(performance.filter((item) => item.sampleCount >= 3).map((item) => [`${item.staffId}:${item.serviceId}`, item]));
+    const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, w.services.reduce((total, service) => total + (
+      performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
+    ), 0) || 20]));
+
+    // Appointment SLA soft-bump — see appointment-sla.ts. Only reorders the
+    // estimate math and which entries get first pick of an available staff
+    // match below; the stored, drag-orderable waiting_order is untouched.
+    const sla = reorderForAppointmentSla(
+      waitingWithServices.map((w) => ({
         queueEntryId: w.id,
-        serviceDurationMinutes: w.serviceDurationMinutes ?? 20,
+        serviceDurationMinutes: durationByEntry.get(w.id) ?? 20,
+        present: w.present,
+        apptAt: w.isAppt && w.apptAt ? new Date(w.apptAt) : null,
       })),
+      appointmentMaxWaitMinutes,
     );
+    const priorityIndex = new Map(sla.order.map((id, index) => [id, index]));
+    const byPriority = [...waitingWithServices].sort((a, b) => (priorityIndex.get(a.id) ?? 0) - (priorityIndex.get(b.id) ?? 0));
+
+    const reservedRecommendations = new Set<string>();
+    const recommendationByEntry = new Map<string, { staffId: string; staffName: string; reason: string; clientVisitCount: number }>();
+    for (const entry of byPriority) {
+      if (!entry.present || entry.readyOverride === false) continue;
+      const eligible = availableStaff.filter((member) => !reservedRecommendations.has(member.locationStaffId));
+      const match = chooseBestMatch(
+        eligible.map((member) => ({ staffId: member.locationStaffId, clientVisitCount: entry.clientId ? (historyCounts.get(`${entry.clientId}:${member.locationStaffId}`) ?? 0) : 0 })),
+        continuityWeight,
+        entry.requestedSpecificStaff ? entry.requestedStaffId : null,
+      );
+      if (!match) continue;
+      const staff = availableStaff.find((member) => member.locationStaffId === match.staffId)!;
+      reservedRecommendations.add(match.staffId);
+      recommendationByEntry.set(entry.id, { staffId: match.staffId, staffName: staff.fullName, reason: match.reason, clientVisitCount: match.clientVisitCount });
+    }
+
+    const estimates = estimateWaitTimes(sla.order.map((id) => ({ queueEntryId: id, serviceDurationMinutes: durationByEntry.get(id) ?? 20 })));
     const estimateByEntry = new Map(estimates.map((e) => [e.queueEntryId, e.estimatedStart]));
 
     return {
+      timezone: location.timezone,
       team,
-      nowServing,
-      waiting: waiting.map((w) => ({ ...w, estimatedStart: estimateByEntry.get(w.id) ?? null })),
+      nowServing: nowServingWithServices,
+      priorityOrder: sla.order,
+      waiting: waitingWithServices.map((w) => {
+        const predictions = w.services.map((service) => performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`));
+        const predictedDurationMinutes = w.services.reduce((total, service, index) => total + (predictions[index]?.averageMinutes ?? service.durationMinutes), 0) || 20;
+        const historical = predictions.filter((prediction) => !!prediction);
+        const recommendation = recommendationByEntry.get(w.id);
+        return {
+          ...w,
+          estimatedStart: estimateByEntry.get(w.id) ?? null,
+          predictedDurationMinutes,
+          predictionSource: historical.length ? 'employee_history' as const : 'service_default' as const,
+          predictionSampleCount: historical.length ? Math.min(...historical.map((prediction) => prediction!.sampleCount)) : 0,
+          recommendedStaffId: recommendation?.staffId ?? null,
+          recommendedStaffName: recommendation?.staffName ?? null,
+          matchReason: recommendation?.reason ?? null,
+          continuityVisitCount: recommendation?.clientVisitCount ?? 0,
+          apptSlaProtected: sla.protected.has(w.id),
+          apptSlaDeadline: w.isAppt && w.apptAt ? new Date(new Date(w.apptAt).getTime() + appointmentMaxWaitMinutes * 60_000) : null,
+        };
+      }),
     };
   }
 
@@ -96,6 +258,16 @@ export class QueueService {
     }
 
     const trx = db();
+
+    const serviceIds = [...new Set(dto.serviceIds?.length ? dto.serviceIds : [dto.serviceId])];
+    if (!serviceIds.length || serviceIds.length > 8) throw new BadRequestException('Choose between 1 and 8 services');
+    const validServices = await trx.selectFrom('services').select('id').where('location_id', '=', locationId).where('id', 'in', serviceIds).execute();
+    if (validServices.length !== serviceIds.length) throw new BadRequestException('One or more selected services are unavailable at this location');
+
+    if (!dto.isAppointment && dto.requestedStaffId) {
+      const requested = await trx.selectFrom('location_staff').select(['id', 'status']).where('id', '=', dto.requestedStaffId).where('location_id', '=', locationId).executeTakeFirst();
+      if (!requested || requested.status === 'off') throw new ConflictException('That staff member is not currently clocked in. Choose someone on shift or No preference.');
+    }
 
     let clientId: string | null = null;
     let displayName = dto.guestName ?? null;
@@ -158,10 +330,11 @@ export class QueueService {
         location_id: locationId,
         client_id: clientId,
         guest_name: clientId ? null : displayName,
-        service_id: dto.serviceId,
+        service_id: serviceIds[0],
         status: 'waiting',
         assigned_location_staff_id: dto.requestedStaffId ?? null,
         requested_specific_staff: !!dto.requestedStaffId,
+        requested_location_staff_id: dto.requestedStaffId ?? null,
         is_appt: dto.isAppointment,
         appt_at: dto.isAppointment ? new Date(dto.apptAt as string) : null,
         present,
@@ -172,16 +345,104 @@ export class QueueService {
       .returningAll()
       .executeTakeFirstOrThrow();
 
+    await this.setServiceLines(locationId, entry.id, serviceIds);
+
+    const currentBoard = await this.getBoard(locationId);
+    const estimatedStart = currentBoard.waiting.find((item) => item.id === entry.id)?.estimatedStart ?? null;
+    if (estimatedStart) await trx.updateTable('queue_entries').set({ estimated_start_at: estimatedStart }).where('id', '=', entry.id).execute();
+
     await appendEvent(trx, {
       locationId,
       eventType: 'client_checked_in',
       entityId: entry.id,
       actorUserId,
-      payload: { queueEntryId: entry.id, clientId, displayName, mode: dto.mode, serviceId: dto.serviceId },
+      payload: { queueEntryId: entry.id, clientId, displayName, mode: dto.mode, serviceId: serviceIds[0], serviceIds },
     });
 
     this.broadcast(locationId);
     return entry;
+  }
+
+  /**
+   * Idempotent: returns the id of the live (waiting/in_service) queue_entries
+   * row already linked to this appointment, or creates one (present:false —
+   * "on the Floor" but not yet physically arrived) if none exists yet. Used
+   * both by the lazy auto-materialization pass in getBoard() and as a
+   * fallback in checkInAppointment for a client arriving before that window
+   * opens.
+   */
+  private async ensureQueueEntryForAppointment(locationId: string, appointment: { id: string; client_id: string; service_id: string; location_staff_id: string | null; starts_at: Date }): Promise<string> {
+    const trx = db();
+    const existing = await trx.selectFrom('queue_entries').select('id').where('location_id', '=', locationId).where('appointment_id', '=', appointment.id).where('status', 'in', ['waiting', 'in_service']).executeTakeFirst();
+    if (existing) return existing.id;
+
+    const serviceLines = await trx.selectFrom('appointment_services').select('service_id').where('appointment_id', '=', appointment.id).orderBy('sort_order').execute();
+    const serviceIds = serviceLines.length ? serviceLines.map((line) => line.service_id) : [appointment.service_id];
+    const maxOrder = await trx.selectFrom('queue_entries').select(({ fn }) => [fn.max('waiting_order').as('max')]).where('location_id', '=', locationId).where('status', '=', 'waiting').executeTakeFirst();
+    const nextOrder = (maxOrder?.max ?? -1) + 1;
+    const entry = await trx.insertInto('queue_entries').values({
+      location_id: locationId,
+      client_id: appointment.client_id,
+      guest_name: null,
+      service_id: serviceIds[0],
+      status: 'waiting',
+      assigned_location_staff_id: appointment.location_staff_id,
+      requested_specific_staff: Boolean(appointment.location_staff_id),
+      requested_location_staff_id: appointment.location_staff_id,
+      is_appt: true,
+      appt_at: appointment.starts_at,
+      appointment_id: appointment.id,
+      present: false,
+      waiting_order: nextOrder,
+      original_waiting_order: nextOrder,
+    }).returningAll().executeTakeFirstOrThrow();
+    await this.setServiceLines(locationId, entry.id, serviceIds);
+    this.broadcast(locationId);
+    return entry.id;
+  }
+
+  /**
+   * Surfaces `appointments`-table bookings onto the Floor before they'd
+   * otherwise be checked in: 2 hours ahead of time, or sooner if the current
+   * backlog means a walk-in checking in right now wouldn't be seated until
+   * at/after the appointment's own time. No cron exists in this app — this
+   * runs lazily on every board fetch, which is frequent enough (20s poll +
+   * every mutation broadcast) to be effectively real-time.
+   */
+  private async autoMaterializeDueAppointments(locationId: string, currentWaitingDurations: number[]) {
+    const now = new Date();
+    const backlogMinutes = currentWaitingDurations.reduce((sum, minutes) => sum + minutes, 0);
+    const LOOKAHEAD_CAP_MINUTES = 4 * 60; // 2x the normal 2h window — a safety bound so an extreme backlog can pull someone in early without scanning the whole future.
+    const candidates = await db()
+      .selectFrom('appointments')
+      .select(['id', 'client_id', 'service_id', 'location_staff_id', 'starts_at'])
+      .where('location_id', '=', locationId)
+      .where('status', 'in', ['booked', 'confirmed'])
+      .where('starts_at', '<=', new Date(now.getTime() + LOOKAHEAD_CAP_MINUTES * 60_000))
+      .orderBy('starts_at')
+      .execute();
+
+    for (const appointment of candidates) {
+      const surfaceAt = Math.min(appointment.starts_at.getTime() - 2 * 60 * 60_000, appointment.starts_at.getTime() - backlogMinutes * 60_000);
+      if (now.getTime() >= surfaceAt) {
+        await this.ensureQueueEntryForAppointment(locationId, appointment);
+      }
+    }
+  }
+
+  async checkInAppointment(locationId: string, actorUserId: string, appointmentId: string) {
+    const trx = db();
+    const appointment = await trx.selectFrom('appointments').selectAll().where('id', '=', appointmentId).where('location_id', '=', locationId).executeTakeFirst();
+    if (!appointment) throw new NotFoundException('Appointment not found');
+    if (!['booked', 'confirmed'].includes(appointment.status)) throw new ConflictException(`This appointment is already ${appointment.status.replace('_', ' ')}.`);
+
+    const queueEntryId = await this.ensureQueueEntryForAppointment(locationId, appointment);
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (!entry.present) await this.togglePresent(locationId, queueEntryId, actorUserId, { present: true });
+    await trx.updateTable('appointments').set({ status: 'checked_in' }).where('id', '=', appointmentId).execute();
+    await appendEvent(trx, { locationId, eventType: 'client_checked_in', entityId: queueEntryId, actorUserId, payload: { queueEntryId, appointmentId, mode: 'appointment' } });
+    this.broadcast(locationId);
+    return { queueEntryId };
   }
 
   async start(locationId: string, queueEntryId: string, actorUserId: string, dto: StartDto) {
@@ -200,6 +461,12 @@ export class QueueService {
       .executeTakeFirst();
     if (!staff) throw new NotFoundException('Staff member not found at this location');
 
+    const previousServiceIds = await this.serviceIdsForEntry(queueEntryId);
+    const nextServiceIds = [...new Set(dto.serviceIds?.length ? dto.serviceIds : dto.serviceId ? [dto.serviceId] : previousServiceIds)];
+    if (!nextServiceIds.length || nextServiceIds.length > 8) throw new BadRequestException('Choose between 1 and 8 services');
+    const validServices = await trx.selectFrom('services').select('id').where('location_id', '=', locationId).where('id', 'in', nextServiceIds).execute();
+    if (validServices.length !== nextServiceIds.length) throw new NotFoundException('One or more services are unavailable at this location');
+
     const eligible = await this.eligibleStaffForEntry(locationId, entry);
     if (!eligible.some((e) => e.locationStaffId === dto.staffId)) {
       throw new ConflictException(
@@ -213,10 +480,15 @@ export class QueueService {
         status: 'in_service',
         assigned_location_staff_id: dto.staffId,
         service_notes: dto.serviceNotes ?? null,
+        service_id: nextServiceIds[0],
+        ready_override: null,
+        service_started_at: new Date(),
         updated_at: new Date(),
       })
       .where('id', '=', queueEntryId)
       .execute();
+
+    await this.setServiceLines(locationId, queueEntryId, nextServiceIds);
 
     await trx.updateTable('location_staff').set({ status: 'busy' }).where('id', '=', dto.staffId).execute();
 
@@ -232,6 +504,8 @@ export class QueueService {
           previousStatus: entry.status,
           previousAssignedStaffId: entry.assigned_location_staff_id,
           previousServiceNotes: entry.service_notes,
+          previousServiceId: entry.service_id,
+          previousServiceIds,
         },
       },
     });
@@ -257,7 +531,7 @@ export class QueueService {
 
     await trx
       .updateTable('queue_entries')
-      .set({ status: 'completed', updated_at: new Date() })
+      .set({ status: 'completed', service_completed_at: new Date(), updated_at: new Date() })
       .where('id', '=', queueEntryId)
       .execute();
 
@@ -282,6 +556,17 @@ export class QueueService {
     });
 
     this.broadcast(locationId);
+  }
+
+  async waitAccuracy(locationId: string, days: number) {
+    const safeDays = Math.max(1, Math.min(days, 365));
+    const since = new Date();
+    since.setDate(since.getDate() - safeDays);
+    const rows = await db().selectFrom('queue_entries').select(['estimated_start_at', 'service_started_at']).where('location_id', '=', locationId).where('service_started_at', '>=', since).where('estimated_start_at', 'is not', null).execute();
+    const errors = rows.map((row) => Math.abs((row.service_started_at!.getTime() - row.estimated_start_at!.getTime()) / 60000)).sort((a, b) => a - b);
+    const median = errors.length ? errors[Math.floor(errors.length / 2)] : null;
+    const withinTen = errors.length ? Math.round((errors.filter((value) => value <= 10).length / errors.length) * 100) : null;
+    return { sampleSize: errors.length, medianAbsoluteErrorMinutes: median === null ? null : Math.round(median), withinTenMinutesPct: withinTen, windowDays: safeDays };
   }
 
   private async terminate(
@@ -378,6 +663,13 @@ export class QueueService {
       .where('id', '=', queueEntryId)
       .execute();
 
+    if (entry.status === 'in_service') {
+      if (entry.assigned_location_staff_id) {
+        await trx.updateTable('location_staff').set({ status: 'available' }).where('id', '=', entry.assigned_location_staff_id).execute();
+      }
+      await trx.updateTable('location_staff').set({ status: 'busy' }).where('id', '=', dto.newStaffId).execute();
+    }
+
     await appendEvent(trx, {
       locationId,
       eventType: 'queue_entry_reassigned',
@@ -401,10 +693,14 @@ export class QueueService {
       throw new ConflictException('Only a waiting entry can have its service changed');
     }
 
-    const service = await trx.selectFrom('services').selectAll().where('id', '=', dto.serviceId).where('location_id', '=', locationId).executeTakeFirst();
-    if (!service) throw new NotFoundException('Service not found at this location');
+    const nextServiceIds = [...new Set(dto.serviceIds?.length ? dto.serviceIds : [dto.serviceId])];
+    if (!nextServiceIds.length || nextServiceIds.length > 8) throw new BadRequestException('Choose between 1 and 8 services');
+    const validServices = await trx.selectFrom('services').select('id').where('location_id', '=', locationId).where('id', 'in', nextServiceIds).execute();
+    if (validServices.length !== nextServiceIds.length) throw new NotFoundException('One or more services are unavailable at this location');
 
-    await trx.updateTable('queue_entries').set({ service_id: dto.serviceId, updated_at: new Date() }).where('id', '=', queueEntryId).execute();
+    const previousServiceIds = await this.serviceIdsForEntry(queueEntryId);
+    await trx.updateTable('queue_entries').set({ service_id: nextServiceIds[0], updated_at: new Date() }).where('id', '=', queueEntryId).execute();
+    await this.setServiceLines(locationId, queueEntryId, nextServiceIds);
 
     await appendEvent(trx, {
       locationId,
@@ -413,8 +709,9 @@ export class QueueService {
       actorUserId,
       payload: {
         queueEntryId,
-        newServiceId: dto.serviceId,
-        reversal: { previousServiceId: entry.service_id },
+        newServiceId: nextServiceIds[0],
+        newServiceIds: nextServiceIds,
+        reversal: { previousServiceId: entry.service_id, previousServiceIds },
       },
     });
 
@@ -473,6 +770,7 @@ export class QueueService {
       .updateTable('queue_entries')
       .set({
         present: dto.present,
+        ready_override: dto.present ? entry.ready_override : null,
         present_checked_at: dto.present ? new Date() : entry.present_checked_at,
         present_projected_at: dto.present ? projectedAt : entry.present_projected_at,
         updated_at: new Date(),
@@ -496,6 +794,18 @@ export class QueueService {
       },
     });
 
+    this.broadcast(locationId);
+  }
+
+  async toggleReady(locationId: string, queueEntryId: string, dto: ToggleReadyDto) {
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (entry.status !== 'waiting') throw new ConflictException('Only a waiting client can be moved to Ready to seat');
+    await db().updateTable('queue_entries').set({
+      ready_override: dto.ready,
+      present: dto.ready ? true : entry.present,
+      present_checked_at: dto.ready && !entry.present ? new Date() : entry.present_checked_at,
+      updated_at: new Date(),
+    }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
     this.broadcast(locationId);
   }
 
@@ -669,17 +979,22 @@ export class QueueService {
             status: reversal.previousStatus,
             assigned_location_staff_id: reversal.previousAssignedStaffId,
             service_notes: reversal.previousServiceNotes,
+            service_id: reversal.previousServiceId,
+            service_started_at: null,
             updated_at: new Date(),
           })
           .where('id', '=', payload.queueEntryId)
           .execute();
+        if (reversal.previousServiceIds?.length) {
+          await this.setServiceLines(locationId, payload.queueEntryId, reversal.previousServiceIds);
+        }
         await trx.updateTable('location_staff').set({ status: 'available' }).where('id', '=', payload.staffId).execute();
         break;
       }
       case 'service_completed': {
         await trx
           .updateTable('queue_entries')
-          .set({ status: reversal.previousStatus, updated_at: new Date() })
+          .set({ status: reversal.previousStatus, service_completed_at: null, updated_at: new Date() })
           .where('id', '=', payload.queueEntryId)
           .execute();
         if (reversal.staffId) {
@@ -717,11 +1032,20 @@ export class QueueService {
         break;
       }
       case 'queue_entry_reassigned': {
+        const current = await trx.selectFrom('queue_entries').select(['status', 'assigned_location_staff_id']).where('id', '=', payload.queueEntryId).executeTakeFirst();
         await trx
           .updateTable('queue_entries')
           .set({ assigned_location_staff_id: reversal.previousStaffId, updated_at: new Date() })
           .where('id', '=', payload.queueEntryId)
           .execute();
+        if (current?.status === 'in_service') {
+          if (current.assigned_location_staff_id) {
+            await trx.updateTable('location_staff').set({ status: 'available' }).where('id', '=', current.assigned_location_staff_id).execute();
+          }
+          if (reversal.previousStaffId) {
+            await trx.updateTable('location_staff').set({ status: 'busy' }).where('id', '=', reversal.previousStaffId).execute();
+          }
+        }
         break;
       }
       case 'queue_entry_service_changed': {
@@ -730,6 +1054,9 @@ export class QueueService {
           .set({ service_id: reversal.previousServiceId, updated_at: new Date() })
           .where('id', '=', payload.queueEntryId)
           .execute();
+        if (reversal.previousServiceIds?.length) {
+          await this.setServiceLines(locationId, payload.queueEntryId, reversal.previousServiceIds);
+        }
         break;
       }
       case 'queue_entry_reordered': {
@@ -880,6 +1207,11 @@ export class QueueService {
           const varianceLabel = Math.abs(v) < 0.01 ? 'matched exactly' : v > 0 ? `$${v.toFixed(2)} over` : `$${Math.abs(v).toFixed(2)} short`;
           return `Closed up shop — drawer ${varianceLabel}, card sales $${Number(p?.cardSalesTotal ?? 0).toFixed(2)}`;
         }
+        case 'shop_opened': {
+          const v = Number(p?.variance ?? 0);
+          const varianceLabel = Math.abs(v) < 0.01 ? 'matched the default' : v > 0 ? `$${v.toFixed(2)} above default` : `$${Math.abs(v).toFixed(2)} below default`;
+          return `Opened store — drawer ${varianceLabel}`;
+        }
         default: {
           if (e.event_type.endsWith('_undone')) {
             const target = p?.undoneEventId ? byId.get(String(p.undoneEventId)) : undefined;
@@ -919,8 +1251,9 @@ export class QueueService {
     const roster = await trx
       .selectFrom('location_staff as ls')
       .innerJoin('users as u', 'u.id', 'ls.user_id')
-      .select(['ls.id as locationStaffId', 'u.full_name as fullName', 'ls.status as status'])
+      .select(['ls.id as locationStaffId', 'u.full_name as fullName', 'ls.status as status', 'ls.role as role'])
       .where('ls.location_id', '=', locationId)
+      .where('ls.role', '!=', 'front_desk')
       .orderBy('u.full_name')
       .execute();
 

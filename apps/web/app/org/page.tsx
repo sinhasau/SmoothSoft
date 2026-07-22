@@ -76,9 +76,10 @@ export default function OrgDashboardPage() {
 
   return (
     <div className="min-h-screen px-6 py-6 max-w-5xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#dfd9cd] pb-4">
         <div>
-          <h1 className="text-2xl font-bold">JJ's Barbers</h1>
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Across your business</p>
+          <h1 className="font-serif text-4xl font-medium tracking-tight">JJ's Barbers</h1>
           <p className="text-sm text-gray-500">{data.locations.length} locations · today</p>
         </div>
         <Link
@@ -89,7 +90,7 @@ export default function OrgDashboardPage() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Revenue today" value={`$${data.totals.revenueToday.toFixed(0)}`} />
         <StatCard label="Clients served" value={data.totals.clientsServed} />
         <StatCard label="Staff on shift" value={`${data.totals.staffOnShift} / ${data.totals.staffTotal}`} />
@@ -121,14 +122,14 @@ export default function OrgDashboardPage() {
         </Card>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <StatCard label="W-2 employees" value={data.totals.w2Count} />
         <StatCard label="1099 booth renters" value={data.totals.contractorCount} />
       </div>
 
       <div>
         <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Financial snapshot — today, org-wide</h2>
-        <div className="grid grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
           <StatCard label="Service revenue" value={`$${data.totals.serviceRevenue.toFixed(0)}`} />
           <StatCard label="Product revenue" value={`$${data.totals.retailRevenue.toFixed(0)}`} />
           <StatCard label="Sales tax collected" value={`$${data.totals.salesTax.toFixed(0)}`} />

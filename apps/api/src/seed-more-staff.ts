@@ -17,6 +17,7 @@ interface StaffSeed {
   fullName: string;
   role: StaffRole;
   classification: StaffClassification;
+  employmentStatus?: 'active' | 'inactive' | 'resigned';
   commissionPct?: number;
   boothRentWeekly?: number;
   schedule: { day: number; start: string; end: string }[];
@@ -33,21 +34,21 @@ function weekdays(): { day: number; start: string; end: string }[] {
 }
 
 const DOWNTOWN_EXTRA: StaffSeed[] = [
-  { fullName: 'Marcus Reid', role: 'staff', classification: 'w2', commissionPct: 50, schedule: weekdays() },
-  { fullName: 'Tasha Freeman', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: tuThSa() },
-  { fullName: 'Nico Alvarado', role: 'staff', classification: 'w2', commissionPct: 50, schedule: mwf() },
-  { fullName: 'Brianna Cole', role: 'staff', classification: 'w2', commissionPct: 55, schedule: weekdays() },
-  { fullName: 'Deshawn Grant', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: tuThSa() },
-  { fullName: 'Olivia Marsh', role: 'staff', classification: 'w2', commissionPct: 50, schedule: mwf() },
+  { fullName: 'Marcus Reid', role: 'staff', classification: 'w2', commissionPct: 50, schedule: [1, 3, 5].map((day) => ({ day, start: '09:00', end: '17:00' })).concat([{ day: 4, start: '09:00', end: '13:00' }]) },
+  { fullName: 'Tasha Freeman', role: 'staff', classification: '1099', employmentStatus: 'resigned', boothRentWeekly: 250, schedule: tuThSa() },
+  { fullName: 'Nico Alvarado', role: 'staff', classification: 'w2', commissionPct: 50, schedule: [2, 3, 6].map((day) => ({ day, start: '09:00', end: '17:00' })).concat([{ day: 5, start: '09:00', end: '13:00' }]) },
+  { fullName: 'Brianna Cole', role: 'staff', classification: 'w2', commissionPct: 55, schedule: [0, 1, 2, 3, 4].map((day) => ({ day, start: '09:00', end: '17:00' })) },
+  { fullName: 'Deshawn Grant', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: [{ day: 2, start: '10:00', end: '18:00' }, { day: 4, start: '13:00', end: '18:00' }, { day: 6, start: '10:00', end: '18:00' }] },
+  { fullName: 'Olivia Marsh', role: 'staff', classification: 'w2', employmentStatus: 'inactive', commissionPct: 50, schedule: mwf() },
 ];
 
 const EASTSIDE_EXTRA: StaffSeed[] = [
-  { fullName: 'Trey Holloway', role: 'staff', classification: 'w2', commissionPct: 50, schedule: weekdays() },
-  { fullName: 'Camille Dupree', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: tuThSa() },
-  { fullName: 'Rashad Bell', role: 'staff', classification: 'w2', commissionPct: 50, schedule: mwf() },
-  { fullName: 'Yasmin Ortiz', role: 'staff', classification: 'w2', commissionPct: 55, schedule: weekdays() },
-  { fullName: 'Cole Bennett', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: tuThSa() },
-  { fullName: 'Nadia Farouk', role: 'staff', classification: 'w2', commissionPct: 50, schedule: mwf() },
+  { fullName: 'Trey Holloway', role: 'staff', classification: 'w2', commissionPct: 50, schedule: [0, 1, 2].map((day) => ({ day, start: '09:00', end: '17:00' })) },
+  { fullName: 'Camille Dupree', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: [3, 4, 5].map((day) => ({ day, start: '10:00', end: '18:00' })) },
+  { fullName: 'Rashad Bell', role: 'staff', classification: 'w2', commissionPct: 50, schedule: [0, 5, 6].map((day) => ({ day, start: '09:00', end: '17:00' })) },
+  { fullName: 'Yasmin Ortiz', role: 'staff', classification: 'w2', commissionPct: 55, schedule: [1, 2, 3].map((day) => ({ day, start: '09:00', end: '17:00' })) },
+  { fullName: 'Cole Bennett', role: 'staff', classification: '1099', boothRentWeekly: 250, schedule: [4, 5, 6].map((day) => ({ day, start: '10:00', end: '18:00' })) },
+  { fullName: 'Nadia Farouk', role: 'staff', classification: 'w2', commissionPct: 50, schedule: [0, 6].map((day) => ({ day, start: '09:00', end: '17:00' })) },
 ];
 
 const WESTFIELD_EXTRA: StaffSeed[] = [
@@ -70,6 +71,7 @@ async function addStaffToLocation(locationId: string, roster: StaffSeed[]) {
         user_id: user.id,
         role: person.role,
         classification: person.classification,
+        employment_status: person.employmentStatus ?? 'active',
         is_primary: true,
         status: 'off',
       })

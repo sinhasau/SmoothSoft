@@ -1,6 +1,6 @@
-import { Controller, ForbiddenException, Get, UseGuards } from '@nestjs/common';
+import { Controller, ForbiddenException, Get, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { requireAuth } from '../common/request-context';
+import { requireAuth, requireFrontDeskOrManager } from '../common/request-context';
 import { DashboardService } from './dashboard.service';
 
 @Controller('dashboard')
@@ -15,8 +15,9 @@ export class DashboardController {
   }
 
   @Get('sales')
-  sales() {
-    return this.dashboard.salesBreakdown(requireAuth().locationId);
+  sales(@Query('days') rawDays?: string) {
+    const days = Math.min(90, Math.max(1, Number(rawDays ?? 1) || 1));
+    return this.dashboard.salesBreakdown(requireFrontDeskOrManager().locationId, days);
   }
 
   @Get('org')

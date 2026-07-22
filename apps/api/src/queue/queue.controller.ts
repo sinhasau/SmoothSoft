@@ -11,6 +11,7 @@ import type {
   SetStaffStatusDto,
   StartDto,
   TogglePresentDto,
+  ToggleReadyDto,
 } from './queue.types';
 
 @Controller()
@@ -28,6 +29,11 @@ export class QueueController {
   activity(@Query('limit') limit?: string) {
     const auth = requireAuth();
     return this.queue.activityLog(auth.locationId, limit ? Number(limit) : undefined);
+  }
+
+  @Get('queue/accuracy')
+  accuracy(@Query('days') days?: string) {
+    return this.queue.waitAccuracy(requireAuth().locationId, days ? Number(days) : 30);
   }
 
   @Post('queue/check-in')
@@ -88,6 +94,12 @@ export class QueueController {
   present(@Param('id') id: string, @Body() dto: TogglePresentDto) {
     const auth = requireAuth();
     return this.queue.togglePresent(auth.locationId, id, auth.userId, dto);
+  }
+
+  @Post('queue/:id/ready')
+  ready(@Param('id') id: string, @Body() dto: ToggleReadyDto) {
+    const auth = requireAuth();
+    return this.queue.toggleReady(auth.locationId, id, dto);
   }
 
   @Post('queue/:id/return-to-waiting')

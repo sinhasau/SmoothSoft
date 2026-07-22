@@ -1,10 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../../../../lib/api';
+import { formatPhoneInput } from '../../../../lib/phone';
 import { useLiveQueueSync } from '../../../../lib/socket';
 import { Button, Card, ClickableName, ClockInDropdown, Pill, RowMenu, StatusDropdown } from '../../../../components/ui';
+import { ProfessionalPicker } from '../../../../components/professional-picker';
+import { ServiceMultiPicker } from '../../../../components/service-multi-picker';
+import { SanitationReminder, type SanitationReminderState } from '../../../../components/sanitation-reminder';
+import { CardPaymentFields, type BrowserPaymentConfig } from '../../../../components/card-payment-fields';
+import { useRequireAuth } from '../../../../lib/auth';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
 function useClock() {
@@ -32,22 +38,38 @@ interface QueueEntry {
   serviceId: string;
   serviceName: string;
   serviceDurationMinutes: number;
+  serviceIds: string[];
+  services: { id: string; name: string; durationMinutes: number; price: string }[];
   assignedStaffId: string | null;
   assignedStaffName: string | null;
   requestedSpecificStaff: boolean;
+  requestedStaffId: string | null;
   present: boolean;
   presentCheckedAt: string | null;
+  readyOverride: boolean | null;
   isAppt: boolean;
   apptAt: string | null;
   waitingOrder: number | null;
   estimatedStart: string | null;
+  serviceStartedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  recommendedStaffId?: string | null;
+  recommendedStaffName?: string | null;
+  matchReason?: 'requested' | 'familiar_barber' | 'team_variety' | 'next_available' | null;
+  continuityVisitCount?: number;
+  /** True when the appointment SLA soft-bump had to protect this entry's seating estimate — see appointment-sla.ts. */
+  apptSlaProtected?: boolean;
+  /** apptAt + the shop's appointment_max_wait_minutes — the "seat by" deadline shown when apptSlaProtected. */
+  apptSlaDeadline?: string | null;
 }
 
 interface Board {
+  timezone: string;
   team: TeamMember[];
   nowServing: QueueEntry[];
+  /** Effective seating-priority order (ids) computed server-side — same as `waiting`'s order except when an appointment SLA bump reorders it for matching purposes. */
+  priorityOrder?: string[];
   waiting: QueueEntry[];
 }
 
@@ -91,6 +113,15 @@ function minutesBetween(a: Date, b: Date) {
   return Math.max(0, Math.round((b.getTime() - a.getTime()) / 60000));
 }
 
+function durationLabel(totalMinutes: number) {
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days) return `${days}d ${hours}h`;
+  return `${hours}h${minutes ? ` ${minutes}m` : ''}`;
+}
+
 const STAFF_DOT: Record<string, string> = {
   available: 'bg-green-500',
   busy: 'bg-blue-500',
@@ -100,15 +131,22 @@ const STAFF_DOT: Record<string, string> = {
 
 export default function QueuePage({ params }: { params: { locationId: string } }) {
   useLiveQueueSync();
+  const auth = useRequireAuth();
+  const canManage = auth?.role === 'org_owner' || auth?.role === 'location_manager';
   const queryClient = useQueryClient();
   const [showCheckIn, setShowCheckIn] = useState<'walkin' | 'appointment' | null>(null);
   const [checkoutEntry, setCheckoutEntry] = useState<QueueEntry | null>(null);
+  const [checkoutAnchor, setCheckoutAnchor] = useState<{ top: number; right: number } | null>(null);
   const [startEntry, setStartEntry] = useState<QueueEntry | null>(null);
+  const [suggestedStartStaffId, setSuggestedStartStaffId] = useState<string | null>(null);
   const [reassignEntry, setReassignEntry] = useState<QueueEntry | null>(null);
+  const [suggestedReassignStaffId, setSuggestedReassignStaffId] = useState<string | null>(null);
   const [changeServiceEntry, setChangeServiceEntry] = useState<QueueEntry | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverZone, setDragOverZone] = useState<string | null>(null);
   const [localWaitingOrder, setLocalWaitingOrder] = useState<string[] | null>(null);
   const [showCloseShop, setShowCloseShop] = useState(false);
+  const [showOpenShop, setShowOpenShop] = useState(false);
   const [confirmingUndo, setConfirmingUndo] = useState<string | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [clientPreviewId, setClientPreviewId] = useState<string | null>(null);
@@ -117,13 +155,19 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const board = useQuery({ queryKey: ['queue', 'board'], queryFn: () => api.get<Board>('/queue/board'), refetchInterval: 20_000 });
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
   const activity = useQuery({ queryKey: ['queue', 'activity'], queryFn: () => api.get<ActivityEvent[]>('/queue/activity?limit=15') });
+  const sanitation = useQuery({ queryKey: ['settings', 'sanitation-reminders'], queryFn: () => api.get<SanitationReminderState>('/settings/sanitation-reminders'), refetchInterval: 30_000 });
+  const shopStatus = useQuery({ queryKey: ['payments', 'shop-status'], queryFn: () => api.get<{ state: 'not_opened' | 'open' | 'closed' }>('/payments/shop-status') });
 
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: ['queue', 'board'] });
     void queryClient.invalidateQueries({ queryKey: ['queue', 'activity'] });
+    void queryClient.invalidateQueries({ queryKey: ['payments', 'shop-status'] });
   }
 
   const clockIn = useMutation({ mutationFn: (staffId: string) => api.post(`/staff/${staffId}/clock-in`), onSuccess: invalidate });
+  const refreshSanitation = () => void queryClient.invalidateQueries({ queryKey: ['settings', 'sanitation-reminders'] });
+  const snoozeSanitation = useMutation({ mutationFn: () => api.post('/settings/sanitation-reminders/snooze'), onSuccess: refreshSanitation });
+  const completeSanitation = useMutation({ mutationFn: () => api.post('/settings/sanitation-reminders/complete'), onSuccess: refreshSanitation });
 
   const setStatus = useMutation({
     mutationFn: ({ staffId, status }: { staffId: string; status: string }) => api.post(`/staff/${staffId}/status`, { status }),
@@ -145,6 +189,10 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     mutationFn: ({ id, present }: { id: string; present: boolean }) => api.post(`/queue/${id}/present`, { present }),
     onSuccess: invalidate,
   });
+  const toggleReady = useMutation({
+    mutationFn: ({ id, ready }: { id: string; ready: boolean }) => api.post(`/queue/${id}/ready`, { ready }),
+    onSuccess: invalidate,
+  });
   const reorder = useMutation({
     mutationFn: (orderedQueueEntryIds: string[]) => api.post('/queue/reorder', { orderedQueueEntryIds }),
     onSuccess: invalidate,
@@ -162,7 +210,48 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     return e.isAppt && !!e.apptAt && new Date(e.apptAt) < now;
   }
   const lateCount = waitingList.filter(isLate).length;
-  const longestWaitMinutes = waitingList.reduce((max, e) => Math.max(max, minutesBetween(new Date(e.createdAt), now)), 0);
+  // An appointment booked hours/days earlier has not been waiting that whole
+  // time. Its wait begins only when marked Arrived; non-present appointments
+  // do not participate in the operational longest-wait metric.
+  const activelyWaiting = waitingList.filter((entry) => !entry.isAppt || entry.present);
+  const waitMinutes = (entry: QueueEntry) => minutesBetween(new Date(entry.isAppt && entry.presentCheckedAt ? entry.presentCheckedAt : entry.createdAt), now);
+  const staleWaiting = activelyWaiting.filter((entry) => waitMinutes(entry) >= 12 * 60);
+  const operationalWaiting = activelyWaiting.filter((entry) => waitMinutes(entry) < 12 * 60);
+  const longestWaitMinutes = operationalWaiting.reduce((max, entry) => Math.max(max, waitMinutes(entry)), 0);
+
+  const serviceTeam = onShiftTeam.filter((member) => member.role !== 'front_desk');
+  const availableTeam = serviceTeam.filter((member) => member.status === 'available');
+  const usedReadyStaff = new Set<string>();
+  // Consume staff matches in the server's priority order (appointment-SLA-protected
+  // entries first) rather than plain display order — falls back to display order
+  // whenever nothing is protected, i.e. no visible change in the common case.
+  const priorityIndex = new Map((board.data?.priorityOrder ?? []).map((id, index) => [id, index]));
+  const priorityWaitingList = [...waitingList].sort((a, b) => (priorityIndex.get(a.id) ?? Infinity) - (priorityIndex.get(b.id) ?? Infinity));
+  const readyMatches = priorityWaitingList
+    .filter((entry) => entry.present && entry.readyOverride !== false)
+    .map((entry) => {
+      const recommended = availableTeam.find((member) => member.locationStaffId === entry.recommendedStaffId && !usedReadyStaff.has(member.locationStaffId));
+      const assigned = availableTeam.find((member) => member.locationStaffId === entry.assignedStaffId && !usedReadyStaff.has(member.locationStaffId));
+      const staff = recommended ?? assigned ?? availableTeam.find((member) => !usedReadyStaff.has(member.locationStaffId)) ?? null;
+      if (staff) usedReadyStaff.add(staff.locationStaffId);
+      return staff || entry.readyOverride === true ? { entry, staff } : null;
+    })
+    .filter((match): match is { entry: QueueEntry; staff: TeamMember | null } => Boolean(match));
+
+  function openStart(entry: QueueEntry, suggestedStaffId?: string) {
+    setSuggestedStartStaffId(suggestedStaffId ?? null);
+    setStartEntry(entry);
+  }
+
+  function openCheckout(entry: QueueEntry, button?: HTMLButtonElement) {
+    const rect = button?.getBoundingClientRect();
+    const compact = window.innerWidth < 760;
+    setCheckoutAnchor({
+      top: compact ? 16 : rect ? Math.max(16, rect.top - 96) : 72,
+      right: compact ? 16 : rect ? Math.max(16, window.innerWidth - rect.left + 12) : 72,
+    });
+    setCheckoutEntry(entry);
+  }
 
   // Elapsed time for whoever's currently in someone's chair, keyed by staff —
   // powers the "Cutting · Xm" hint on the staff-status strip.
@@ -171,6 +260,8 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       .filter((e) => e.assignedStaffId)
       .map((e) => [e.assignedStaffId as string, minutesBetween(new Date(e.updatedAt), now)]),
   );
+
+  const readyIds = new Set(readyMatches.map((match) => match.entry.id));
 
   function handleDrop(targetId: string) {
     if (!dragId || dragId === targetId || !board.data) return;
@@ -182,204 +273,242 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     setLocalWaitingOrder(currentOrder);
     reorder.mutate(currentOrder);
     setDragId(null);
+    setDragOverZone(null);
+  }
+
+  // Dropping anywhere in the Ready column (not just the empty-slot box) marks the entry ready.
+  function handleDropToReady() {
+    if (dragId) toggleReady.mutate({ id: dragId, ready: true });
+    setDragId(null);
+    setDragOverZone(null);
+  }
+
+  // Dropping a ready card back onto the Waiting column un-readies it; dropping an
+  // already-waiting entry there (row-level handleDrop stops propagation first) is a no-op.
+  function handleDropToWaiting() {
+    if (dragId && readyIds.has(dragId)) toggleReady.mutate({ id: dragId, ready: false });
+    setDragId(null);
+    setDragOverZone(null);
+  }
+
+  // Dropping any waiting/ready entry onto an on-floor staff chip opens Start prefilled with
+  // that barber; dropping an in-service entry there opens Reassign prefilled the same way.
+  function handleDropOnStaff(staffId: string) {
+    if (dragId) {
+      const waitingEntry = waitingList.find((entry) => entry.id === dragId);
+      if (waitingEntry) {
+        openStart(waitingEntry, staffId);
+      } else {
+        const servingEntry = board.data?.nowServing.find((entry) => entry.id === dragId);
+        if (servingEntry) {
+          setSuggestedReassignStaffId(staffId);
+          setReassignEntry(servingEntry);
+        }
+      }
+    }
+    setDragId(null);
+    setDragOverZone(null);
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="mx-auto max-w-[1560px] space-y-5">
+      <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[#dfd9cd] pb-4">
         <div>
-          <h2 className="text-xl font-bold">Live queue</h2>
-          <p className="text-sm text-gray-500">Shared device · all barbers</p>
+          <p className="text-sm font-medium text-[#605f5a]">{now.toLocaleDateString([], { timeZone: board.data?.timezone, weekday: 'long', month: 'long', day: 'numeric' })}</p>
+          <div className="mt-1 flex items-baseline gap-3">
+            <h1 className="font-serif text-4xl font-medium tracking-tight text-[#171d1a]">Floor</h1>
+            <span className="text-sm text-gray-500">Updated just now</span>
+            {shopStatus.data && <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${shopStatus.data.state === 'open' ? 'bg-[#e4eee7] text-[#315c4f]' : 'bg-[#eee9df] text-[#766d60]'}`}>{shopStatus.data.state === 'open' ? 'Store open' : shopStatus.data.state === 'closed' ? 'Store closed' : 'Opening not logged'}</span>}
+          </div>
         </div>
-        {/* Close up shop demoted to an overflow menu — it's an end-of-day action,
-            not something that should compete visually with Appointment/Walk-in. */}
-        <RowMenu items={[{ label: 'Close up shop', onClick: () => setShowCloseShop(true) }]} />
-      </div>
-
-      {/* Queue-at-a-glance: the three questions reception asks most — how many
-          are waiting, who's waited longest, and is anything running late. */}
-      {waitingList.length > 0 && (
-        <div className="flex items-center gap-5 text-sm text-gray-500">
-          <span>
-            <span className="font-semibold text-black">{waitingList.length}</span> waiting
-          </span>
-          <span>
-            Longest wait <span className="font-semibold text-black">{longestWaitMinutes}m</span>
-          </span>
-          {lateCount > 0 && (
-            <span className="font-semibold text-red-600">
-              {lateCount} appointment{lateCount === 1 ? '' : 's'} running late
-            </span>
-          )}
+        <div className="flex items-center gap-2">
+          <div className="mr-2 hidden items-center gap-2 text-sm text-gray-600 md:flex">
+            <span><strong className="text-gray-900">{waitingList.length}</strong> queued</span>
+            <span>·</span>
+            <span><strong className="text-gray-900">{readyMatches.length}</strong> ready</span>
+            <span>·</span>
+            <span><strong className="text-gray-900">{board.data?.nowServing.length ?? 0}</strong> in service</span>
+          </div>
+          <Button onClick={() => setShowCheckIn('appointment')}>Appointment</Button>
+          <Button variant="solid" onClick={() => setShowCheckIn('walkin')}>＋ Walk-in</Button>
+          <RowMenu items={[
+            ...(shopStatus.data?.state !== 'open' ? [{ label: shopStatus.data?.state === 'closed' ? 'Reopen store' : 'Open store', onClick: () => setShowOpenShop(true) }] : []),
+            ...(canManage && shopStatus.data?.state === 'open' ? [{ label: 'Close up shop', onClick: () => setShowCloseShop(true) }] : []),
+          ]} />
         </div>
-      )}
+      </header>
 
-      {/* Muted relative to Now serving/Waiting below — this is supporting
-          context (who's clocked in), not the main thing reception is scanning. */}
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-black/10 bg-white/60 px-3 py-1.5">
-        {onShiftTeam.length === 0 && <span className="text-sm text-gray-400 py-0.5">No staff clocked in yet.</span>}
-        {onShiftTeam.map((t) => {
-          const elapsed = t.status === 'busy' ? elapsedByStaffId.get(t.locationStaffId) : undefined;
+      <SanitationReminder state={sanitation.data} pending={snoozeSanitation.isPending || completeSanitation.isPending} onSnooze={() => snoozeSanitation.mutate()} onComplete={() => completeSanitation.mutate()} />
+
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#ddd7ca] bg-white/55 px-3 py-2">
+        <span className="mr-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77736b]">On floor</span>
+        {onShiftTeam.length === 0 && <span className="py-1 text-sm text-gray-400">No staff clocked in yet.</span>}
+        {onShiftTeam.map((member) => {
+          const elapsed = member.status === 'busy' ? elapsedByStaffId.get(member.locationStaffId) : undefined;
+          const zone = `staff-${member.locationStaffId}`;
+          const droppable = !!dragId;
           return (
-            <div key={t.locationStaffId} className="flex items-center gap-1.5 pr-4 border-r border-black/10 last:border-0">
-              <span className={`w-1.5 h-1.5 rounded-full ${STAFF_DOT[t.status]}`} />
-              <span className="text-sm text-gray-700">{t.fullName}</span>
-              {elapsed !== undefined && <span className="text-xs text-gray-400">· cutting {elapsed}m</span>}
-              <StatusDropdown status={t.status} onChange={(status) => setStatus.mutate({ staffId: t.locationStaffId, status })} />
+            <div
+              key={member.locationStaffId}
+              onDragOver={(event) => { if (droppable) event.preventDefault(); }}
+              onDragEnter={() => { if (droppable) setDragOverZone(zone); }}
+              onDragLeave={() => setDragOverZone((current) => (current === zone ? null : current))}
+              onDrop={(event) => { event.stopPropagation(); if (droppable) handleDropOnStaff(member.locationStaffId); }}
+              className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition ${
+                dragOverZone === zone ? 'border-[#315f52] bg-[#edf3ef] ring-2 ring-[#315f52]/20' : droppable ? 'border-[#315f52]/40 bg-white' : 'border-[#dedbd2] bg-white'
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${STAFF_DOT[member.status]}`} />
+              <span className="text-xs font-medium text-[#383d3a]">{member.fullName}</span>
+              {elapsed !== undefined && <span className="text-[11px] text-gray-400">· {elapsed}m</span>}
+              <StatusDropdown status={member.status} onChange={(status) => setStatus.mutate({ staffId: member.locationStaffId, status })} />
             </div>
           );
         })}
-        <div className="ml-auto">
-          <ClockInDropdown offStaff={offShiftTeam} onClockIn={(id) => clockIn.mutate(id)} />
-        </div>
+        <div className="ml-auto"><ClockInDropdown offStaff={offShiftTeam} onClockIn={(id) => clockIn.mutate(id)} /></div>
       </div>
 
-      <div>
-        <h2 className="text-sm font-bold text-black mb-2">Now serving</h2>
-        <Card>
-          {board.data?.nowServing.length === 0 && <div className="px-4 py-6 text-center text-gray-400 text-sm">No one in a chair right now.</div>}
-          {board.data?.nowServing.map((e) => {
-            const started = new Date(e.updatedAt);
-            const elapsed = minutesBetween(started, now);
-            const eta = new Date(started.getTime() + e.serviceDurationMinutes * 60000);
-            const overrunning = now > eta;
-            return (
-              <div
-                key={e.id}
-                className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-3 transition-colors hover:bg-black/[0.015]"
-              >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-base font-semibold">{displayName(e)}</span>
-                    {e.isAppt && <Pill tone="gray">Appt</Pill>}
-                  </div>
-                  <div className="text-xs text-gray-400 mb-1">
-                    {e.serviceName} with {e.assignedStaffName}
-                  </div>
-                  <div className="flex items-center gap-3 text-xs text-gray-500">
-                    <span>
-                      Started <span className="font-medium text-gray-700">{timeLabel(e.updatedAt)}</span>
-                    </span>
-                    <span>
-                      Elapsed <span className="font-medium text-gray-700">{elapsed}m</span>
-                    </span>
-                    <span className={overrunning ? 'font-medium text-amber-700' : ''}>
-                      {overrunning ? 'Running over · was due' : 'ETA'} <span className="font-medium">{timeLabel(eta.toISOString())}</span>
-                    </span>
-                  </div>
-                </div>
-                {/* gap-3 matches the waiting rows so Complete's right edge lines up with Start's. */}
-                <div className="flex items-center gap-3">
-                  <Button variant="solid" onClick={() => setCheckoutEntry(e)}>
-                    Complete
-                  </Button>
-                  <RowMenu
-                    items={[
-                      { label: 'Reassign', onClick: () => setReassignEntry(e) },
-                      { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'top' }) },
-                      { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: e.id, position: 'original' }) },
-                      { label: 'Cancel service', onClick: () => cancel.mutate(e.id), destructive: true },
-                    ]}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </Card>
-      </div>
-
-      <div>
-        <div className="flex items-center justify-between mb-2">
+      <div className="grid items-start gap-3 xl:grid-cols-[1.12fr_.82fr_1.12fr]">
+        <section
+          onDragOver={(event) => { if (dragId) event.preventDefault(); }}
+          onDragEnter={() => { if (dragId) setDragOverZone('waiting'); }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOverZone((current) => (current === 'waiting' ? null : current)); }}
+          onDrop={(event) => { event.stopPropagation(); handleDropToWaiting(); }}
+          className={`overflow-hidden rounded-2xl border bg-white/55 shadow-[0_10px_30px_rgba(62,50,32,0.035)] transition ${dragOverZone === 'waiting' ? 'border-[#315f52] ring-2 ring-[#315f52]/15' : 'border-[#ddd7cc]'}`}
+        >
+          <div className="border-b border-[#e4ded3] px-4 py-4">
+            <div className="flex items-baseline gap-3">
+              <h2 className="font-serif text-2xl text-[#1b211e]">Waiting</h2>
+              <span className="text-base text-[#8c6f58]">{waitingList.length}</span>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-gray-500">
+              {lateCount > 0 && <span className="font-medium text-[#b84b24]">{lateCount} need attention</span>}
+              {operationalWaiting.length > 0 && <span>Longest wait <strong className={longestWaitMinutes >= 45 ? 'text-[#b84b24]' : 'text-gray-800'}>{durationLabel(longestWaitMinutes)}</strong></span>}
+              <span className="ml-auto">Priority order ↕</span>
+            </div>
+          </div>
           <div>
-            <h2 className="text-sm font-bold text-black">Waiting</h2>
-            <p className="text-xs text-gray-400">Drag to reorder</p>
-          </div>
-          {/* mr-[60px] = card px-4 (16) + ⋮ menu w-8 (32) + gap-3 (12), so these
-              buttons' right edge aligns exactly with the Start buttons below. */}
-          <div className="flex gap-2 mr-[60px]">
-            <Button onClick={() => setShowCheckIn('appointment')}>+ Appointment</Button>
-            <Button variant="solid" onClick={() => setShowCheckIn('walkin')}>
-              + Walk-in
-            </Button>
-          </div>
-        </div>
-        <Card>
-          {waitingList.length === 0 && <div className="px-4 py-6 text-center text-gray-400 text-sm">No one waiting.</div>}
-          {waitingList.map((e, i) => {
-            const late = isLate(e);
-            return (
-              <div
-                key={e.id}
-                draggable
-                onDragStart={() => setDragId(e.id)}
-                onDragOver={(ev) => ev.preventDefault()}
-                onDrop={() => handleDrop(e.id)}
-                className={`flex items-center justify-between gap-4 border-b border-black/5 last:border-0 px-4 py-3 transition-colors ${dragId === e.id ? 'opacity-40' : 'hover:bg-black/[0.015]'}`}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="cursor-grab select-none rounded p-2 text-gray-300 hover:bg-black/5 hover:text-gray-500" title="Drag to reorder">
-                    ⠿
-                  </span>
-                  <span className="w-6 h-6 rounded-full bg-gray-100 text-xs flex items-center justify-center shrink-0">{i + 1}</span>
+            {waitingList.length === 0 && <div className="px-5 py-12 text-center text-sm text-gray-400">No one is waiting.</div>}
+            {waitingList.map((entry, index) => {
+              const wait = (!entry.isAppt || entry.present) ? waitMinutes(entry) : 0;
+              const late = isLate(entry);
+              const urgent = wait >= 60 || late;
+              return (
+                <div
+                  key={entry.id}
+                  draggable
+                  onDragStart={() => setDragId(entry.id)}
+                  onDragEnd={() => { setDragId(null); setDragOverZone(null); }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => { event.stopPropagation(); handleDrop(entry.id); }}
+                  className={`grid cursor-grab grid-cols-[4px_34px_minmax(0,1fr)_auto_28px] items-center gap-2 border-b border-[#e7e1d7] py-3 pr-2 last:border-0 active:cursor-grabbing ${dragId === entry.id ? 'opacity-40' : 'hover:bg-white/75'}`}
+                >
+                  <span className={`h-full min-h-12 rounded-r-full ${urgent ? 'bg-[#c84e26]' : wait >= 40 ? 'bg-[#cf8b17]' : 'bg-transparent'}`} />
+                  <span className="font-serif text-xl tabular-nums text-[#222824]">{String(index + 1).padStart(2, '0')}</span>
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {e.clientId ? (
-                        <button className="text-base font-semibold underline decoration-dotted decoration-gray-400 hover:decoration-black" onClick={() => setClientPreviewId(e.clientId)}>
-                          {displayName(e)}
-                        </button>
-                      ) : (
-                        <span className="text-base font-semibold">{displayName(e)}</span>
-                      )}
-                      {e.isAppt && <Pill tone="gray">Appt</Pill>}
+                    <div className="flex min-w-0 items-center gap-2">
+                      {entry.clientId ? <button className="truncate text-left text-sm font-semibold hover:text-[#175642]" onClick={() => setClientPreviewId(entry.clientId)}>{displayName(entry)}</button> : <span className="truncate text-sm font-semibold">{displayName(entry)}</span>}
+                      {entry.isAppt && <Pill tone="gray">Appt</Pill>}
                       {late && <Pill tone="red">Late</Pill>}
+                      {entry.apptSlaProtected && <Pill tone="amber">⏰ Seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill>}
                     </div>
-                    <div className="text-xs text-gray-400">
-                      {e.serviceName} · {e.assignedStaffName ?? 'No preference'}
-                    </div>
+                    <div className="mt-0.5 truncate text-xs text-gray-500">{entry.serviceName} · {entry.assignedStaffName ?? 'Any barber'}</div>
+                    <label className="mt-1 inline-flex cursor-pointer items-center gap-1 text-[10px] text-gray-400">
+                      <input type="checkbox" className="h-3.5 w-3.5" checked={entry.present} onChange={(event) => togglePresent.mutate({ id: entry.id, present: event.target.checked })} />
+                      {entry.present ? `Arrived ${timeLabel(entry.presentCheckedAt)}` : 'Mark arrived'}
+                    </label>
                   </div>
+                  <div className="text-right text-xs">
+                    {wait > 0 && <div className={`font-semibold tabular-nums ${urgent ? 'text-[#c14b25]' : wait >= 40 ? 'text-[#b36f0e]' : 'text-gray-600'}`}>{durationLabel(wait)}</div>}
+                    <div className="mt-1 whitespace-nowrap text-gray-500">{entry.isAppt ? timeLabel(entry.apptAt) : `~${timeLabel(entry.estimatedStart)}`}</div>
+                    <button className="mt-1 font-medium text-[#175642] hover:underline" onClick={() => openStart(entry)}>Start</button>
+                  </div>
+                  <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Change service', onClick: () => setChangeServiceEntry(entry) }, { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present }, { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
                 </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  {/* Fixed width + left-aligned so the checkbox sits at the same x on
-                      every row, whether or not the "arrived at" timestamp line below it
-                      is present (its width would otherwise re-center the whole label). */}
-                  <label className="flex w-20 flex-col items-start text-[11px] cursor-pointer">
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4"
-                        checked={e.present}
-                        onChange={(ev) => togglePresent.mutate({ id: e.id, present: ev.target.checked })}
-                      />
-                      <span className={e.present ? 'text-green-700 font-medium' : 'text-gray-400'}>{e.present ? '✓ Arrived' : 'Arrived'}</span>
-                    </span>
-                    {e.present && e.presentCheckedAt && <span className="pl-5 text-[10px] text-gray-400">{timeLabel(e.presentCheckedAt)}</span>}
-                  </label>
-                  <span className="text-xs text-gray-500 min-w-[92px] text-right whitespace-nowrap">
-                    {e.isAppt ? (
-                      <>
-                        Appt <span className="font-medium text-gray-700">{timeLabel(e.apptAt)}</span>
-                      </>
-                    ) : (
-                      <>
-                        Est. start <span className="font-medium text-gray-700">~{timeLabel(e.estimatedStart)}</span>
-                      </>
-                    )}
-                  </span>
-                  <Button onClick={() => setStartEntry(e)}>Start</Button>
-                  <RowMenu
-                    items={[
-                      { label: 'Reassign', onClick: () => setReassignEntry(e) },
-                      { label: 'Change service', onClick: () => setChangeServiceEntry(e) },
-                      { label: 'Mark no-show', onClick: () => noShow.mutate(e.id), hidden: e.present },
-                      { label: 'Mark abandoned', onClick: () => abandon.mutate(e.id), hidden: !e.present },
-                      { label: 'Cancel', onClick: () => cancel.mutate(e.id), destructive: true },
-                    ]}
-                  />
+              );
+            })}
+          </div>
+        </section>
+
+        <section
+          onDragOver={(event) => { if (dragId) event.preventDefault(); }}
+          onDragEnter={() => { if (dragId) setDragOverZone('ready'); }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOverZone((current) => (current === 'ready' ? null : current)); }}
+          onDrop={(event) => { event.stopPropagation(); handleDropToReady(); }}
+          className={`rounded-2xl border p-3 shadow-[0_10px_30px_rgba(43,76,60,0.06)] transition ${dragOverZone === 'ready' ? 'border-[#315f52] bg-[#e4eee7] ring-2 ring-[#315f52]/15' : 'border-[#b9cdbd] bg-[#edf3ec]'}`}
+        >
+          <div className="flex items-baseline gap-3 px-2 pb-3 pt-1">
+            <h2 className="font-serif text-2xl text-[#1b211e]">Ready to seat</h2>
+            <span className="text-base text-[#79695c]">{readyMatches.length}</span>
+          </div>
+          <div className="space-y-3">
+            {readyMatches.map(({ entry, staff }, index) => (
+              <div
+                key={entry.id}
+                draggable
+                onDragStart={() => setDragId(entry.id)}
+                onDragEnd={() => { setDragId(null); setDragOverZone(null); }}
+                className={`cursor-grab rounded-xl border p-3 shadow-sm active:cursor-grabbing ${entry.apptSlaProtected ? 'border-amber-300 bg-amber-50/60' : 'border-[#bfd0c2] bg-white/70'} ${dragId === entry.id ? 'opacity-40' : ''}`}
+              >
+                {entry.apptSlaProtected && <div className="mb-2"><Pill tone="amber">⏰ Appointment — seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill></div>}
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#dce8de] font-serif text-lg text-[#174f3c]">{staff?.fullName.charAt(0) ?? '·'}</span>
+                    <span className="min-w-0 text-sm font-semibold leading-tight">{staff?.fullName ?? 'Barber pending'}</span>
+                  </div>
+                  <div className="flex items-center text-[#527466]"><span className="h-px w-5 bg-[#7e9c8f]" /><span className="grid h-5 w-5 place-items-center rounded-full border border-[#56796b] text-[10px]">✓</span><span className="h-px w-5 bg-[#7e9c8f]" /></div>
+                  <div className="min-w-0 text-right leading-tight"><span className="font-serif text-lg tabular-nums">{String(waitingList.indexOf(entry) + 1).padStart(2, '0')}</span><span className="ml-2 text-sm font-semibold">{displayName(entry)}</span></div>
+                </div>
+                <div className="mt-3 text-center"><div className="text-sm text-gray-700">{entry.serviceName}</div><div className="mt-0.5 text-[11px] text-gray-500">{staff ? (entry.matchReason === 'familiar_barber' ? `Familiar barber${entry.continuityVisitCount ? ` · ${entry.continuityVisitCount} prior visit${entry.continuityVisitCount === 1 ? '' : 's'}` : ''}` : entry.matchReason === 'team_variety' ? 'Team variety match' : entry.matchReason === 'requested' ? 'Requested barber' : index === 0 ? 'Longest waiting · next available' : 'Available now') : 'Ready when a barber opens up'}</div></div>
+                <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+                  <Button variant={staff ? 'solid' : 'default'} onClick={() => openStart(entry, staff?.locationStaffId)}>{staff ? `Seat with ${staff.fullName.split(' ')[0]}` : 'Choose barber'}</Button>
+                  <Button variant="ghost" onClick={() => toggleReady.mutate({ id: entry.id, ready: false })}>Back to waiting</Button>
                 </div>
               </div>
-            );
-          })}
-        </Card>
+            ))}
+            <div className={`rounded-xl border border-dashed px-4 py-8 text-center transition ${dragId ? 'border-[#315f52] bg-white/70' : 'border-[#9eb7a6]'}`}>
+              <div className="text-2xl text-[#376653]">♙</div><p className="mt-2 text-sm font-medium text-[#376653]">Drag a waiting client here</p><p className="mt-1 text-xs text-[#6d8077]">This slot stays open even when every barber is busy.</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="overflow-hidden rounded-2xl border border-[#ddd7cc] bg-white/55 shadow-[0_10px_30px_rgba(62,50,32,0.035)]">
+          <div className="flex items-baseline gap-3 border-b border-[#e4ded3] px-4 py-4">
+            <h2 className="font-serif text-2xl text-[#1b211e]">In service</h2>
+            <span className="text-base text-[#8c6f58]">{board.data?.nowServing.length ?? 0}</span>
+          </div>
+          <div className="space-y-2 p-3">
+            {board.data?.nowServing.length === 0 && <div className="px-4 py-12 text-center text-sm text-gray-400">No one is in a chair right now.</div>}
+            {board.data?.nowServing.map((entry) => {
+              const started = new Date(entry.serviceStartedAt ?? entry.updatedAt);
+              const elapsed = minutesBetween(started, now);
+              const eta = new Date(started.getTime() + entry.serviceDurationMinutes * 60000);
+              const progress = Math.min(100, Math.max(4, (elapsed / Math.max(1, entry.serviceDurationMinutes)) * 100));
+              const overrunning = now > eta;
+              return (
+                <div
+                  key={entry.id}
+                  draggable
+                  onDragStart={() => setDragId(entry.id)}
+                  onDragEnd={() => { setDragId(null); setDragOverZone(null); }}
+                  title="Drag onto an on-floor barber to reassign"
+                  className={`cursor-grab rounded-xl border border-[#e1dbd0] bg-white/70 px-3 py-3 active:cursor-grabbing ${dragId === entry.id ? 'opacity-40' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e1e9e1] font-serif text-lg text-[#315d4e]">{entry.assignedStaffName?.charAt(0) ?? 'S'}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5"><span className="truncate text-sm font-semibold">{entry.assignedStaffName ?? 'Professional'}</span><span className="text-gray-300">/</span><span className="truncate text-xs text-gray-500">{displayName(entry)}</span></div>
+                      <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-gray-500"><span className="truncate">{entry.serviceName}</span><span className={`whitespace-nowrap tabular-nums ${overrunning ? 'font-medium text-[#b84b24]' : ''}`}>{elapsed}m · {overrunning ? 'overdue' : `ends ${timeLabel(eta.toISOString())}`}</span></div>
+                    </div>
+                    <button aria-label={`Complete service for ${displayName(entry)}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-[#49645a] text-sm text-[#274f41] hover:bg-[#edf3ef]" onClick={(event) => openCheckout(entry, event.currentTarget)}>✓</button>
+                    <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'top' }) }, { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'original' }) }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), destructive: true }, { label: 'Cancel service', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                  </div>
+                  <div className="mt-3 h-0.5 overflow-hidden rounded-full bg-[#d9d7d0]"><div className={`h-full rounded-full ${overrunning ? 'bg-[#c84e26]' : 'bg-[#c98310]'}`} style={{ width: `${progress}%` }} /></div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       </div>
 
       <div>
@@ -434,36 +563,63 @@ export default function QueuePage({ params }: { params: { locationId: string } }
         <CheckInPanel
           isAppointment={showCheckIn === 'appointment'}
           services={services.data}
-          team={board.data?.team ?? []}
+          team={(board.data?.team ?? []).filter((member) => member.role !== 'front_desk')}
           onClose={() => setShowCheckIn(null)}
           onDone={invalidate}
         />
       )}
 
-      {startEntry && <StartPanel entry={startEntry} onClose={() => setStartEntry(null)} onDone={invalidate} />}
+      {startEntry && services.data && <StartPanel entry={startEntry} services={services.data} suggestedStaffId={suggestedStartStaffId} onClose={() => { setStartEntry(null); setSuggestedStartStaffId(null); }} onDone={invalidate} />}
 
-      {reassignEntry && <ReassignPanel entry={reassignEntry} onClose={() => setReassignEntry(null)} onDone={invalidate} />}
+      {reassignEntry && (
+        <ReassignPanel
+          entry={reassignEntry}
+          suggestedStaffId={suggestedReassignStaffId}
+          onClose={() => { setReassignEntry(null); setSuggestedReassignStaffId(null); }}
+          onDone={invalidate}
+        />
+      )}
 
       {changeServiceEntry && services.data && (
         <ChangeServicePanel entry={changeServiceEntry} services={services.data} onClose={() => setChangeServiceEntry(null)} onDone={invalidate} />
       )}
 
       {checkoutEntry && (
-        <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} onClose={() => setCheckoutEntry(null)} onDone={invalidate} />
+        <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} anchor={checkoutAnchor} onClose={() => { setCheckoutEntry(null); setCheckoutAnchor(null); }} onDone={invalidate} />
       )}
 
       {showCloseShop && <CloseShopPanel onClose={() => setShowCloseShop(false)} onDone={invalidate} />}
+      {showOpenShop && <OpenShopPanel onClose={() => setShowOpenShop(false)} onDone={invalidate} />}
     </div>
   );
 }
 
-function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+function Modal({ children, onClose, wide = false }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) {
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-24 backdrop-blur-[2px]" onClick={onClose}>
       <div
-        className="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5"
+        className={`max-h-[86vh] w-full ${wide ? 'max-w-2xl' : 'max-w-md'} overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5`}
         onClick={(e) => e.stopPropagation()}
       >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CheckoutShell({ children, anchor, busy, onClose }: { children: React.ReactNode; anchor: { top: number; right: number } | null; busy: boolean; onClose: () => void }) {
+  if (!anchor) return <Modal wide onClose={busy ? () => {} : onClose}>{children}</Modal>;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/[0.08] backdrop-blur-[1px]">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Complete service"
+        className="fixed z-[60] w-[min(680px,calc(100vw-2rem))] overflow-y-auto rounded-2xl bg-[#fffefa] p-5 shadow-[0_24px_70px_rgba(27,32,29,0.24)] ring-1 ring-black/10"
+        style={{ top: anchor.top, right: anchor.right, maxHeight: `calc(100vh - ${anchor.top + 16}px)` }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <span aria-hidden="true" className="absolute right-[-7px] top-[110px] h-3.5 w-3.5 rotate-45 border-r border-t border-black/10 bg-[#fffefa]" />
         {children}
       </div>
     </div>
@@ -488,7 +644,7 @@ function CheckInPanel({
   const [guestName, setGuestName] = useState('');
   const [newClientName, setNewClientName] = useState('');
   const [needsNewClientName, setNeedsNewClientName] = useState(false);
-  const [serviceId, setServiceId] = useState(services[0]?.id ?? '');
+  const [serviceIds, setServiceIds] = useState<string[]>(services[0]?.id ? [services[0].id] : []);
   const [requestedStaffId, setRequestedStaffId] = useState<string>('');
   const [apptDate, setApptDate] = useState(new Date().toISOString().slice(0, 10));
   const [apptTime, setApptTime] = useState('10:00');
@@ -501,7 +657,8 @@ function CheckInPanel({
         phone: mode === 'phone' ? phone : undefined,
         guestName: mode === 'guest' ? guestName : undefined,
         newClientName: needsNewClientName ? newClientName : undefined,
-        serviceId,
+        serviceId: serviceIds[0],
+        serviceIds,
         requestedStaffId: requestedStaffId || undefined,
         isAppointment,
         apptAt: isAppointment ? new Date(`${apptDate}T${apptTime}:00`).toISOString() : undefined,
@@ -534,10 +691,13 @@ function CheckInPanel({
 
       {mode === 'phone' ? (
         <input
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
           className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
-          placeholder="Phone number"
+          placeholder="313-555-1212"
           value={phone}
-          onChange={(e) => setPhone(e.target.value)}
+          onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
         />
       ) : (
         <input
@@ -567,44 +727,15 @@ function CheckInPanel({
         </div>
       )}
 
-      <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
-        {services.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.name} · {s.duration_minutes}min · ${s.price}
-          </option>
-        ))}
-      </select>
+      <ServiceMultiPicker services={services} selectedIds={serviceIds} onChange={setServiceIds} />
 
-      <p className="text-xs text-gray-400 uppercase tracking-wide mb-1.5">Barber</p>
-      <div className="flex flex-wrap gap-2 mb-4">
-        <button
-          type="button"
-          onClick={() => setRequestedStaffId('')}
-          className={`rounded-lg border px-4 py-2 text-sm font-medium ${
-            requestedStaffId === '' ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
-          }`}
-        >
-          No preference
-        </button>
-        {team.map((t) => (
-          <button
-            key={t.locationStaffId}
-            type="button"
-            onClick={() => setRequestedStaffId(t.locationStaffId)}
-            className={`rounded-lg border px-4 py-2 text-sm font-medium ${
-              requestedStaffId === t.locationStaffId ? 'border-black bg-black text-white' : 'border-black/15 bg-white text-ink hover:border-black/40'
-            }`}
-          >
-            {t.fullName}
-          </button>
-        ))}
-      </div>
+      <ProfessionalPicker options={team} selected={requestedStaffId} isAppointment={isAppointment} onSelect={setRequestedStaffId} />
 
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="solid" onClick={() => checkIn.mutate()} disabled={checkIn.isPending}>
+        <Button variant="solid" onClick={() => checkIn.mutate()} disabled={!serviceIds.length || checkIn.isPending}>
           {isAppointment ? 'Book' : 'Check in'}
         </Button>
       </div>
@@ -649,15 +780,18 @@ function StaffPickerButtons({
   );
 }
 
-function StartPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: () => void; onDone: () => void }) {
+function StartPanel({ entry, services, suggestedStaffId, onClose, onDone }: { entry: QueueEntry; services: Service[]; suggestedStaffId?: string | null; onClose: () => void; onDone: () => void }) {
   const eligible = useEligibleStaff(entry.id);
   const options = eligible.data ?? [];
   const [pickedStaffId, setPickedStaffId] = useState<string | null>(null);
-  const staffId = pickedStaffId ?? (entry.assignedStaffId && options.some((o) => o.locationStaffId === entry.assignedStaffId) ? entry.assignedStaffId : (options[0]?.locationStaffId ?? ''));
+  const staffId = pickedStaffId
+    ?? (suggestedStaffId && options.some((option) => option.locationStaffId === suggestedStaffId) ? suggestedStaffId : null)
+    ?? (entry.assignedStaffId && options.some((option) => option.locationStaffId === entry.assignedStaffId) ? entry.assignedStaffId : (options[0]?.locationStaffId ?? ''));
   const [serviceNotes, setServiceNotes] = useState('');
+  const [serviceIds, setServiceIds] = useState<string[]>(entry.serviceIds?.length ? entry.serviceIds : [entry.serviceId]);
 
   const start = useMutation({
-    mutationFn: () => api.post(`/queue/${entry.id}/start`, { staffId, serviceNotes }),
+    mutationFn: () => api.post(`/queue/${entry.id}/start`, { staffId, serviceId: serviceIds[0], serviceIds, serviceNotes }),
     onSuccess: () => {
       onDone();
       onClose();
@@ -667,7 +801,7 @@ function StartPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: ()
   return (
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-1">Start — {displayName(entry)}</h3>
-      <p className="text-sm text-gray-500 mb-4">{entry.serviceName}</p>
+      <div className="mb-4"><ServiceMultiPicker services={services} selectedIds={serviceIds} onChange={setServiceIds} /><span className="mt-1 block text-xs text-gray-400">Confirm every service being performed so timing and reporting stay accurate.</span></div>
       {eligible.isLoading && <p className="text-sm text-gray-500 mb-3">Loading eligible barbers…</p>}
       {options.length === 0 && !eligible.isLoading && (
         <p className="text-sm text-amber-700 mb-3">
@@ -683,7 +817,7 @@ function StartPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: ()
       />
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="solid" onClick={() => start.mutate()} disabled={!staffId || start.isPending}>
+        <Button variant="solid" onClick={() => start.mutate()} disabled={!staffId || !serviceIds.length || start.isPending}>
           Start
         </Button>
       </div>
@@ -691,11 +825,14 @@ function StartPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: ()
   );
 }
 
-function ReassignPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose: () => void; onDone: () => void }) {
+function ReassignPanel({ entry, suggestedStaffId, onClose, onDone }: { entry: QueueEntry; suggestedStaffId?: string | null; onClose: () => void; onDone: () => void }) {
   const eligible = useEligibleStaff(entry.id);
   const options = eligible.data ?? [];
   const [pickedStaffId, setPickedStaffId] = useState<string | null>(null);
-  const staffId = pickedStaffId ?? (entry.assignedStaffId && options.some((o) => o.locationStaffId === entry.assignedStaffId) ? entry.assignedStaffId : '');
+  const [error, setError] = useState<string | null>(null);
+  const staffId = pickedStaffId
+    ?? (suggestedStaffId && options.some((o) => o.locationStaffId === suggestedStaffId) ? suggestedStaffId : null)
+    ?? (entry.assignedStaffId && options.some((o) => o.locationStaffId === entry.assignedStaffId) ? entry.assignedStaffId : '');
 
   const reassign = useMutation({
     mutationFn: () => api.post(`/queue/${entry.id}/reassign`, { newStaffId: staffId }),
@@ -703,6 +840,7 @@ function ReassignPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose:
       onDone();
       onClose();
     },
+    onError: (err) => setError(err instanceof ApiError ? (err.body?.message ?? 'Could not reassign this service') : 'Could not reassign this service'),
   });
 
   return (
@@ -720,6 +858,7 @@ function ReassignPanel({ entry, onClose, onDone }: { entry: QueueEntry; onClose:
         </p>
       )}
       <StaffPickerButtons options={options} selected={staffId} onSelect={setPickedStaffId} />
+      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
         <Button variant="solid" onClick={() => reassign.mutate()} disabled={!staffId || reassign.isPending}>
@@ -741,10 +880,10 @@ function ChangeServicePanel({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [serviceId, setServiceId] = useState(entry.serviceId);
+  const [serviceIds, setServiceIds] = useState<string[]>(entry.serviceIds?.length ? entry.serviceIds : [entry.serviceId]);
 
   const changeService = useMutation({
-    mutationFn: () => api.post(`/queue/${entry.id}/service`, { serviceId }),
+    mutationFn: () => api.post(`/queue/${entry.id}/service`, { serviceId: serviceIds[0], serviceIds }),
     onSuccess: () => {
       onDone();
       onClose();
@@ -754,17 +893,11 @@ function ChangeServicePanel({
   return (
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-1">Change service — {displayName(entry)}</h3>
-      <p className="text-sm text-gray-500 mb-4">Currently: {entry.serviceName}</p>
-      <select className="w-full border border-black/15 rounded-lg px-3 py-2 mb-4" value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
-        {services.map((s) => (
-          <option key={s.id} value={s.id}>
-            {s.name} · {s.duration_minutes}min · ${s.price}
-          </option>
-        ))}
-      </select>
+      <p className="text-sm text-gray-500 mb-4">Add or remove services before this client is seated.</p>
+      <div className="mb-4"><ServiceMultiPicker services={services} selectedIds={serviceIds} onChange={setServiceIds} /></div>
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="solid" onClick={() => changeService.mutate()} disabled={serviceId === entry.serviceId || changeService.isPending}>
+        <Button variant="solid" onClick={() => changeService.mutate()} disabled={!serviceIds.length || changeService.isPending}>
           Save
         </Button>
       </div>
@@ -852,11 +985,13 @@ function ClientPreviewPopover({ clientId, locationId, onClose }: { clientId: str
 function CheckoutPanel({
   entry,
   locationId,
+  anchor,
   onClose,
   onDone,
 }: {
   entry: QueueEntry;
   locationId: string;
+  anchor: { top: number; right: number } | null;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -867,16 +1002,28 @@ function CheckoutPanel({
   const [discountCode, setDiscountCode] = useState('');
   const [discountOpen, setDiscountOpen] = useState(false);
   const [retailItems, setRetailItems] = useState<Product[]>([]);
-  const [extraServices, setExtraServices] = useState<Service[]>([]);
+  const [extraServices, setExtraServices] = useState<Service[]>(() =>
+    (entry.services ?? []).slice(1).map((service) => ({
+      id: service.id,
+      name: service.name,
+      duration_minutes: service.durationMinutes,
+      price: service.price,
+    })),
+  );
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
+  const [cardReady, setCardReady] = useState(false);
+  const cardTokenizer = useRef<null | (() => Promise<string>)>(null);
+  const [idempotencyKey] = useState(() => crypto.randomUUID());
+  const [primaryServiceId, setPrimaryServiceId] = useState(entry.serviceId);
 
   const config = useQuery({
     queryKey: ['payments', 'config'],
-    queryFn: () => api.get<{ activeProcessor: string; configured: boolean; showDiscountAtCheckout: boolean }>('/payments/config'),
+    queryFn: () => api.get<BrowserPaymentConfig>('/payments/config'),
   });
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
   const products = useQuery({ queryKey: ['settings', 'products'], queryFn: () => api.get<Product[]>('/settings/products') });
+  const featureSettings = useQuery({ queryKey: ['settings', 'feature-settings'], queryFn: () => api.get<{ retailProductsEnabled: boolean; discountCodesEnabled: boolean }>('/settings/feature-settings') });
   const taxConfig = useQuery({ queryKey: ['settings', 'tax-config'], queryFn: () => api.get<{ services_taxable: boolean }>('/settings/tax-config') });
   const discountCodes = useQuery({
     queryKey: ['settings', 'discount-codes'],
@@ -890,16 +1037,17 @@ function CheckoutPanel({
     queryKey: ['settings', 'staff'],
     queryFn: () => api.get<{ locationStaffId: string; priceTierAmount: string }[]>('/settings/staff'),
   });
-  const service = services.data?.find((s) => s.id === entry.serviceId);
+  const service = services.data?.find((s) => s.id === primaryServiceId);
   const servicePrice = service ? Number(service.price) : 0;
   const extraServicesTotal = extraServices.reduce((sum, s) => sum + Number(s.price), 0);
   const retailTotal = retailItems.reduce((sum, p) => sum + Number(p.price), 0);
 
   // Requesting a barber by name (as opposed to "any available") can carry a
   // premium, per the location's owner-configured pricing policy.
-  const assignedStaffTier = roster.data?.find((r) => r.locationStaffId === entry.assignedStaffId);
+  const requestWasFulfilled = !!entry.requestedStaffId && entry.requestedStaffId === entry.assignedStaffId;
+  const assignedStaffTier = roster.data?.find((r) => r.locationStaffId === entry.requestedStaffId);
   const barberPremium =
-    entry.requestedSpecificStaff && pricingPolicy.data
+    requestWasFulfilled && pricingPolicy.data
       ? pricingPolicy.data.barberRequestMode === 'flat'
         ? pricingPolicy.data.flatSurchargeAmount
         : pricingPolicy.data.barberRequestMode === 'per_staff'
@@ -913,7 +1061,8 @@ function CheckoutPanel({
   // Client-side preview only — the server independently validates and
   // computes the real discount at checkout, this just avoids a round trip
   // to show the shape of the total before submitting.
-  const matchedDiscount = discountCodes.data?.find((d) => d.active && d.code === discountCode.trim().toUpperCase());
+  const discountsEnabled = (featureSettings.data?.discountCodesEnabled ?? true) && (config.data?.showDiscountAtCheckout ?? true);
+  const matchedDiscount = discountsEnabled ? discountCodes.data?.find((d) => d.active && d.code === discountCode.trim().toUpperCase()) : undefined;
   const discountAmount = matchedDiscount
     ? matchedDiscount.discount_type === 'percent'
       ? beforeTip * (Number(matchedDiscount.value) / 100)
@@ -927,22 +1076,24 @@ function CheckoutPanel({
       const lineItems = [
         { name: service?.name ?? 'Service', itemType: 'service' as const, price: servicePrice, taxable: servicesTaxable },
         ...extraServices.map((s) => ({ name: s.name, itemType: 'service' as const, price: Number(s.price), taxable: servicesTaxable })),
-        ...retailItems.map((p) => ({ name: p.name, itemType: 'retail' as const, price: Number(p.price), taxable: true })),
+        ...retailItems.map((p) => ({ productId: p.id, name: p.name, itemType: 'retail' as const, price: Number(p.price), taxable: true })),
         ...(barberPremium > 0 ? [{ name: 'Requested barber premium', itemType: 'service' as const, price: barberPremium, taxable: servicesTaxable }] : []),
       ];
-      // Simulates the future Stripe API response gate (item 4) — cash and
-      // the external/manual path complete instantly, since there's no
-      // processor round trip for either of those.
+      let paymentToken: string | undefined;
       if (paymentMethod === 'card') {
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        if (!cardTokenizer.current) throw new Error('Enter valid card details before completing the sale.');
+        paymentToken = await cardTokenizer.current();
       }
       return api.post('/payments/checkout', {
+        idempotencyKey,
         queueEntryId: entry.id,
+        serviceId: primaryServiceId,
         lineItems,
         tip,
         paymentMethod,
-        externalReference: paymentMethod === 'external' ? externalReference : undefined,
-        discountCode: discountCode.trim() || undefined,
+        paymentToken,
+        externalReference: paymentMethod === 'external' ? (config.data?.mode === 'manual' ? `manual-${idempotencyKey}` : externalReference) : undefined,
+        discountCode: discountsEnabled ? discountCode.trim() || undefined : undefined,
       });
     },
     onMutate: () => setProcessing(true),
@@ -952,18 +1103,24 @@ function CheckoutPanel({
     },
     onError: (err) => {
       setProcessing(false);
-      setError(err instanceof ApiError ? (err.body?.message ?? 'Checkout failed') : 'Checkout failed');
+      setError(err instanceof ApiError ? (err.body?.message ?? 'Checkout failed') : err instanceof Error ? err.message : 'Checkout failed');
     },
   });
 
   const busy = checkout.isPending || processing;
 
   return (
-    <Modal onClose={busy ? () => {} : onClose}>
-      <h3 className="font-semibold mb-1">Complete — {displayName(entry)}</h3>
-      <p className="text-sm text-gray-500 mb-4">{service?.name}</p>
+    <CheckoutShell anchor={anchor} busy={busy} onClose={onClose}>
+      <div className="mb-5">
+        <h3 className="text-lg font-semibold">Complete service</h3>
+        <p className="mt-0.5 text-sm text-gray-500">{displayName(entry)} · Confirm services and products, add a tip, then choose payment.</p>
+      </div>
 
-      <div className="mb-2 space-y-1">
+      <section className="mb-4 rounded-xl border border-black/10 p-4">
+        <div className="mb-3 flex items-center justify-between"><h4 className="text-sm font-semibold">1. Services & products</h4><span className="text-xs text-gray-400">Edit if the visit changed</span></div>
+        <label className="mb-3 block text-xs font-medium text-gray-500">Primary service<select className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black" value={primaryServiceId} disabled={busy} onChange={(event) => setPrimaryServiceId(event.target.value)}>{services.data?.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.duration_minutes} min · ${item.price}</option>)}</select></label>
+
+      <div className="mb-3 space-y-1 rounded-lg bg-stone-50 p-3">
         <div className="flex justify-between text-sm text-gray-600">
           <span>{service?.name}</span>
           <span>${servicePrice.toFixed(2)}</span>
@@ -974,6 +1131,8 @@ function CheckoutPanel({
             <span className="flex items-center gap-2">
               ${Number(s.price).toFixed(2)}
               <button
+                type="button"
+                aria-label={`Remove ${s.name}`}
                 className="text-gray-400 hover:text-red-600"
                 disabled={busy}
                 onClick={() => setExtraServices((items) => items.filter((_, idx) => idx !== i))}
@@ -989,6 +1148,8 @@ function CheckoutPanel({
             <span className="flex items-center gap-2">
               ${Number(p.price).toFixed(2)}
               <button
+                type="button"
+                aria-label={`Remove ${p.name}`}
                 className="text-gray-400 hover:text-red-600"
                 disabled={busy}
                 onClick={() => setRetailItems((items) => items.filter((_, idx) => idx !== i))}
@@ -1006,9 +1167,10 @@ function CheckoutPanel({
         )}
       </div>
 
-      <div className="mb-2 flex gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {services.data && services.data.length > 0 && (
           <select
+            aria-label="Add another service"
             className="min-w-0 flex-1 rounded-lg border border-black/15 px-3 py-2 text-sm text-gray-500"
             disabled={busy}
             value=""
@@ -1018,15 +1180,16 @@ function CheckoutPanel({
             }}
           >
             <option value="">+ Add a service…</option>
-            {services.data.map((s) => (
+            {services.data.filter((s) => s.id !== primaryServiceId && !extraServices.some((selected) => selected.id === s.id)).map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name} · ${Number(s.price).toFixed(2)}
               </option>
             ))}
           </select>
         )}
-        {products.data && products.data.length > 0 && (
+        {(featureSettings.data?.retailProductsEnabled ?? true) && products.data && products.data.length > 0 && (
           <select
+            aria-label="Add a product"
             className="min-w-0 flex-1 rounded-lg border border-black/15 px-3 py-2 text-sm text-gray-500"
             disabled={busy}
             value=""
@@ -1037,32 +1200,35 @@ function CheckoutPanel({
           >
             <option value="">+ Add a product…</option>
             {products.data.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} · ${Number(p.price).toFixed(2)}
+              <option key={p.id} value={p.id} disabled={p.stock_qty <= 0}>
+                {p.name} · ${Number(p.price).toFixed(2)} · {p.stock_qty > 0 ? `${p.stock_qty} in stock` : 'out of stock'}
               </option>
             ))}
           </select>
         )}
       </div>
+      </section>
 
-      <div className="flex justify-between text-sm font-medium mb-3 pt-2 border-t border-black/5">
-        <span>Total (before tip)</span>
-        <span>${beforeTip.toFixed(2)}</span>
-      </div>
-
-      {/* Discount entry hides behind a small affordance; whether it appears
-          at all is an owner setting (Settings → Billing, default on). */}
-      {(config.data?.showDiscountAtCheckout ?? true) &&
-        (!discountOpen ? (
+      <section className="mb-4 rounded-xl border border-black/10 p-4">
+        <h4 className="mb-3 text-sm font-semibold">2. Adjustments</h4>
+        <div className={`grid gap-3 ${discountsEnabled ? 'sm:grid-cols-2' : ''}`}>
+          <div>
+            <label htmlFor="checkout-tip" className="mb-1 block text-xs font-medium text-gray-500">Tip</label>
+            <div className="flex items-center rounded-lg border border-black/15 bg-white px-3 focus-within:ring-2 focus-within:ring-black/10"><span className="text-gray-400">$</span><input id="checkout-tip" type="number" min="0" step="0.01" className="w-full px-2 py-2 outline-none disabled:bg-gray-50" value={tip || ''} placeholder="0.00" disabled={busy} onChange={(e) => setTip(Math.max(0, Number(e.target.value)))} /></div>
+            <div className="mt-2 flex gap-1.5">{[0, 5, 10, 15].map((amount) => <button key={amount} type="button" disabled={busy} onClick={() => setTip(amount)} className={`rounded-md px-2.5 py-1 text-xs ${tip === amount ? 'bg-black text-white' : 'bg-stone-100 text-gray-600 hover:bg-stone-200'}`}>{amount === 0 ? 'No tip' : `$${amount}`}</button>)}</div>
+          </div>
+          {discountsEnabled && <div>
+            <label className="mb-1 block text-xs font-medium text-gray-500">Discount code <span className="font-normal text-gray-400">(optional)</span></label>
+      {!discountOpen ? (
           <button
-            className="mb-3 rounded-lg border border-dashed border-black/20 px-3 py-1.5 text-xs text-gray-500 hover:border-black/40 hover:text-black"
+            className="w-full rounded-lg border border-dashed border-black/20 px-3 py-2 text-left text-sm text-gray-500 hover:border-black/40 hover:text-black"
             disabled={busy}
             onClick={() => setDiscountOpen(true)}
           >
-            + Discount code
+            Add a discount code
           </button>
         ) : (
-          <div className="mb-2">
+          <div>
             <input
               autoFocus
               className="w-full rounded-lg border border-black/15 px-3 py-2 font-mono uppercase disabled:bg-gray-50"
@@ -1077,20 +1243,14 @@ function CheckoutPanel({
               </p>
             )}
           </div>
-        ))}
-      <input
-        type="number"
-        className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3 disabled:bg-gray-50"
-        placeholder="Tip"
-        value={tip}
-        disabled={busy}
-        onChange={(e) => setTip(Number(e.target.value))}
-      />
-      <div className="flex justify-between font-semibold mb-4">
-        <span>Total</span>
-        <span>${total.toFixed(2)}</span>
-      </div>
+        )}
+          </div>}
+        </div>
+      </section>
 
+      <section className="mb-4 rounded-xl border border-black/10 p-4">
+        <div className="mb-3 flex items-center justify-between"><h4 className="text-sm font-semibold">3. Payment</h4><div className="text-right"><div className="text-xs text-gray-400">Total due</div><div className="text-xl font-bold">${total.toFixed(2)}</div></div></div>
+        <div className={`mb-3 grid gap-3 rounded-lg bg-stone-50 p-3 text-sm ${discountsEnabled ? 'grid-cols-3' : 'grid-cols-2'}`}><div><div className="text-xs text-gray-400">Items</div><strong>${beforeTip.toFixed(2)}</strong></div>{discountsEnabled && <div><div className="text-xs text-gray-400">Discount</div><strong>{discountAmount > 0 ? `−$${discountAmount.toFixed(2)}` : '—'}</strong></div>}<div><div className="text-xs text-gray-400">Tip</div><strong>${tip.toFixed(2)}</strong></div></div>
       {/* Two large full-width buttons, solid-fill on the active one — must
           be unmistakable at a glance (confirmed decision). External/manual
           stays available but demoted to a small link below, not a third
@@ -1106,17 +1266,21 @@ function CheckoutPanel({
           Cash
         </button>
         <button
-          disabled={busy || !config.data?.configured}
-          onClick={() => setPaymentMethod('card')}
+          disabled={busy || (config.data?.mode === 'integrated' && !config.data?.configured)}
+          onClick={() => setPaymentMethod(config.data?.mode === 'manual' ? 'external' : 'card')}
           className={`flex-1 rounded-lg py-4 text-base font-semibold transition disabled:opacity-50 ${
-            paymentMethod === 'card' ? 'bg-black text-white' : 'border border-black/15 bg-white hover:border-black/40'
+            (config.data?.mode === 'manual' ? paymentMethod === 'external' : paymentMethod === 'card') ? 'bg-black text-white' : 'border border-black/15 bg-white hover:border-black/40'
           }`}
         >
-          Card {config.data && !config.data.configured ? '(not configured)' : ''}
+          {config.data?.mode === 'manual' ? 'Manual card' : `Card ${config.data && !config.data.configured ? '(not configured)' : ''}`}
         </button>
       </div>
 
-      {!showExternal ? (
+      {paymentMethod === 'card' && config.data?.mode === 'integrated' && <CardPaymentFields config={config.data} tokenizerRef={cardTokenizer} onReady={setCardReady} />}
+
+      {config.data?.mode === 'manual' && <p className="mb-3 text-xs text-gray-500">Record the amount and tip here after taking payment outside SmoothSoft.</p>}
+
+      {config.data?.mode !== 'manual' && (!showExternal ? (
         <button className="text-xs text-gray-400 underline hover:text-black mb-3" disabled={busy} onClick={() => setShowExternal(true)}>
           Use another terminal instead
         </button>
@@ -1141,7 +1305,8 @@ function CheckoutPanel({
             />
           )}
         </div>
-      )}
+      ))}
+      </section>
 
       {processing && paymentMethod === 'card' && <p className="text-sm text-gray-500 mb-3">Processing payment…</p>}
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
@@ -1150,11 +1315,11 @@ function CheckoutPanel({
         <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
-        <Button variant="solid" onClick={() => checkout.mutate()} disabled={busy}>
+        <Button variant="solid" onClick={() => checkout.mutate()} disabled={busy || (paymentMethod === 'card' && !cardReady)}>
           {processing && paymentMethod === 'card' ? 'Processing…' : 'Complete & record sale'}
         </Button>
       </div>
-    </Modal>
+    </CheckoutShell>
   );
 }
 
@@ -1166,6 +1331,21 @@ interface CloseShopSummary {
   cardSalesTotal: number;
   cardFeePct: number;
   estimatedCardFee: number;
+}
+
+interface OpenShopSummary { tasks: string[]; defaultStartingFloat: number }
+
+function OpenShopPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [checkedTasks, setCheckedTasks] = useState<Set<string>>(new Set());
+  const [actualStartingFloat, setActualStartingFloat] = useState<number | ''>('');
+  const [error, setError] = useState<string | null>(null);
+  const summary = useQuery({ queryKey: ['payments', 'open-shop-summary'], queryFn: () => api.get<OpenShopSummary>('/payments/open-shop-summary') });
+  useEffect(() => { if (summary.data && actualStartingFloat === '') setActualStartingFloat(summary.data.defaultStartingFloat); }, [summary.data, actualStartingFloat]);
+  const complete = useMutation({ mutationFn: () => api.post('/payments/open-shop', { tasksCompleted: Array.from(checkedTasks), actualStartingFloat: typeof actualStartingFloat === 'number' ? actualStartingFloat : 0 }), onSuccess: () => { onDone(); onClose(); }, onError: (err) => setError(err instanceof ApiError ? (err.body?.message ?? 'Could not open store') : 'Could not open store') });
+  if (!summary.data) return null;
+  const canComplete = summary.data.tasks.every((task) => checkedTasks.has(task)) && typeof actualStartingFloat === 'number';
+  const variance = typeof actualStartingFloat === 'number' ? actualStartingFloat - summary.data.defaultStartingFloat : 0;
+  return <Modal onClose={onClose}><h3 className="mb-1 font-semibold">Open store</h3><p className="mb-4 text-sm text-gray-500">Complete each opening task, then confirm the cash actually in the drawer.</p><div className="mb-4 space-y-2">{summary.data.tasks.map((task) => <label key={task} className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={checkedTasks.has(task)} onChange={() => setCheckedTasks((previous) => { const next = new Set(previous); if (next.has(task)) next.delete(task); else next.add(task); return next; })} /><span className={checkedTasks.has(task) ? 'text-gray-400 line-through' : ''}>{task}</span></label>)}</div><div className="mb-4 border-t border-black/10 pt-3"><h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Opening cash drawer</h4><label className="text-xs font-medium text-gray-500">Actual cash in drawer<input aria-label="Actual opening cash in drawer" type="number" min="0" step="0.01" className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black" value={actualStartingFloat} onChange={(event) => setActualStartingFloat(event.target.value === '' ? '' : Number(event.target.value))} /></label><p className="mt-2 text-xs text-gray-500">Your default is ${summary.data.defaultStartingFloat.toFixed(2)}. Change it to match the cash you count.</p>{variance !== 0 && <p className={`mt-1 text-sm font-medium ${variance > 0 ? 'text-green-700' : 'text-amber-700'}`}>{variance > 0 ? `$${variance.toFixed(2)} above default` : `$${Math.abs(variance).toFixed(2)} below default`}</p>}</div>{error && <p className="mb-3 text-sm text-red-600">{error}</p>}<div className="flex justify-end gap-2"><Button onClick={onClose}>Cancel</Button><Button variant="solid" disabled={!canComplete || complete.isPending} onClick={() => complete.mutate()}>{complete.isPending ? 'Recording…' : 'Complete opening'}</Button></div></Modal>;
 }
 
 function CloseShopPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
