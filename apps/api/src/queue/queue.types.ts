@@ -18,6 +18,10 @@ export interface CheckInDto {
   present?: boolean;
   /** Set when the caller already confirmed a stale phone match is the same person (see client-lookup.ts). */
   confirmedStaleMatch?: boolean;
+  /** Skips phone lookup/creation and uses this exact profile — for callers (the public multi-person picker) that already resolved which of several clients sharing a phone this is. */
+  clientId?: string;
+  /** Skips the ambiguous single-row phone lookup and always creates a new client from newClientName — for callers that already enumerated every existing profile on this phone and know this one is new. */
+  forceNewClient?: boolean;
 }
 
 export interface StartDto {
@@ -43,6 +47,8 @@ export interface ChangeServiceDto {
 
 export interface TogglePresentDto {
   present: boolean;
+  /** Short disambiguation note (e.g. "blue jacket") — set when another waiting entry shares this client's display name. */
+  identityNote?: string;
 }
 
 export interface ToggleReadyDto {

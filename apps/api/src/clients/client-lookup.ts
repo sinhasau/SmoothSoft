@@ -59,6 +59,30 @@ export async function findClientByPhone(
   };
 }
 
+/**
+ * All clients sharing this phone number — a household sharing one line is
+ * expected, not an edge case (see the phone-reassignment comment on
+ * `phone_bindings` above; `clients.phone_normalized` deliberately has no
+ * unique constraint). Used by the public queue-join flow's "who's checking
+ * in" step so every profile on file for a number can be offered, not just
+ * whichever one a single-result lookup happens to return first.
+ */
+export async function findClientsByPhone(
+  trx: Kysely<DB>,
+  organizationId: string,
+  phoneRaw: string,
+): Promise<{ id: string; name: string }[]> {
+  const phoneNormalized = normalizePhone(phoneRaw);
+  if (!phoneNormalized) return [];
+  return trx
+    .selectFrom('clients')
+    .select(['id', 'name'])
+    .where('organization_id', '=', organizationId)
+    .where('phone_normalized', '=', phoneNormalized)
+    .orderBy('name')
+    .execute();
+}
+
 export interface NewClientInput {
   organizationId: string;
   name: string;
