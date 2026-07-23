@@ -51,6 +51,8 @@ interface QueueEntry {
   apptAt: string | null;
   waitingOrder: number | null;
   estimatedStart: string | null;
+  /** Short disambiguation note set when another waiting entry shares this client's display name. */
+  identityNote?: string | null;
   serviceStartedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -136,7 +138,6 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const queryClient = useQueryClient();
   const [showCheckIn, setShowCheckIn] = useState<'walkin' | 'appointment' | null>(null);
   const [checkoutEntry, setCheckoutEntry] = useState<QueueEntry | null>(null);
-  const [checkoutAnchor, setCheckoutAnchor] = useState<{ top: number; right: number } | null>(null);
   const [startEntry, setStartEntry] = useState<QueueEntry | null>(null);
   const [suggestedStartStaffId, setSuggestedStartStaffId] = useState<string | null>(null);
   const [reassignEntry, setReassignEntry] = useState<QueueEntry | null>(null);
@@ -150,6 +151,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const [confirmingUndo, setConfirmingUndo] = useState<string | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [clientPreviewId, setClientPreviewId] = useState<string | null>(null);
+  const [identityNotePrompt, setIdentityNotePrompt] = useState<QueueEntry | null>(null);
   const now = useClock();
 
   const board = useQuery({ queryKey: ['queue', 'board'], queryFn: () => api.get<Board>('/queue/board'), refetchInterval: 20_000 });
@@ -186,7 +188,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     onSuccess: invalidate,
   });
   const togglePresent = useMutation({
-    mutationFn: ({ id, present }: { id: string; present: boolean }) => api.post(`/queue/${id}/present`, { present }),
+    mutationFn: ({ id, present, identityNote }: { id: string; present: boolean; identityNote?: string }) => api.post(`/queue/${id}/present`, { present, identityNote }),
     onSuccess: invalidate,
   });
   const toggleReady = useMutation({
@@ -205,6 +207,24 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const waitingList = localWaitingOrder
     ? localWaitingOrder.map((id) => board.data!.waiting.find((w) => w.id === id)!).filter(Boolean)
     : (board.data?.waiting ?? []);
+
+  // Names that appear on more than one current waiting entry — used to prompt
+  // for a short disambiguating note ("blue jacket") when one of them checks in.
+  const duplicateNameCounts = new Map<string, number>();
+  for (const entry of waitingList) {
+    const key = displayName(entry).trim().toLowerCase();
+    duplicateNameCounts.set(key, (duplicateNameCounts.get(key) ?? 0) + 1);
+  }
+  function hasDuplicateName(entry: QueueEntry) {
+    return (duplicateNameCounts.get(displayName(entry).trim().toLowerCase()) ?? 0) > 1;
+  }
+  function handleTogglePresent(entry: QueueEntry, present: boolean) {
+    if (present && !entry.identityNote && hasDuplicateName(entry)) {
+      setIdentityNotePrompt(entry);
+      return;
+    }
+    togglePresent.mutate({ id: entry.id, present });
+  }
 
   function isLate(e: QueueEntry) {
     return e.isAppt && !!e.apptAt && new Date(e.apptAt) < now;
@@ -243,13 +263,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     setStartEntry(entry);
   }
 
-  function openCheckout(entry: QueueEntry, button?: HTMLButtonElement) {
-    const rect = button?.getBoundingClientRect();
-    const compact = window.innerWidth < 760;
-    setCheckoutAnchor({
-      top: compact ? 16 : rect ? Math.max(16, rect.top - 96) : 72,
-      right: compact ? 16 : rect ? Math.max(16, window.innerWidth - rect.left + 12) : 72,
-    });
+  function openCheckout(entry: QueueEntry) {
     setCheckoutEntry(entry);
   }
 
@@ -311,7 +325,11 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   }
 
   return (
-    <div className="mx-auto max-w-[1560px] space-y-5">
+    // On wide screens the Floor is a fixed-height dashboard: header, on-floor
+    // strip and Activity stay put while each board column scrolls internally,
+    // so reception never scrolls the whole page to see the queue. Below xl it
+    // falls back to natural page flow (stacked columns, normal scroll).
+    <div className="mx-auto flex max-w-[1560px] flex-col gap-5 xl:h-[calc(100vh-5.75rem)]">
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[#dfd9cd] pb-4">
         <div>
           <p className="text-sm font-medium text-[#605f5a]">{now.toLocaleDateString([], { timeZone: board.data?.timezone, weekday: 'long', month: 'long', day: 'numeric' })}</p>
@@ -368,15 +386,15 @@ export default function QueuePage({ params }: { params: { locationId: string } }
         <div className="ml-auto"><ClockInDropdown offStaff={offShiftTeam} onClockIn={(id) => clockIn.mutate(id)} /></div>
       </div>
 
-      <div className="grid items-start gap-3 xl:grid-cols-[1.12fr_.82fr_1.12fr]">
+      <div className="grid items-start gap-3 xl:min-h-0 xl:flex-1 xl:grid-cols-[1.12fr_.82fr_1.12fr] xl:items-stretch">
         <section
           onDragOver={(event) => { if (dragId) event.preventDefault(); }}
           onDragEnter={() => { if (dragId) setDragOverZone('waiting'); }}
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOverZone((current) => (current === 'waiting' ? null : current)); }}
           onDrop={(event) => { event.stopPropagation(); handleDropToWaiting(); }}
-          className={`overflow-hidden rounded-2xl border bg-white/55 shadow-[0_10px_30px_rgba(62,50,32,0.035)] transition ${dragOverZone === 'waiting' ? 'border-[#315f52] ring-2 ring-[#315f52]/15' : 'border-[#ddd7cc]'}`}
+          className={`overflow-hidden rounded-2xl border bg-white/55 shadow-[0_10px_30px_rgba(62,50,32,0.035)] transition xl:flex xl:min-h-0 xl:flex-col ${dragOverZone === 'waiting' ? 'border-[#315f52] ring-2 ring-[#315f52]/15' : 'border-[#ddd7cc]'}`}
         >
-          <div className="border-b border-[#e4ded3] px-4 py-4">
+          <div className="border-b border-[#e4ded3] px-4 py-4 xl:shrink-0">
             <div className="flex items-baseline gap-3">
               <h2 className="font-serif text-2xl text-[#1b211e]">Waiting</h2>
               <span className="text-base text-[#8c6f58]">{waitingList.length}</span>
@@ -387,7 +405,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
               <span className="ml-auto">Priority order ↕</span>
             </div>
           </div>
-          <div>
+          <div className="xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
             {waitingList.length === 0 && <div className="px-5 py-12 text-center text-sm text-gray-400">No one is waiting.</div>}
             {waitingList.map((entry, index) => {
               const wait = (!entry.isAppt || entry.present) ? waitMinutes(entry) : 0;
@@ -412,15 +430,18 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                       {late && <Pill tone="red">Late</Pill>}
                       {entry.apptSlaProtected && <Pill tone="amber">⏰ Seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill>}
                     </div>
-                    <div className="mt-0.5 truncate text-xs text-gray-500">{entry.serviceName} · {entry.assignedStaffName ?? 'Any barber'}</div>
+                    <div className="mt-0.5 truncate text-xs text-gray-500">{entry.serviceName} · {entry.assignedStaffName ?? 'Any barber'}{entry.identityNote ? ` · ${entry.identityNote}` : ''}</div>
                     <label className="mt-1 inline-flex cursor-pointer items-center gap-1 text-[10px] text-gray-400">
-                      <input type="checkbox" className="h-3.5 w-3.5" checked={entry.present} onChange={(event) => togglePresent.mutate({ id: entry.id, present: event.target.checked })} />
+                      <input type="checkbox" className="h-3.5 w-3.5" checked={entry.present} onChange={(event) => handleTogglePresent(entry, event.target.checked)} />
                       {entry.present ? `Arrived ${timeLabel(entry.presentCheckedAt)}` : 'Mark arrived'}
                     </label>
                   </div>
                   <div className="text-right text-xs">
                     {wait > 0 && <div className={`font-semibold tabular-nums ${urgent ? 'text-[#c14b25]' : wait >= 40 ? 'text-[#b36f0e]' : 'text-gray-600'}`}>{durationLabel(wait)}</div>}
-                    <div className="mt-1 whitespace-nowrap text-gray-500">{entry.isAppt ? timeLabel(entry.apptAt) : `~${timeLabel(entry.estimatedStart)}`}</div>
+                    <div className="mt-1 whitespace-nowrap text-gray-500">
+                      {entry.isAppt && entry.present && <span className="mr-1 text-[#5c7c6c]">Walk-in est: {timeLabel(entry.estimatedStart)} ·</span>}
+                      {entry.isAppt ? timeLabel(entry.apptAt) : `~${timeLabel(entry.estimatedStart)}`}
+                    </div>
                     <button className="mt-1 font-medium text-[#175642] hover:underline" onClick={() => openStart(entry)}>Start</button>
                   </div>
                   <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Change service', onClick: () => setChangeServiceEntry(entry) }, { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present }, { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
@@ -435,13 +456,13 @@ export default function QueuePage({ params }: { params: { locationId: string } }
           onDragEnter={() => { if (dragId) setDragOverZone('ready'); }}
           onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragOverZone((current) => (current === 'ready' ? null : current)); }}
           onDrop={(event) => { event.stopPropagation(); handleDropToReady(); }}
-          className={`rounded-2xl border p-3 shadow-[0_10px_30px_rgba(43,76,60,0.06)] transition ${dragOverZone === 'ready' ? 'border-[#315f52] bg-[#e4eee7] ring-2 ring-[#315f52]/15' : 'border-[#b9cdbd] bg-[#edf3ec]'}`}
+          className={`rounded-2xl border p-3 shadow-[0_10px_30px_rgba(43,76,60,0.06)] transition xl:flex xl:min-h-0 xl:flex-col ${dragOverZone === 'ready' ? 'border-[#315f52] bg-[#e4eee7] ring-2 ring-[#315f52]/15' : 'border-[#b9cdbd] bg-[#edf3ec]'}`}
         >
-          <div className="flex items-baseline gap-3 px-2 pb-3 pt-1">
+          <div className="flex items-baseline gap-3 px-2 pb-3 pt-1 xl:shrink-0">
             <h2 className="font-serif text-2xl text-[#1b211e]">Ready to seat</h2>
             <span className="text-base text-[#79695c]">{readyMatches.length}</span>
           </div>
-          <div className="space-y-3">
+          <div className="space-y-3 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-1">
             {readyMatches.map(({ entry, staff }, index) => (
               <div
                 key={entry.id}
@@ -472,12 +493,12 @@ export default function QueuePage({ params }: { params: { locationId: string } }
           </div>
         </section>
 
-        <section className="overflow-hidden rounded-2xl border border-[#ddd7cc] bg-white/55 shadow-[0_10px_30px_rgba(62,50,32,0.035)]">
-          <div className="flex items-baseline gap-3 border-b border-[#e4ded3] px-4 py-4">
+        <section className="overflow-hidden rounded-2xl border border-[#ddd7cc] bg-white/55 shadow-[0_10px_30px_rgba(62,50,32,0.035)] xl:flex xl:min-h-0 xl:flex-col">
+          <div className="flex items-baseline gap-3 border-b border-[#e4ded3] px-4 py-4 xl:shrink-0">
             <h2 className="font-serif text-2xl text-[#1b211e]">In service</h2>
             <span className="text-base text-[#8c6f58]">{board.data?.nowServing.length ?? 0}</span>
           </div>
-          <div className="space-y-2 p-3">
+          <div className="space-y-2 p-3 xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
             {board.data?.nowServing.length === 0 && <div className="px-4 py-12 text-center text-sm text-gray-400">No one is in a chair right now.</div>}
             {board.data?.nowServing.map((entry) => {
               const started = new Date(entry.serviceStartedAt ?? entry.updatedAt);
@@ -500,7 +521,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5"><span className="truncate text-sm font-semibold">{entry.assignedStaffName ?? 'Professional'}</span><span className="text-gray-300">/</span><span className="truncate text-xs text-gray-500">{displayName(entry)}</span></div>
                       <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-gray-500"><span className="truncate">{entry.serviceName}</span><span className={`whitespace-nowrap tabular-nums ${overrunning ? 'font-medium text-[#b84b24]' : ''}`}>{elapsed}m · {overrunning ? 'overdue' : `ends ${timeLabel(eta.toISOString())}`}</span></div>
                     </div>
-                    <button aria-label={`Complete service for ${displayName(entry)}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-[#49645a] text-sm text-[#274f41] hover:bg-[#edf3ef]" onClick={(event) => openCheckout(entry, event.currentTarget)}>✓</button>
+                    <button aria-label={`Complete service for ${displayName(entry)}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-[#49645a] text-sm text-[#274f41] hover:bg-[#edf3ef]" onClick={() => openCheckout(entry)}>✓</button>
                     <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'top' }) }, { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'original' }) }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), destructive: true }, { label: 'Cancel service', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
                   </div>
                   <div className="mt-3 h-0.5 overflow-hidden rounded-full bg-[#d9d7d0]"><div className={`h-full rounded-full ${overrunning ? 'bg-[#c84e26]' : 'bg-[#c98310]'}`} style={{ width: `${progress}%` }} /></div>
@@ -559,6 +580,17 @@ export default function QueuePage({ params }: { params: { locationId: string } }
 
       {clientPreviewId && <ClientPreviewPopover clientId={clientPreviewId} locationId={params.locationId} onClose={() => setClientPreviewId(null)} />}
 
+      {identityNotePrompt && (
+        <IdentityNotePanel
+          name={displayName(identityNotePrompt)}
+          onClose={() => setIdentityNotePrompt(null)}
+          onSave={(note) => {
+            togglePresent.mutate({ id: identityNotePrompt.id, present: true, identityNote: note });
+            setIdentityNotePrompt(null);
+          }}
+        />
+      )}
+
       {showCheckIn && services.data && (
         <CheckInPanel
           isAppointment={showCheckIn === 'appointment'}
@@ -585,7 +617,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       )}
 
       {checkoutEntry && (
-        <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} anchor={checkoutAnchor} onClose={() => { setCheckoutEntry(null); setCheckoutAnchor(null); }} onDone={invalidate} />
+        <CheckoutPanel entry={checkoutEntry} locationId={params.locationId} onClose={() => setCheckoutEntry(null)} onDone={invalidate} />
       )}
 
       {showCloseShop && <CloseShopPanel onClose={() => setShowCloseShop(false)} onDone={invalidate} />}
@@ -607,19 +639,51 @@ function Modal({ children, onClose, wide = false }: { children: React.ReactNode;
   );
 }
 
-function CheckoutShell({ children, anchor, busy, onClose }: { children: React.ReactNode; anchor: { top: number; right: number } | null; busy: boolean; onClose: () => void }) {
-  if (!anchor) return <Modal wide onClose={busy ? () => {} : onClose}>{children}</Modal>;
+function IdentityNotePanel({ name, onClose, onSave }: { name: string; onClose: () => void; onSave: (note?: string) => void }) {
+  const [note, setNote] = useState('');
   return (
-    <div className="fixed inset-0 z-50 bg-black/[0.08] backdrop-blur-[1px]">
+    <Modal onClose={onClose}>
+      <h3 className="mb-1 font-semibold">Another {name} is waiting</h3>
+      <p className="mb-4 text-sm text-gray-500">Add a short description so staff can tell them apart on the Floor.</p>
+      <input
+        autoFocus
+        className="mb-4 w-full rounded-lg border border-black/15 px-3 py-2"
+        placeholder='e.g. "blue jacket", "with kids"'
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        onKeyDown={(event) => { if (event.key === 'Enter') onSave(note.trim() || undefined); }}
+      />
+      <div className="flex justify-end gap-2">
+        <Button onClick={() => onSave(undefined)}>Skip</Button>
+        <Button variant="solid" onClick={() => onSave(note.trim() || undefined)}>Save</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function CheckoutShell({ children, busy, onClose }: { children: React.ReactNode; busy: boolean; onClose: () => void }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Something (browser autofill focus, a form control receiving focus on
+  // mount) can auto-scroll this panel past its own header/first section
+  // right after it opens — always snap back to the top so staff see the
+  // full "Complete service" flow from the start, not partway down it.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, []);
+  // Centered and sized to the viewport (not anchored to the clicked button):
+  // the two-column layout below keeps it short enough to fit most screens
+  // without scrolling, and the max-height + internal scroll (with the sticky
+  // footer) is the fallback on short viewports.
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]" onClick={busy ? undefined : onClose}>
       <div
+        ref={scrollRef}
         role="dialog"
         aria-modal="true"
         aria-label="Complete service"
-        className="fixed z-[60] w-[min(680px,calc(100vw-2rem))] overflow-y-auto rounded-2xl bg-[#fffefa] p-5 shadow-[0_24px_70px_rgba(27,32,29,0.24)] ring-1 ring-black/10"
-        style={{ top: anchor.top, right: anchor.right, maxHeight: `calc(100vh - ${anchor.top + 16}px)` }}
+        className="max-h-[calc(100vh-2rem)] w-[min(960px,100%)] overflow-y-auto rounded-2xl bg-[#fffefa] p-5 shadow-[0_24px_70px_rgba(27,32,29,0.24)] ring-1 ring-black/10"
         onClick={(event) => event.stopPropagation()}
       >
-        <span aria-hidden="true" className="absolute right-[-7px] top-[110px] h-3.5 w-3.5 rotate-45 border-r border-t border-black/10 bg-[#fffefa]" />
         {children}
       </div>
     </div>
@@ -985,13 +1049,11 @@ function ClientPreviewPopover({ clientId, locationId, onClose }: { clientId: str
 function CheckoutPanel({
   entry,
   locationId,
-  anchor,
   onClose,
   onDone,
 }: {
   entry: QueueEntry;
   locationId: string;
-  anchor: { top: number; right: number } | null;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -1110,13 +1172,16 @@ function CheckoutPanel({
   const busy = checkout.isPending || processing;
 
   return (
-    <CheckoutShell anchor={anchor} busy={busy} onClose={onClose}>
+    <CheckoutShell busy={busy} onClose={onClose}>
       <div className="mb-5">
         <h3 className="text-lg font-semibold">Complete service</h3>
         <p className="mt-0.5 text-sm text-gray-500">{displayName(entry)} · Confirm services and products, add a tip, then choose payment.</p>
       </div>
 
-      <section className="mb-4 rounded-xl border border-black/10 p-4">
+      {/* Two-column on wide screens so the whole flow fits without scrolling:
+          services/products on the left, adjustments + payment on the right. */}
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+      <section className="rounded-xl border border-black/10 p-4">
         <div className="mb-3 flex items-center justify-between"><h4 className="text-sm font-semibold">1. Services & products</h4><span className="text-xs text-gray-400">Edit if the visit changed</span></div>
         <label className="mb-3 block text-xs font-medium text-gray-500">Primary service<select className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black" value={primaryServiceId} disabled={busy} onChange={(event) => setPrimaryServiceId(event.target.value)}>{services.data?.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.duration_minutes} min · ${item.price}</option>)}</select></label>
 
@@ -1209,7 +1274,8 @@ function CheckoutPanel({
       </div>
       </section>
 
-      <section className="mb-4 rounded-xl border border-black/10 p-4">
+      <div className="space-y-4">
+      <section className="rounded-xl border border-black/10 p-4">
         <h4 className="mb-3 text-sm font-semibold">2. Adjustments</h4>
         <div className={`grid gap-3 ${discountsEnabled ? 'sm:grid-cols-2' : ''}`}>
           <div>
@@ -1248,7 +1314,7 @@ function CheckoutPanel({
         </div>
       </section>
 
-      <section className="mb-4 rounded-xl border border-black/10 p-4">
+      <section className="rounded-xl border border-black/10 p-4">
         <div className="mb-3 flex items-center justify-between"><h4 className="text-sm font-semibold">3. Payment</h4><div className="text-right"><div className="text-xs text-gray-400">Total due</div><div className="text-xl font-bold">${total.toFixed(2)}</div></div></div>
         <div className={`mb-3 grid gap-3 rounded-lg bg-stone-50 p-3 text-sm ${discountsEnabled ? 'grid-cols-3' : 'grid-cols-2'}`}><div><div className="text-xs text-gray-400">Items</div><strong>${beforeTip.toFixed(2)}</strong></div>{discountsEnabled && <div><div className="text-xs text-gray-400">Discount</div><strong>{discountAmount > 0 ? `−$${discountAmount.toFixed(2)}` : '—'}</strong></div>}<div><div className="text-xs text-gray-400">Tip</div><strong>${tip.toFixed(2)}</strong></div></div>
       {/* Two large full-width buttons, solid-fill on the active one — must
@@ -1307,11 +1373,17 @@ function CheckoutPanel({
         </div>
       ))}
       </section>
+      </div>
+      </div>
 
-      {processing && paymentMethod === 'card' && <p className="text-sm text-gray-500 mb-3">Processing payment…</p>}
-      {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+      {processing && paymentMethod === 'card' && <p className="mt-4 text-sm text-gray-500">Processing payment…</p>}
+      {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
 
-      <div className="flex justify-end gap-2">
+      {/* Sticky, not just in-flow: this panel can be taller than the viewport
+          (see CheckoutShell's maxHeight clamp), and the primary action must
+          stay reachable without scrolling all the way to the bottom of a
+          long services/payment form. */}
+      <div className="sticky -bottom-5 -mx-5 -mb-5 flex justify-end gap-2 border-t border-black/10 bg-[#fffefa] px-5 py-3">
         <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>

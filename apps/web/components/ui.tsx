@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 /** Closes an open dropdown/menu on outside click — shared by StatusDropdown and RowMenu. */
 function useOutsideClick(onOutside: () => void) {
@@ -83,15 +84,49 @@ export interface MenuItem {
 }
 
 /** The "⋮" row-action menu — houses secondary actions (No-show, Abandoned, Cancel, Reassign…) off the main row. */
+/**
+ * Renders its dropdown into a document.body portal, positioned by the
+ * trigger button's own viewport coordinates — several call sites live
+ * inside cards with `overflow-hidden` (rounded-corner clipping), which
+ * would otherwise silently clip an absolutely-positioned dropdown near
+ * the bottom of the card instead of showing its items.
+ */
 export function RowMenu({ items }: { items: MenuItem[] }) {
   const [open, setOpen] = useState(false);
-  const ref = useOutsideClick(() => setOpen(false));
+  const [coords, setCoords] = useState<{ top: number; left: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const visible = items.filter((i) => !i.hidden);
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !buttonRef.current) return;
+    const rect = buttonRef.current.getBoundingClientRect();
+    const MENU_WIDTH = 192; // w-48
+    const menuHeight = visible.length * 34 + 8;
+    const left = Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8);
+    const top = rect.bottom + menuHeight > window.innerHeight
+      ? Math.max(8, rect.top - menuHeight - 4)
+      : rect.bottom + 4;
+    setCoords({ top, left });
+  }, [open, visible.length]);
+
   if (visible.length === 0) return null;
 
   return (
-    <div className="relative" ref={ref}>
+    <>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-black/5 text-gray-500"
@@ -103,8 +138,8 @@ export function RowMenu({ items }: { items: MenuItem[] }) {
           <circle cx="2" cy="14" r="1.8" />
         </svg>
       </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 w-48 rounded-lg border border-black/10 bg-white shadow-lg py-1">
+      {open && coords && typeof document !== 'undefined' && createPortal(
+        <div ref={menuRef} className="fixed z-[100] w-48 rounded-lg border border-black/10 bg-white shadow-lg py-1" style={{ top: coords.top, left: coords.left }}>
           {visible.map((item) => (
             <button
               key={item.label}
@@ -117,9 +152,10 @@ export function RowMenu({ items }: { items: MenuItem[] }) {
               {item.label}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }
 

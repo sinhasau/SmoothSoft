@@ -363,6 +363,8 @@ export interface QueueEntriesTable {
   waiting_order: number | null;
   original_waiting_order: number | null;
   service_notes: string | null;
+  /** Short free-text disambiguator shown when another waiting entry shares this client's display name — see 0045_queue_entry_identity_note.sql. */
+  identity_note: string | null;
   estimated_start_at: TimestampTz | null;
   service_started_at: TimestampTz | null;
   service_completed_at: TimestampTz | null;

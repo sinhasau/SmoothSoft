@@ -5,7 +5,10 @@ import { estimateWaitTimes } from './wait-time';
 import { rollingServiceAverages } from './service-performance';
 import { chooseBestMatch } from './best-match';
 import { reorderForAppointmentSla } from './appointment-sla';
-import { createClient, findClientByPhone, touchClientConfirmed } from '../clients/client-lookup';
+import { disambiguateWaitingNames } from './display-name';
+import { exceedsClosingGrace } from './closing-guard';
+import { resolveDefaultServiceIds } from './default-service';
+import { createClient, findClientByPhone, findClientsByPhone, touchClientConfirmed } from '../clients/client-lookup';
 import type {
   ChangeServiceDto,
   CheckInDto,
@@ -109,6 +112,7 @@ export class QueueService {
         'qe.ready_override as readyOverride',
         'qe.waiting_order as waitingOrder',
         'qe.service_notes as serviceNotes',
+        'qe.identity_note as identityNote',
         'qe.service_started_at as serviceStartedAt',
         'qe.created_at as createdAt',
         'qe.updated_at as updatedAt',
@@ -252,7 +256,7 @@ export class QueueService {
     };
   }
 
-  async checkIn(locationId: string, organizationId: string, actorUserId: string, dto: CheckInDto) {
+  async checkIn(locationId: string, organizationId: string, actorUserId: string | null, dto: CheckInDto) {
     if (dto.isAppointment && !dto.apptAt) {
       throw new BadRequestException('apptAt is required for an appointment check-in');
     }
@@ -272,10 +276,28 @@ export class QueueService {
     let clientId: string | null = null;
     let displayName = dto.guestName ?? null;
 
-    if (dto.mode === 'phone') {
+    if (dto.mode === 'phone' && dto.clientId) {
+      // Caller already knows exactly which profile — e.g. the public
+      // multi-person "who's checking in" picker, where a plain phone lookup
+      // would be ambiguous whenever more than one person shares the number.
+      // Skip the lookup/staleness/create path entirely.
+      const known = await trx.selectFrom('clients').select(['id', 'name']).where('id', '=', dto.clientId).where('organization_id', '=', organizationId).executeTakeFirst();
+      if (!known) throw new BadRequestException('Selected client was not found');
+      clientId = known.id;
+      displayName = known.name;
+      await touchClientConfirmed(trx, clientId);
+    } else if (dto.mode === 'phone') {
       if (!dto.phone) throw new BadRequestException('phone is required when mode is "phone"');
 
-      const lookup = await findClientByPhone(trx, organizationId, dto.phone);
+      // forceNewClient: the caller (the public multi-person picker) already
+      // resolved every existing profile on this phone via findClientsByPhone
+      // and knows this one isn't among them — skip the single-row phone
+      // lookup entirely so a new sibling on a shared line (e.g. "Riley" added
+      // alongside "Casey"/"Morgan") doesn't get silently merged into whichever
+      // existing client that lookup happens to return first.
+      const lookup = dto.forceNewClient
+        ? { clientId: null, isNewClient: true, isStale: false, staleLastConfirmedAt: null }
+        : await findClientByPhone(trx, organizationId, dto.phone);
 
       if (lookup.clientId) {
         if (lookup.isStale && !dto.confirmedStaleMatch) {
@@ -361,6 +383,136 @@ export class QueueService {
 
     this.broadcast(locationId);
     return entry;
+  }
+
+  /** Today's closing time for this location — special-hours override, else the weekly store_hours row. Mirrors BookingService.slots()'s own hours resolution. */
+  private async closingTimeForToday(locationId: string): Promise<{ closed: boolean; closeAt: Date | null }> {
+    const trx = db();
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const special = await trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '=', dateStr).executeTakeFirst();
+    const toCloseAt = (closeTime: string) => {
+      const [h, m] = closeTime.split(':').map(Number);
+      const closeAt = new Date(`${dateStr}T00:00:00`);
+      closeAt.setHours(h, m, 0, 0);
+      return closeAt;
+    };
+    if (special) {
+      if (special.is_closed || !special.close_time) return { closed: true, closeAt: null };
+      return { closed: false, closeAt: toCloseAt(special.close_time) };
+    }
+    const weekly = await trx.selectFrom('store_hours').selectAll().where('location_id', '=', locationId).where('day_of_week', '=', now.getDay()).executeTakeFirst();
+    if (!weekly || !weekly.is_open || !weekly.close_time) return { closed: true, closeAt: null };
+    return { closed: false, closeAt: toCloseAt(weekly.close_time) };
+  }
+
+  /** Public, aggregate-only wait snapshot — an anonymous visitor sees the current line and rough wait, not who's ahead beyond a privacy-safe label. */
+  async publicSnapshot(locationId: string) {
+    const board = await this.getBoard(locationId);
+    const labels = disambiguateWaitingNames(board.waiting.map((entry) => ({ id: entry.id, clientName: entry.clientName, guestName: entry.guestName })));
+    const backlogMinutes = board.waiting.reduce((sum, entry) => sum + (entry.predictedDurationMinutes ?? 20), 0);
+    return {
+      waitingCount: board.waiting.length,
+      estimatedWaitMinutes: backlogMinutes,
+      entries: board.waiting.map((entry) => ({ id: entry.id, label: labels.get(entry.id) ?? 'Guest' })),
+    };
+  }
+
+  /** The confirmation/status screen's data source — reduced to just the caller's own entry, never another client's contact info. */
+  async publicStatus(locationId: string, queueEntryId: string) {
+    const entry = await db().selectFrom('queue_entries').selectAll().where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirst();
+    if (!entry) throw new NotFoundException('Queue entry not found');
+    const service = await db().selectFrom('services').select('name').where('id', '=', entry.service_id ?? '').executeTakeFirst();
+    if (entry.status !== 'waiting') {
+      return { id: queueEntryId, status: entry.status, present: entry.present, serviceName: service?.name ?? null, staffName: null, position: null, aheadOfCount: null, estimatedStart: null };
+    }
+    const board = await this.getBoard(locationId);
+    const order = board.priorityOrder ?? board.waiting.map((w) => w.id);
+    const index = order.indexOf(queueEntryId);
+    const mine = board.waiting.find((w) => w.id === queueEntryId);
+    const staff = mine?.assignedStaffName ?? null;
+    return {
+      id: queueEntryId,
+      status: entry.status,
+      present: entry.present,
+      serviceName: service?.name ?? mine?.serviceName ?? null,
+      staffName: staff,
+      position: index >= 0 ? index + 1 : null,
+      aheadOfCount: index >= 0 ? index : null,
+      estimatedStart: mine?.estimatedStart ?? null,
+    };
+  }
+
+  /**
+   * The public page's "pull up your profile" moment: suggests the client's
+   * most recent completed service via their real queue_entries/queue_entry_services
+   * history (not transaction_items — that table has no service_id FK, only a
+   * free-text name that can drift from the current catalog). Falls back to a
+   * service literally named "Haircut" at this location, then the catalog's
+   * first service, matching BookingService.catalog()'s own shape.
+   */
+  /**
+   * The public page's "pull up your profile" moment — returns EVERY client
+   * on file for this phone number (a household sharing one line is the
+   * common case, not an edge case; see findClientsByPhone), each with their
+   * own last-completed-visit service suggestion, so the "who's checking in"
+   * step can offer all of them rather than silently picking one.
+   */
+  async lastServiceForPhone(locationId: string, phone: string) {
+    const trx = db();
+    const location = await trx.selectFrom('locations').select('organization_id').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const people = await findClientsByPhone(trx, location.organization_id, phone);
+    const catalog = await trx.selectFrom('services').select(['id', 'name', 'duration_minutes as durationMinutes', 'price']).where('location_id', '=', locationId).orderBy('name').execute();
+    const catalogIds = new Set(catalog.map((service) => service.id));
+
+    const peopleWithSuggestions = await Promise.all(people.map(async (person) => {
+      const lastCompleted = await trx.selectFrom('queue_entries').select('id').where('client_id', '=', person.id).where('location_id', '=', locationId).where('status', '=', 'completed').orderBy('service_completed_at', 'desc').limit(1).executeTakeFirst();
+      let history: string[] = [];
+      if (lastCompleted) {
+        const lines = await trx.selectFrom('queue_entry_services').select('service_id').where('queue_entry_id', '=', lastCompleted.id).orderBy('sort_order').execute();
+        history = lines.map((line) => line.service_id).filter((id) => catalogIds.has(id));
+      }
+      return { clientId: person.id, name: person.name, suggestedServiceIds: resolveDefaultServiceIds(catalog, history) };
+    }));
+
+    return { isNewClient: people.length === 0, people: peopleWithSuggestions, defaultServiceIds: resolveDefaultServiceIds(catalog, []) };
+  }
+
+  /** Remote queue join from the public booking page — see docs/PRD-live-queue-checkin.md and the plan for this feature. */
+  async publicJoin(locationId: string, dto: { phone: string; clientId?: string; name?: string; serviceId: string; serviceIds?: string[]; forceNewClient?: boolean }) {
+    const trx = db();
+    const location = await trx.selectFrom('locations').select('organization_id').where('id', '=', locationId).executeTakeFirstOrThrow();
+
+    const serviceIds = [...new Set(dto.serviceIds?.length ? dto.serviceIds : [dto.serviceId])];
+    if (!serviceIds.length || serviceIds.length > 8) throw new BadRequestException('Choose between 1 and 8 services');
+    const validServices = await trx.selectFrom('services').select(['id', 'duration_minutes']).where('location_id', '=', locationId).where('id', 'in', serviceIds).execute();
+    if (validServices.length !== serviceIds.length) throw new BadRequestException('One or more selected services are unavailable at this location');
+    const visitDurationMinutes = validServices.reduce((sum, service) => sum + service.duration_minutes, 0);
+
+    const hours = await this.closingTimeForToday(locationId);
+    const PAST_CLOSING_MESSAGE = "The wait right now would carry you past closing, and we'd rather not rush your visit. Come see us tomorrow — we'll have a chair ready.";
+    if (hours.closed) {
+      throw new ConflictException({ code: 'CLOSED_TODAY', title: "That's a wrap for today", message: PAST_CLOSING_MESSAGE });
+    }
+    const board = await this.getBoard(locationId);
+    const backlogMinutes = board.waiting.reduce((sum, entry) => sum + (entry.predictedDurationMinutes ?? 20), 0);
+    const estimatedFinish = new Date(Date.now() + (backlogMinutes + visitDurationMinutes) * 60_000);
+    if (exceedsClosingGrace(estimatedFinish, hours.closeAt!, 30)) {
+      throw new ConflictException({ code: 'PAST_CLOSING', title: "That's a wrap for today", message: PAST_CLOSING_MESSAGE });
+    }
+
+    const entry = await this.checkIn(locationId, location.organization_id, null, {
+      mode: 'phone',
+      phone: dto.phone,
+      clientId: dto.clientId,
+      newClientName: dto.name,
+      forceNewClient: dto.forceNewClient,
+      serviceId: serviceIds[0],
+      serviceIds,
+      isAppointment: false,
+      present: false,
+    });
+    return this.publicStatus(locationId, entry.id);
   }
 
   /**
@@ -773,6 +925,7 @@ export class QueueService {
         ready_override: dto.present ? entry.ready_override : null,
         present_checked_at: dto.present ? new Date() : entry.present_checked_at,
         present_projected_at: dto.present ? projectedAt : entry.present_projected_at,
+        identity_note: dto.identityNote !== undefined ? (dto.identityNote.trim() || null) : entry.identity_note,
         updated_at: new Date(),
       })
       .where('id', '=', queueEntryId)
@@ -1292,7 +1445,7 @@ export class QueueService {
       });
     }
 
-    // waiting, walk-in: anyone clocked in today.
-    return roster.filter((r) => r.status !== 'off');
+    // waiting, walk-in: clocked in AND not already mid-service with someone else.
+    return roster.filter((r) => r.status === 'available');
   }
 }
