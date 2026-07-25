@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
 import { normalizePhone } from '../common/phone';
+import { dateInTimezone } from '../common/time';
+import { isAppointmentOverlapError } from '../booking/booking.rules';
 import type { CaptureConsentDto, RebookClientDto, UpdateClientProfileDto } from './clients.types';
 import { BookingService } from '../booking/booking.service';
 
@@ -127,12 +129,23 @@ export class ClientsService {
     if (!client) throw new NotFoundException('Client not found');
     const serviceIds = [...new Set(dto.serviceIds?.length ? dto.serviceIds : [dto.serviceId])];
     if (!serviceIds.length || serviceIds.length > 8) throw new BadRequestException('Choose between 1 and 8 services');
-    const services = await trx.selectFrom('services').select('id').where('id', 'in', serviceIds).where('location_id', '=', locationId).execute();
+    const services = await trx.selectFrom('services').select(['id', 'duration_minutes']).where('id', 'in', serviceIds).where('location_id', '=', locationId).execute();
     if (services.length !== serviceIds.length) throw new BadRequestException('One or more services are not available at this location');
-    const available = await this.booking.slots(locationId, serviceIds, startsAt.toISOString().slice(0, 10), dto.locationStaffId ?? undefined);
+    const visitDurationMinutes = services.reduce((sum, service) => sum + service.duration_minutes, 0);
+    // Local calendar date for the slot in the shop's timezone (not the UTC date, which lands on
+    // the wrong day for evening slots that cross midnight UTC).
+    const { timezone } = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const available = await this.booking.slots(locationId, serviceIds, dateInTimezone(timezone, startsAt), dto.locationStaffId ?? undefined);
     const candidate = available.slots.find((slot) => slot.startsAt === startsAt.toISOString() && (!dto.locationStaffId || slot.locationStaffId === dto.locationStaffId));
     if (!candidate) throw new ConflictException('That time is not available for the selected services. Choose another time or professional.');
-    const appointment = await trx.insertInto('appointments').values({ location_id: locationId, client_id: clientId, service_id: serviceIds[0], location_staff_id: candidate.locationStaffId, starts_at: startsAt, source: 'staff_rebook', notes: dto.notes ?? null, created_by_user_id: actorUserId }).returningAll().executeTakeFirstOrThrow();
+    // This rebook path has no advisory lock of its own; the appointments overlap-guard constraint
+    // (migration 0046) is what makes a concurrent double-book safe here. ends_at feeds that guard.
+    const endsAt = new Date(startsAt.getTime() + visitDurationMinutes * 60_000);
+    const appointment = await trx.insertInto('appointments').values({ location_id: locationId, client_id: clientId, service_id: serviceIds[0], location_staff_id: candidate.locationStaffId, starts_at: startsAt, ends_at: endsAt, source: 'staff_rebook', notes: dto.notes ?? null, created_by_user_id: actorUserId }).returningAll().executeTakeFirstOrThrow()
+      .catch((err) => {
+        if (isAppointmentOverlapError(err)) throw new ConflictException('That professional already has an appointment at that time');
+        throw err;
+      });
     await trx.insertInto('appointment_services').values(serviceIds.map((serviceId, sortOrder) => ({ appointment_id: appointment.id, service_id: serviceId, sort_order: sortOrder }))).execute();
     return appointment;
   }

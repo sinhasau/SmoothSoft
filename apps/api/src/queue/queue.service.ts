@@ -8,6 +8,8 @@ import { reorderForAppointmentSla } from './appointment-sla';
 import { disambiguateWaitingNames } from './display-name';
 import { exceedsClosingGrace } from './closing-guard';
 import { resolveDefaultServiceIds } from './default-service';
+import { disambiguateProfiles } from './profile-disambiguation';
+import { normalizePhone } from '../common/phone';
 import { createClient, findClientByPhone, findClientsByPhone, touchClientConfirmed } from '../clients/client-lookup';
 import type {
   ChangeServiceDto,
@@ -363,6 +365,7 @@ export class QueueService {
         present_checked_at: present ? new Date() : null,
         waiting_order: nextOrder,
         original_waiting_order: nextOrder,
+        service_notes: dto.serviceNotes?.trim() || null,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -414,7 +417,7 @@ export class QueueService {
     return {
       waitingCount: board.waiting.length,
       estimatedWaitMinutes: backlogMinutes,
-      entries: board.waiting.map((entry) => ({ id: entry.id, label: labels.get(entry.id) ?? 'Guest' })),
+      entries: board.waiting.map((entry) => ({ id: entry.id, label: labels.get(entry.id) ?? 'Guest', estimatedStart: entry.estimatedStart })),
     };
   }
 
@@ -462,7 +465,7 @@ export class QueueService {
     const trx = db();
     const location = await trx.selectFrom('locations').select('organization_id').where('id', '=', locationId).executeTakeFirstOrThrow();
     const people = await findClientsByPhone(trx, location.organization_id, phone);
-    const catalog = await trx.selectFrom('services').select(['id', 'name', 'duration_minutes as durationMinutes', 'price']).where('location_id', '=', locationId).orderBy('name').execute();
+    const catalog = await trx.selectFrom('services').select(['id', 'name', 'duration_minutes as durationMinutes', 'price', 'is_default as isDefault']).where('location_id', '=', locationId).orderBy('name').execute();
     const catalogIds = new Set(catalog.map((service) => service.id));
 
     const peopleWithSuggestions = await Promise.all(people.map(async (person) => {
@@ -476,6 +479,49 @@ export class QueueService {
     }));
 
     return { isNewClient: people.length === 0, people: peopleWithSuggestions, defaultServiceIds: resolveDefaultServiceIds(catalog, []) };
+  }
+
+  /**
+   * Public "find my profile" for the self-service page: one field that accepts a name OR a phone
+   * number. Same-name matches come back with a masked phone (last 4, escalating as needed) so the
+   * customer can pick the right profile — the full number never leaves the server. Name matching is
+   * a contained substring search, and the route is rate-limited, to blunt list enumeration.
+   */
+  async lookupProfiles(locationId: string, rawQuery: string) {
+    const trx = db();
+    const query = (rawQuery ?? '').trim();
+    const location = await trx.selectFrom('locations').select('organization_id').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const catalog = await trx.selectFrom('services').select(['id', 'name', 'duration_minutes as durationMinutes', 'price', 'is_default as isDefault']).where('location_id', '=', locationId).orderBy('name').execute();
+    const catalogIds = new Set(catalog.map((service) => service.id));
+    const defaultServiceIds = resolveDefaultServiceIds(catalog, []);
+
+    const digits = normalizePhone(query);
+    const inputWasPhone = digits.length >= 7;
+    if (query.length < 2) {
+      return { isNewClient: true, people: [], defaultServiceIds, inputWasPhone, digits };
+    }
+
+    const candidates = inputWasPhone
+      ? await trx.selectFrom('clients').select(['id', 'name', 'phone_normalized as phone']).where('organization_id', '=', location.organization_id).where('phone_normalized', '=', digits).orderBy('name').execute()
+      : await trx.selectFrom('clients').select(['id', 'name', 'phone_normalized as phone']).where('organization_id', '=', location.organization_id).where('name', 'ilike', `%${query}%`).orderBy('name').limit(10).execute();
+
+    const withSuggestions = await Promise.all(candidates.map(async (person) => {
+      const lastCompleted = await trx.selectFrom('queue_entries').select('id').where('client_id', '=', person.id).where('location_id', '=', locationId).where('status', '=', 'completed').orderBy('service_completed_at', 'desc').limit(1).executeTakeFirst();
+      let history: string[] = [];
+      if (lastCompleted) {
+        const lines = await trx.selectFrom('queue_entry_services').select('service_id').where('queue_entry_id', '=', lastCompleted.id).orderBy('sort_order').execute();
+        history = lines.map((line) => line.service_id).filter((id) => catalogIds.has(id));
+      }
+      return { clientId: person.id, name: person.name, phoneDigits: person.phone, suggestedServiceIds: resolveDefaultServiceIds(catalog, history) };
+    }));
+
+    return {
+      isNewClient: candidates.length === 0,
+      people: disambiguateProfiles(withSuggestions),
+      defaultServiceIds,
+      inputWasPhone,
+      digits,
+    };
   }
 
   /** Remote queue join from the public booking page — see docs/PRD-live-queue-checkin.md and the plan for this feature. */
@@ -724,7 +770,7 @@ export class QueueService {
   private async terminate(
     locationId: string,
     queueEntryId: string,
-    actorUserId: string,
+    actorUserId: string | null,
     status: 'cancelled' | 'no_show',
     eventType: QueueEventType,
     options: { abandoned?: boolean; allowInService?: boolean } = {},
@@ -772,8 +818,23 @@ export class QueueService {
   }
 
   /** Cancellable from either Waiting or Now Serving (PRD-live-queue-checkin.md §5.2 "cancel service outright"). */
-  cancel(locationId: string, queueEntryId: string, actorUserId: string) {
+  cancel(locationId: string, queueEntryId: string, actorUserId: string | null) {
     return this.terminate(locationId, queueEntryId, actorUserId, 'cancelled', 'queue_entry_cancelled', { allowInService: true });
+  }
+
+  /**
+   * Customer self-cancel from the public status link. Authorized purely by the
+   * unguessable queue-entry UUID in the URL (same capability model as publicStatus),
+   * and runs with a null actor exactly like publicJoin. Waiting-only: once a client
+   * is seated we don't let the public link cancel a service already underway — that
+   * returns changed:false rather than a hard error so the status page can just refresh.
+   */
+  async publicCancel(locationId: string, queueEntryId: string) {
+    const entry = await db().selectFrom('queue_entries').select(['id', 'status']).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirst();
+    if (!entry) throw new NotFoundException('Queue entry not found');
+    if (entry.status !== 'waiting') return { changed: false, status: entry.status };
+    await this.terminate(locationId, queueEntryId, null, 'cancelled', 'queue_entry_cancelled');
+    return { changed: true, status: 'cancelled' };
   }
 
   /** Checked "here" (present=true) but never got served — tracked distinctly from no-show, per confirmed decision. */

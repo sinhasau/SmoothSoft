@@ -10,3 +10,7 @@ __pycache__/
 .venv/
 .claude/settings.local.json
 *.tsbuildinfo
+
+# Generated report/PDF output (payroll exports, receipts) — never commit
+output/
+outputs/

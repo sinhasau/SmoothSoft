@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
 import { buildStaffPayPdf, buildStaffPayWorkbook, StaffPayReport } from './staff-pay-export';
+import { compensationChangedDuringPeriod } from './staff-pay.rules';
 
 export const REPORT_IDS = [
   'revenue_trend',
@@ -182,16 +183,20 @@ export class ReportsService {
     const scheduled = await this.staffScheduledHours(locationId, from, to);
     const scheduledHoursByStaff = new Map(scheduled.rows.map((row) => [row.locationStaffId, row.scheduledHours]));
 
-    const compensationByStaff = new Map<string, { commissionPct: number | null; boothRentWeekly: number | null; hourlyRate: number | null; annualSalary: number | null; customPayModelName: string | null; effectiveFrom: Date }>();
+    const compensationByStaff = new Map<string, { commissionPct: number | null; boothRentWeekly: number | null; hourlyRate: number | null; annualSalary: number | null; customPayModelName: string | null; effectiveFrom: Date; changedMidPeriod: boolean }>();
     for (const person of roster) {
-      const compensation = await trx
+      // All compensation rows in effect at any point during the period, newest first. The pay run
+      // applies a single rate (the newest) to the whole period; when more than one row overlaps, the
+      // rate changed mid-period and the estimate is flagged for review (see compensationChangedDuringPeriod).
+      const compensationRows = await trx
         .selectFrom('staff_compensation_history')
-        .select(['commission_pct', 'booth_rent_weekly', 'hourly_rate', 'annual_salary', 'custom_pay_model_name', 'effective_from'])
+        .select(['commission_pct', 'booth_rent_weekly', 'hourly_rate', 'annual_salary', 'custom_pay_model_name', 'effective_from', 'effective_to'])
         .where('location_staff_id', '=', person.locationStaffId)
         .where('effective_from', '<', endExclusive)
         .where((eb) => eb.or([eb('effective_to', 'is', null), eb('effective_to', '>=', start)]))
         .orderBy('effective_from', 'desc')
-        .executeTakeFirst();
+        .execute();
+      const compensation = compensationRows[0];
       if (compensation) {
         compensationByStaff.set(person.locationStaffId, {
           commissionPct: compensation.commission_pct === null ? null : Number(compensation.commission_pct),
@@ -200,6 +205,11 @@ export class ReportsService {
           annualSalary: compensation.annual_salary === null ? null : Number(compensation.annual_salary),
           customPayModelName: compensation.custom_pay_model_name,
           effectiveFrom: compensation.effective_from,
+          changedMidPeriod: compensationChangedDuringPeriod(
+            compensationRows.map((row) => ({ effectiveFrom: row.effective_from, effectiveTo: row.effective_to })),
+            start,
+            endExclusive,
+          ),
         });
       }
     }
@@ -271,8 +281,11 @@ export class ReportsService {
         tipsPayable: row.tips,
         estimatedPay,
         needsConfiguration: baseCompensationModel === 'not_configured',
+        compensationChangedMidPeriod: comp?.changedMidPeriod ?? false,
       };
     }).sort((a, b) => (b.estimatedPay ?? -1) - (a.estimatedPay ?? -1));
+
+    const midPeriodChangeNames = rows.filter((row) => row.compensationChangedMidPeriod).map((row) => row.fullName);
 
     const totals = rows.reduce((acc, row) => ({
       clients: acc.clients + row.clients,
@@ -296,6 +309,9 @@ export class ReportsService {
         'Confirm actual hours worked before running payroll; scheduled hours are planning estimates.',
         'Refunds are allocated proportionally across service and retail revenue.',
         creditRequestPremiumToStaff ? 'Earned requested-professional premiums are credited to staff service revenue.' : 'Requested-professional premiums remain shop revenue and are excluded from staff commission calculations.',
+        ...(midPeriodChangeNames.length
+          ? [`Pay rate changed mid-period for ${midPeriodChangeNames.join(', ')}. This estimate applies their latest rate to the whole period — review or prorate before paying.`]
+          : []),
       ],
     };
   }

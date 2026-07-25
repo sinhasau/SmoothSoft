@@ -3,7 +3,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { sql } from 'kysely';
 import { db } from '../common/request-context';
 import { createClient, findClientByPhone } from '../clients/client-lookup';
-import { intervalsOverlap, isBookingDate } from './booking.rules';
+import { intervalsOverlap, isAppointmentOverlapError, isBookingDate } from './booking.rules';
+import { dateInTimezone, dayOfWeekForDate, instantFromWallClock } from '../common/time';
 
 export interface PublicBookDto {
   name: string;
@@ -49,11 +50,17 @@ export class BookingService {
     if (services.length !== serviceIds.length) throw new NotFoundException('One or more services are unavailable');
     const visitDurationMinutes = services.reduce((sum, service) => sum + service.duration_minutes, 0);
     const catalog = await this.catalog(locationId);
-    const startDay = new Date(`${date}T00:00:00`);
+    // Slot times are anchored to the shop's local clock, not the server's. `startDay` is the
+    // absolute instant of local midnight for `date` in the location's timezone, so both the
+    // day-window appointment filter below and the per-slot instants are correct on a UTC server
+    // and across DST. See common/time.ts.
+    const timezone = catalog.location.timezone;
+    const [year, month, day] = date.split('-').map(Number);
+    const startDay = instantFromWallClock(timezone, year, month, day, 0, 0);
     const minStart = new Date(Date.now() + catalog.settings.minimumLeadHours * 3600000);
     const maxDate = new Date(Date.now() + catalog.settings.bookingHorizonDays * 86400000);
     if (startDay > maxDate) return { slots: [] };
-    const dow = startDay.getDay();
+    const dow = dayOfWeekForDate(date);
     const specialHours = await trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '=', date).executeTakeFirst();
     if (specialHours?.is_closed) return { slots: [] };
     const staff = locationStaffId ? catalog.staff.filter((person) => person.id === locationStaffId) : catalog.staff;
@@ -79,7 +86,7 @@ export class BookingService {
       const bookedDuration = new Map<string, number>();
       for (const line of bookedLines) bookedDuration.set(line.appointmentId, (bookedDuration.get(line.appointmentId) ?? 0) + line.durationMinutes);
       for (let minutes = operatingStart; minutes + visitDurationMinutes <= operatingEnd; minutes += catalog.settings.slotIntervalMinutes) {
-        const startsAt = new Date(`${date}T${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}:00`);
+        const startsAt = instantFromWallClock(timezone, year, month, day, Math.floor(minutes / 60), minutes % 60);
         if (startsAt < minStart) continue;
         const overlaps = appointments.some((appt) => intervalsOverlap(startsAt, visitDurationMinutes, new Date(appt.startsAt), bookedDuration.get(appt.id) ?? appt.primaryDurationMinutes));
         if (!overlaps) rows.push({ startsAt: startsAt.toISOString(), locationStaffId: person.id, staffName: person.fullName });
@@ -95,18 +102,21 @@ export class BookingService {
     if (Number.isNaN(requestedStart.getTime())) throw new BadRequestException('A valid appointment time is required');
     const serviceIds = [...new Set(dto.serviceIds?.length ? dto.serviceIds : [dto.serviceId])];
     if (!serviceIds.length || serviceIds.length > 8) throw new BadRequestException('Choose between 1 and 8 services');
-    const initial = await this.slots(locationId, serviceIds, dto.startsAt.slice(0, 10), dto.locationStaffId ?? undefined);
+    const location = await trx.selectFrom('locations').select(['organization_id', 'name', 'timezone']).where('id', '=', locationId).executeTakeFirstOrThrow();
+    // The slot's LOCAL calendar date in the shop's timezone — not dto.startsAt.slice(0,10),
+    // which is the UTC date and lands on the wrong day for evening slots that roll past midnight UTC.
+    const dateKey = dateInTimezone(location.timezone, requestedStart);
+    const initial = await this.slots(locationId, serviceIds, dateKey, dto.locationStaffId ?? undefined);
     const candidate = initial.slots.find((slot) => slot.startsAt === requestedStart.toISOString() && (!dto.locationStaffId || slot.locationStaffId === dto.locationStaffId));
     if (!candidate) throw new ConflictException('That appointment time is no longer available');
 
     // Public requests for the same professional/day are serialized inside the
     // request transaction. Availability is checked again after the lock so two
     // customers cannot both claim the final slot.
-    await sql`select pg_advisory_xact_lock(hashtext(${`${candidate.locationStaffId}:${dto.startsAt.slice(0, 10)}`}))`.execute(trx);
-    const available = await this.slots(locationId, serviceIds, dto.startsAt.slice(0, 10), candidate.locationStaffId);
+    await sql`select pg_advisory_xact_lock(hashtext(${`${candidate.locationStaffId}:${dateKey}`}))`.execute(trx);
+    const available = await this.slots(locationId, serviceIds, dateKey, candidate.locationStaffId);
     if (!available.slots.some((slot) => slot.startsAt === requestedStart.toISOString())) throw new ConflictException('That appointment time was just booked. Please choose another.');
 
-    const location = await trx.selectFrom('locations').select(['organization_id', 'name']).where('id', '=', locationId).executeTakeFirstOrThrow();
     const lookup = await findClientByPhone(trx, location.organization_id, dto.phone);
     const client = lookup.clientId
       ? await trx.selectFrom('clients').selectAll().where('id', '=', lookup.clientId).executeTakeFirstOrThrow()
@@ -142,10 +152,12 @@ export class BookingService {
     const staff = await trx.selectFrom('location_staff').select('id').where('id', '=', dto.locationStaffId).where('location_id', '=', locationId).executeTakeFirst();
     if (!staff) throw new NotFoundException('Selected professional was not found at this location');
 
-    const dateKey = dto.startsAt.slice(0, 10);
+    const location = await trx.selectFrom('locations').select(['organization_id', 'name', 'timezone']).where('id', '=', locationId).executeTakeFirstOrThrow();
+    const dateKey = dateInTimezone(location.timezone, requestedStart);
     await sql`select pg_advisory_xact_lock(hashtext(${`${dto.locationStaffId}:${dateKey}`}))`.execute(trx);
 
-    const dayStart = new Date(`${dateKey}T00:00:00`);
+    const [dayYear, dayMonth, dayDate] = dateKey.split('-').map(Number);
+    const dayStart = instantFromWallClock(location.timezone, dayYear, dayMonth, dayDate, 0, 0);
     const existing = await trx.selectFrom('appointments as a').innerJoin('services as booked_service', 'booked_service.id', 'a.service_id')
       .select(['a.id as id', 'a.starts_at as startsAt', 'booked_service.duration_minutes as primaryDurationMinutes'])
       .where('a.location_staff_id', '=', dto.locationStaffId).where('a.starts_at', '>=', dayStart).where('a.starts_at', '<', new Date(dayStart.getTime() + 86400000)).where('a.status', 'in', ['booked', 'confirmed']).execute();
@@ -158,7 +170,6 @@ export class BookingService {
     const overlaps = existing.some((appt) => intervalsOverlap(requestedStart, visitDurationMinutes, new Date(appt.startsAt), bookedDuration.get(appt.id) ?? appt.primaryDurationMinutes));
     if (overlaps) throw new ConflictException('That professional already has an appointment at that time');
 
-    const location = await trx.selectFrom('locations').select(['organization_id', 'name']).where('id', '=', locationId).executeTakeFirstOrThrow();
     const lookup = await findClientByPhone(trx, location.organization_id, dto.phone);
     let clientId: string;
     if (lookup.clientId) {
@@ -195,18 +206,26 @@ export class BookingService {
   }) {
     const trx = db();
     const confirmationCode = randomBytes(6).toString('hex').toUpperCase();
+    // ends_at backs the overlap-guard constraint (migration 0046): start + total service duration.
+    const serviceRows = await trx.selectFrom('services').select('duration_minutes').where('id', 'in', params.serviceIds).where('location_id', '=', locationId).execute();
+    const visitDurationMinutes = serviceRows.reduce((sum, service) => sum + service.duration_minutes, 0);
+    const endsAt = new Date(params.startsAt.getTime() + visitDurationMinutes * 60_000);
     const appointment = await trx.insertInto('appointments').values({
       location_id: locationId,
       client_id: params.clientId,
       service_id: params.serviceIds[0],
       location_staff_id: params.locationStaffId,
       starts_at: params.startsAt,
+      ends_at: endsAt,
       source: params.source,
       notes: params.notes?.trim() || null,
       created_by_user_id: params.createdByUserId,
       confirmation_code: confirmationCode,
       cancelled_at: null,
-    }).returningAll().executeTakeFirstOrThrow();
+    }).returningAll().executeTakeFirstOrThrow().catch((err) => {
+      if (isAppointmentOverlapError(err)) throw new ConflictException('That professional already has an appointment at that time');
+      throw err;
+    });
     await trx.insertInto('appointment_services').values(params.serviceIds.map((serviceId, sortOrder) => ({ appointment_id: appointment.id, service_id: serviceId, sort_order: sortOrder }))).execute();
     const when = params.startsAt;
     const communicationSettings = await trx.selectFrom('location_communication_settings').selectAll().where('location_id', '=', locationId).executeTakeFirst();

@@ -3,10 +3,13 @@
 A multi-tenant salon/barbershop management platform — real-time queue management,
 POS, staff/payroll, and BI, built around an event-sourced Postgres backend.
 
-This repo is a **starting scaffold**, not a finished product. Everything in
-`docs/` and `db/migrations/` reflects real design decisions already made;
-everything in `apps/` is an empty shell waiting to be built out. See
-"How to actually build this" below before writing any application code.
+This repo is a **working supervised-pilot build**, not yet a production system of
+record. The connected operating loop — booking → check-in → live queue → service →
+checkout/refund → staff settlement → reporting — is implemented against a real
+event-sourced Postgres backend with row-level multi-tenancy. What remains before an
+unattended public launch is launch-hardening (production identity, payment webhooks,
+message delivery, observability), tracked in
+[docs/LAUNCH-READINESS-TRACKER.md](docs/LAUNCH-READINESS-TRACKER.md).
 
 ## Layout
 
@@ -20,8 +23,8 @@ docs/                    Design docs — read these first, in this order:
   SCALING-AND-INDEXING-NOTES.md            Why each index exists, known scaling thresholds
   PRODUCT-STRATEGY-personas-workflows-differentiators.md   Personas, workflows, market bets
 
-db/migrations/           8 sequential SQL migrations — the actual normalized schema.
-                          Apply in numeric order (0001 → 0008). See db/README.md.
+db/migrations/           45 sequential SQL migrations — the actual normalized schema.
+                          Apply in numeric order (0001 → 0045). See db/README.md.
 
 apps/web/                Next.js + React + TypeScript — owner/staff dashboard + public booking
 apps/api/                NestJS — the core modular monolith (see architecture doc §2)
@@ -32,22 +35,25 @@ apps/mobile/             React Native — staff app + client app (two separate a
 packages/shared-types/   TypeScript types shared between apps/web and apps/api
 ```
 
-## What's actually been validated vs. what's still a mockup
+## What's built vs. what still needs hardening
 
-Everything in `docs/` and `db/migrations/` is real design work — schema, indexes,
-RLS policies, and architecture decisions that were reasoned through, not guessed at.
+**Built and working** (traceable in `apps/`):
+- 13 NestJS modules — auth, booking, appointments, queue (+ websocket gateway), clients,
+  payments (Stripe/Square/manual adapters), schedule, reports, dashboard, settings, PII.
+- Full Next.js app — owner/org dashboard, live queue, schedule, checkout/sales, clients,
+  staff, reports, settings, and a public booking flow.
+- 45 SQL migrations applied against real Postgres, RLS policies enforced through
+  request-scoped transactions that set the tenant session variables.
+- Payment refunds route back to the original processor and record only on confirmation;
+  checkout locks and decrements stock; pay-run snapshots export to PDF/XLSX.
+- 20 unit/component test files; TypeScript checks and both production builds pass.
 
-What does **not** exist yet, anywhere:
-- Any running application code (apps/* are empty shells)
-- Any real integration (Stripe, Twilio, QuickBooks, etc.) — all still just design intent
-- Any deployed database — the migrations have never been run against a real Postgres instance
-- Any auth/session layer — RLS policies exist but nothing sets `app.current_location_id` yet
-
-A series of interactive HTML/JS prototypes were built and demoed conversationally
-(Live Queue, Clients, Reports, Settings, an Owner cross-location dashboard) to validate
-UX decisions before committing them to real code. Those aren't in this repo — they were
-throwaway prototypes, not something to build on top of. Treat them as validated UX
-reference, not as a codebase to port.
+**Not yet launch-ready** (see the tracker for the full P0 list):
+- **Identity** — sign-in selects a staff identity with no password/credential verification.
+- **Payments** — no webhook/reconciliation layer for async processor states.
+- **Messaging** — confirmations/reminders queue durably but no worker sends them yet.
+- **Ops** — no staging/prod separation, backups, structured logging, or E2E CI gate;
+  17 open dependency advisories.
 
 ## How to actually build this
 

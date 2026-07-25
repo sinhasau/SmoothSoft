@@ -248,6 +248,8 @@ export interface ServicesTable {
   duration_minutes: number;
   price: Numeric;
   taxable: Generated<boolean>;
+  /** At most one true per location — see migration 0049 and SettingsService.setDefaultService. */
+  is_default: Generated<boolean>;
 }
 
 export interface ProductsTable {
@@ -467,6 +469,8 @@ export interface AppointmentsTable {
   service_id: string;
   location_staff_id: string | null;
   starts_at: TimestampTz;
+  /** Maintained by the app (start + summed service duration); backs the overlap-guard constraint. */
+  ends_at: TimestampTz | null;
   status: Generated<'booked' | 'confirmed' | 'checked_in' | 'completed' | 'cancelled' | 'no_show'>;
   source: Generated<'staff_rebook' | 'public_booking' | 'walk_in_conversion'>;
   notes: string | null;
@@ -659,6 +663,22 @@ export interface ReportExportsTable {
   parameters: Generated<Record<string, unknown>>;
 }
 
+export type ComplaintStatus = 'new' | 'acknowledged' | 'resolved';
+
+export interface CustomerComplaintsTable {
+  id: Generated<string>;
+  location_id: string;
+  client_id: string | null;
+  customer_name: string;
+  customer_phone: string | null;
+  message: string;
+  status: Generated<ComplaintStatus>;
+  handled_by_user_id: string | null;
+  resolved_at: TimestampTz | null;
+  created_at: TimestampTzWithDefault;
+  updated_at: TimestampTzWithDefault;
+}
+
 export interface DB {
   organizations: OrganizationsTable;
   locations: LocationsTable;
@@ -713,6 +733,7 @@ export interface DB {
   report_exports: ReportExportsTable;
   public_booking_settings: PublicBookingSettingsTable;
   communication_messages: CommunicationMessagesTable;
+  customer_complaints: CustomerComplaintsTable;
 }
 
 export type Organization = Selectable<OrganizationsTable>;

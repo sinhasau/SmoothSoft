@@ -79,7 +79,7 @@ export function NewAppointmentModal({ onClose, onDone }: { onClose: () => void; 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!serviceIds.length && services.data?.[0]) setServiceIds([services.data[0].id]);
+    if (!serviceIds.length && services.data?.length) setServiceIds([(services.data.find((s) => s.is_default) ?? services.data[0]).id]);
   }, [services.data, serviceIds.length]);
 
   const create = useMutation({
