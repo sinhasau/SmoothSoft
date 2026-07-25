@@ -22,7 +22,7 @@ interface ClientProfile {
   upcomingAppointments: { id: string; startsAt: string; status: string; notes: string | null; serviceName: string; staffName: string | null }[];
   consents: { id: string; consentType: string; version: string; accepted: boolean; capturedAt: string; notes: string | null }[];
 }
-interface Service { id: string; name: string; duration_minutes: number; price: string }
+interface Service { id: string; name: string; duration_minutes: number; price: string; is_default: boolean }
 interface StaffChoice { locationStaffId: string; fullName: string; employmentStatus: string }
 
 export default function ClientProfilePage({ params }: { params: { locationId: string; clientId: string } }) {
@@ -38,7 +38,8 @@ export default function ClientProfilePage({ params }: { params: { locationId: st
   const [startsAt, setStartsAt] = useState('');
   const services = useQuery({ queryKey: ['settings', 'services'], queryFn: () => api.get<Service[]>('/settings/services') });
   const roster = useQuery({ queryKey: ['settings', 'staff'], queryFn: () => api.get<StaffChoice[]>('/settings/staff') });
-  const effectiveServiceIds = serviceIds.length ? serviceIds : services.data?.[0]?.id ? [services.data[0].id] : [];
+  const defaultService = services.data?.find((s) => s.is_default) ?? services.data?.[0];
+  const effectiveServiceIds = serviceIds.length ? serviceIds : defaultService ? [defaultService.id] : [];
 
   const save = useMutation({
     mutationFn: (allergyFlag: boolean) => api.put(`/clients/${params.clientId}`, { notes: notes ?? data?.client.notes, allergyFlag }),

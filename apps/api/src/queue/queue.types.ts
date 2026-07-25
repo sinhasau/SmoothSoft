@@ -22,6 +22,8 @@ export interface CheckInDto {
   clientId?: string;
   /** Skips the ambiguous single-row phone lookup and always creates a new client from newClientName — for callers that already enumerated every existing profile on this phone and know this one is new. */
   forceNewClient?: boolean;
+  /** Free-text note captured at sign-in (allergy callouts, "in a hurry", etc.) — stored on the same queue_entries.service_notes column the Start flow later appends to. */
+  serviceNotes?: string;
 }
 
 export interface StartDto {

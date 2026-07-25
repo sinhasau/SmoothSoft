@@ -53,6 +53,8 @@ interface QueueEntry {
   estimatedStart: string | null;
   /** Short disambiguation note set when another waiting entry shares this client's display name. */
   identityNote?: string | null;
+  /** Free-text note captured at check-in or Start — allergy callouts, special requests, etc. */
+  serviceNotes?: string | null;
   serviceStartedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -80,6 +82,10 @@ interface Service {
   name: string;
   duration_minutes: number;
   price: string;
+  /** Only present on real catalog rows (from /settings/services) — absent on the ad-hoc
+   *  per-entry service-line objects this interface is also reused for (e.g. CheckoutPanel's
+   *  extraServices, built from a queue entry's own service lines, not the catalog). */
+  is_default?: boolean;
 }
 
 interface Product {
@@ -152,6 +158,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const [activityOpen, setActivityOpen] = useState(false);
   const [clientPreviewId, setClientPreviewId] = useState<string | null>(null);
   const [identityNotePrompt, setIdentityNotePrompt] = useState<QueueEntry | null>(null);
+  const [detailEntry, setDetailEntry] = useState<QueueEntry | null>(null);
   const now = useClock();
 
   const board = useQuery({ queryKey: ['queue', 'board'], queryFn: () => api.get<Board>('/queue/board'), refetchInterval: 20_000 });
@@ -419,32 +426,35 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                   onDragEnd={() => { setDragId(null); setDragOverZone(null); }}
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => { event.stopPropagation(); handleDrop(entry.id); }}
-                  className={`grid cursor-grab grid-cols-[4px_34px_minmax(0,1fr)_auto_28px] items-center gap-2 border-b border-[#e7e1d7] py-3 pr-2 last:border-0 active:cursor-grabbing ${dragId === entry.id ? 'opacity-40' : 'hover:bg-white/75'}`}
+                  onClick={() => setDetailEntry(entry)}
+                  className={`grid cursor-pointer grid-cols-[4px_34px_minmax(0,1fr)_auto_28px] items-center gap-2 border-b border-[#e7e1d7] py-3 pr-2 last:border-0 active:cursor-grabbing ${dragId === entry.id ? 'opacity-40' : 'hover:bg-white/75'}`}
                 >
                   <span className={`h-full min-h-12 rounded-r-full ${urgent ? 'bg-[#c84e26]' : wait >= 40 ? 'bg-[#cf8b17]' : 'bg-transparent'}`} />
                   <span className="font-serif text-xl tabular-nums text-[#222824]">{String(index + 1).padStart(2, '0')}</span>
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-2">
-                      {entry.clientId ? <button className="truncate text-left text-sm font-semibold hover:text-[#175642]" onClick={() => setClientPreviewId(entry.clientId)}>{displayName(entry)}</button> : <span className="truncate text-sm font-semibold">{displayName(entry)}</span>}
+                      {entry.clientId ? <button className="truncate text-left text-sm font-semibold hover:text-[#175642]" onClick={(event) => { event.stopPropagation(); setClientPreviewId(entry.clientId); }}>{displayName(entry)}</button> : <span className="truncate text-sm font-semibold">{displayName(entry)}</span>}
                       {entry.isAppt && <Pill tone="gray">Appt</Pill>}
                       {late && <Pill tone="red">Late</Pill>}
                       {entry.apptSlaProtected && <Pill tone="amber">⏰ Seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill>}
                     </div>
                     <div className="mt-0.5 truncate text-xs text-gray-500">{entry.serviceName} · {entry.assignedStaffName ?? 'Any barber'}{entry.identityNote ? ` · ${entry.identityNote}` : ''}</div>
-                    <label className="mt-1 inline-flex cursor-pointer items-center gap-1 text-[10px] text-gray-400">
+                    <label className="mt-1 inline-flex cursor-pointer items-center gap-1 text-[10px] text-gray-400" onClick={(event) => event.stopPropagation()}>
                       <input type="checkbox" className="h-3.5 w-3.5" checked={entry.present} onChange={(event) => handleTogglePresent(entry, event.target.checked)} />
                       {entry.present ? `Arrived ${timeLabel(entry.presentCheckedAt)}` : 'Mark arrived'}
                     </label>
                   </div>
                   <div className="text-right text-xs">
                     {wait > 0 && <div className={`font-semibold tabular-nums ${urgent ? 'text-[#c14b25]' : wait >= 40 ? 'text-[#b36f0e]' : 'text-gray-600'}`}>{durationLabel(wait)}</div>}
-                    <div className="mt-1 whitespace-nowrap text-gray-500">
+                    <div className="mt-1 whitespace-nowrap text-gray-500" title="Estimated service time">
                       {entry.isAppt && entry.present && <span className="mr-1 text-[#5c7c6c]">Walk-in est: {timeLabel(entry.estimatedStart)} ·</span>}
-                      {entry.isAppt ? timeLabel(entry.apptAt) : `~${timeLabel(entry.estimatedStart)}`}
+                      {entry.isAppt ? <><span className="text-gray-400">Appt</span> {timeLabel(entry.apptAt)}</> : <><span className="text-gray-400">Est.</span> {timeLabel(entry.estimatedStart)}</>}
                     </div>
-                    <button className="mt-1 font-medium text-[#175642] hover:underline" onClick={() => openStart(entry)}>Start</button>
+                    <button className="mt-1 font-medium text-[#175642] hover:underline" onClick={(event) => { event.stopPropagation(); openStart(entry); }}>Start</button>
                   </div>
-                  <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Change service', onClick: () => setChangeServiceEntry(entry) }, { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present }, { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                  <div onClick={(event) => event.stopPropagation()}>
+                    <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Change service', onClick: () => setChangeServiceEntry(entry) }, { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present }, { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                  </div>
                 </div>
               );
             })}
@@ -469,7 +479,8 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                 draggable
                 onDragStart={() => setDragId(entry.id)}
                 onDragEnd={() => { setDragId(null); setDragOverZone(null); }}
-                className={`cursor-grab rounded-xl border p-3 shadow-sm active:cursor-grabbing ${entry.apptSlaProtected ? 'border-amber-300 bg-amber-50/60' : 'border-[#bfd0c2] bg-white/70'} ${dragId === entry.id ? 'opacity-40' : ''}`}
+                onClick={() => setDetailEntry(entry)}
+                className={`cursor-pointer rounded-xl border p-3 shadow-sm active:cursor-grabbing ${entry.apptSlaProtected ? 'border-amber-300 bg-amber-50/60' : 'border-[#bfd0c2] bg-white/70'} ${dragId === entry.id ? 'opacity-40' : ''}`}
               >
                 {entry.apptSlaProtected && <div className="mb-2"><Pill tone="amber">⏰ Appointment — seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill></div>}
                 <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
@@ -481,7 +492,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                   <div className="min-w-0 text-right leading-tight"><span className="font-serif text-lg tabular-nums">{String(waitingList.indexOf(entry) + 1).padStart(2, '0')}</span><span className="ml-2 text-sm font-semibold">{displayName(entry)}</span></div>
                 </div>
                 <div className="mt-3 text-center"><div className="text-sm text-gray-700">{entry.serviceName}</div><div className="mt-0.5 text-[11px] text-gray-500">{staff ? (entry.matchReason === 'familiar_barber' ? `Familiar barber${entry.continuityVisitCount ? ` · ${entry.continuityVisitCount} prior visit${entry.continuityVisitCount === 1 ? '' : 's'}` : ''}` : entry.matchReason === 'team_variety' ? 'Team variety match' : entry.matchReason === 'requested' ? 'Requested barber' : index === 0 ? 'Longest waiting · next available' : 'Available now') : 'Ready when a barber opens up'}</div></div>
-                <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+                <div className="mt-3 grid grid-cols-[1fr_auto] gap-2" onClick={(event) => event.stopPropagation()}>
                   <Button variant={staff ? 'solid' : 'default'} onClick={() => openStart(entry, staff?.locationStaffId)}>{staff ? `Seat with ${staff.fullName.split(' ')[0]}` : 'Choose barber'}</Button>
                   <Button variant="ghost" onClick={() => toggleReady.mutate({ id: entry.id, ready: false })}>Back to waiting</Button>
                 </div>
@@ -512,8 +523,9 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                   draggable
                   onDragStart={() => setDragId(entry.id)}
                   onDragEnd={() => { setDragId(null); setDragOverZone(null); }}
-                  title="Drag onto an on-floor barber to reassign"
-                  className={`cursor-grab rounded-xl border border-[#e1dbd0] bg-white/70 px-3 py-3 active:cursor-grabbing ${dragId === entry.id ? 'opacity-40' : ''}`}
+                  onClick={() => setDetailEntry(entry)}
+                  title="Click for details — drag onto an on-floor barber to reassign"
+                  className={`cursor-pointer rounded-xl border border-[#e1dbd0] bg-white/70 px-3 py-3 active:cursor-grabbing ${dragId === entry.id ? 'opacity-40' : ''}`}
                 >
                   <div className="flex items-center gap-3">
                     <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#e1e9e1] font-serif text-lg text-[#315d4e]">{entry.assignedStaffName?.charAt(0) ?? 'S'}</span>
@@ -521,8 +533,10 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5"><span className="truncate text-sm font-semibold">{entry.assignedStaffName ?? 'Professional'}</span><span className="text-gray-300">/</span><span className="truncate text-xs text-gray-500">{displayName(entry)}</span></div>
                       <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-gray-500"><span className="truncate">{entry.serviceName}</span><span className={`whitespace-nowrap tabular-nums ${overrunning ? 'font-medium text-[#b84b24]' : ''}`}>{elapsed}m · {overrunning ? 'overdue' : `ends ${timeLabel(eta.toISOString())}`}</span></div>
                     </div>
-                    <button aria-label={`Complete service for ${displayName(entry)}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-[#49645a] text-sm text-[#274f41] hover:bg-[#edf3ef]" onClick={() => openCheckout(entry)}>✓</button>
-                    <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'top' }) }, { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'original' }) }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), destructive: true }, { label: 'Cancel service', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                    <button aria-label={`Complete service for ${displayName(entry)}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-[#49645a] text-sm text-[#274f41] hover:bg-[#edf3ef]" onClick={(event) => { event.stopPropagation(); openCheckout(entry); }}>✓</button>
+                    <div onClick={(event) => event.stopPropagation()}>
+                      <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Return to top of waiting', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'top' }) }, { label: 'Return to original position', onClick: () => returnToWaiting.mutate({ id: entry.id, position: 'original' }) }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), destructive: true }, { label: 'Cancel service', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                    </div>
                   </div>
                   <div className="mt-3 h-0.5 overflow-hidden rounded-full bg-[#d9d7d0]"><div className={`h-full rounded-full ${overrunning ? 'bg-[#c84e26]' : 'bg-[#c98310]'}`} style={{ width: `${progress}%` }} /></div>
                 </div>
@@ -579,6 +593,14 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       </div>
 
       {clientPreviewId && <ClientPreviewPopover clientId={clientPreviewId} locationId={params.locationId} onClose={() => setClientPreviewId(null)} />}
+
+      {detailEntry && (
+        <EntryDetailModal
+          entry={detailEntry}
+          onClose={() => setDetailEntry(null)}
+          onOpenProfile={(clientId) => { setDetailEntry(null); setClientPreviewId(clientId); }}
+        />
+      )}
 
       {identityNotePrompt && (
         <IdentityNotePanel
@@ -661,6 +683,65 @@ function IdentityNotePanel({ name, onClose, onSave }: { name: string; onClose: (
   );
 }
 
+/** Read-only detail view opened by clicking anywhere on a Waiting/Ready/In-service
+ *  card — services, staff, timing, and the general note captured at check-in. Editing
+ *  stays in the existing dedicated flows (Reassign, Change service, etc. via RowMenu). */
+function EntryDetailModal({ entry, onClose, onOpenProfile }: { entry: QueueEntry; onClose: () => void; onOpenProfile: (clientId: string) => void }) {
+  const services = entry.services?.length ? entry.services : [{ id: entry.serviceId, name: entry.serviceName, durationMinutes: entry.serviceDurationMinutes, price: '0' }];
+  const totalMinutes = services.reduce((sum, s) => sum + s.durationMinutes, 0);
+  const statusLabel = entry.status === 'in_service' ? 'In service' : entry.present ? 'Ready to seat' : 'Waiting';
+
+  return (
+    <Modal onClose={onClose}>
+      <div className="mb-3">
+        <h3 className="text-lg font-semibold">{displayName(entry)}</h3>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <Pill tone={entry.status === 'in_service' || entry.present ? 'green' : 'gray'}>{statusLabel}</Pill>
+          {entry.isAppt && <Pill tone="gray">Appointment</Pill>}
+          {entry.identityNote && <Pill tone="amber">{entry.identityNote}</Pill>}
+        </div>
+      </div>
+
+      <div className="mb-3 space-y-1 rounded-lg bg-stone-50 p-3 text-sm">
+        {services.map((s, i) => (
+          <div key={`${s.id}-${i}`} className="flex justify-between text-gray-700"><span>{s.name}</span><span className="text-gray-500">{s.durationMinutes} min</span></div>
+        ))}
+        <div className="flex justify-between border-t border-black/5 pt-1 text-xs text-gray-400"><span>Total</span><span>{totalMinutes} min</span></div>
+      </div>
+
+      <div className="mb-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+        <div><div className="text-[11px] uppercase tracking-wide text-gray-400">Barber</div><div className="mt-0.5">{entry.assignedStaffName ?? 'Any barber'}{entry.requestedSpecificStaff ? ' (requested)' : ''}</div></div>
+        <div><div className="text-[11px] uppercase tracking-wide text-gray-400">{entry.isAppt ? 'Appointment time' : 'Joined at'}</div><div className="mt-0.5">{entry.isAppt ? timeLabel(entry.apptAt) : timeLabel(entry.createdAt)}</div></div>
+        {entry.status === 'in_service' ? (
+          <>
+            <div><div className="text-[11px] uppercase tracking-wide text-gray-400">Started</div><div className="mt-0.5">{timeLabel(entry.serviceStartedAt)}</div></div>
+            <div><div className="text-[11px] uppercase tracking-wide text-gray-400">Est. finish</div><div className="mt-0.5">{timeLabel(entry.serviceStartedAt ? new Date(new Date(entry.serviceStartedAt).getTime() + entry.serviceDurationMinutes * 60000).toISOString() : null)}</div></div>
+          </>
+        ) : (
+          <>
+            <div><div className="text-[11px] uppercase tracking-wide text-gray-400">Arrived</div><div className="mt-0.5">{entry.present ? timeLabel(entry.presentCheckedAt) : 'Not yet'}</div></div>
+            <div><div className="text-[11px] uppercase tracking-wide text-gray-400">Est. seating</div><div className="mt-0.5">{timeLabel(entry.estimatedStart)}</div></div>
+          </>
+        )}
+      </div>
+
+      {entry.apptSlaProtected && (
+        <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">⏰ Appointment SLA protected — seat by {timeLabel(entry.apptSlaDeadline ?? null)}.</p>
+      )}
+
+      <div className="mb-4">
+        <div className="text-[11px] uppercase tracking-wide text-gray-400">Notes</div>
+        <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700">{entry.serviceNotes?.trim() ? entry.serviceNotes : <span className="text-gray-400">No notes.</span>}</p>
+      </div>
+
+      <div className="flex items-center justify-between">
+        {entry.clientId ? <button className="text-sm text-[#175642] underline hover:text-black" onClick={() => onOpenProfile(entry.clientId as string)}>Open full profile</button> : <span />}
+        <Button onClick={onClose}>Close</Button>
+      </div>
+    </Modal>
+  );
+}
+
 function CheckoutShell({ children, busy, onClose }: { children: React.ReactNode; busy: boolean; onClose: () => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Something (browser autofill focus, a form control receiving focus on
@@ -703,12 +784,37 @@ function CheckInPanel({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [mode, setMode] = useState<'phone' | 'guest'>('phone');
-  const [phone, setPhone] = useState('');
+  // 'Customer' covers both new and returning — one search finds an existing profile by
+  // name or phone, or collects the two fields needed to create one. 'Guest' skips a
+  // profile entirely for someone who doesn't want one on file.
+  const [mode, setMode] = useState<'customer' | 'guest'>('customer');
   const [guestName, setGuestName] = useState('');
-  const [newClientName, setNewClientName] = useState('');
-  const [needsNewClientName, setNeedsNewClientName] = useState(false);
-  const [serviceIds, setServiceIds] = useState<string[]>(services[0]?.id ? [services[0].id] : []);
+  const [customerQuery, setCustomerQuery] = useState('');
+  const [selectedClient, setSelectedClient] = useState<{ id: string; name: string } | null>(null);
+  const [manualAddNew, setManualAddNew] = useState(false);
+  const [addNewName, setAddNewName] = useState('');
+  const [addNewPhone, setAddNewPhone] = useState('');
+  const [notes, setNotes] = useState('');
+
+  const trimmedQuery = customerQuery.trim();
+  // Reuses the client directory search, which already matches on name AND
+  // dash-insensitive phone — one field covers both the "I know their number"
+  // and "I know their name" cases a walk-in check-in actually has.
+  const customerResults = useQuery({
+    queryKey: ['clients', 'checkin-search', trimmedQuery],
+    queryFn: () => api.get<{ id: string; name: string; phone_display: string | null }[]>(`/clients?q=${encodeURIComponent(trimmedQuery)}`),
+    enabled: mode === 'customer' && trimmedQuery.length >= 2 && !selectedClient,
+  });
+  // A lone match is almost certainly the right person — auto-pick it so a known
+  // regular checking in by phone or full name is still a single click, not two.
+  useEffect(() => {
+    if (!selectedClient && customerResults.data?.length === 1) setSelectedClient(customerResults.data[0]);
+  }, [customerResults.data, selectedClient]);
+
+  const zeroMatches = mode === 'customer' && trimmedQuery.length >= 2 && !selectedClient && customerResults.data?.length === 0;
+  const addingNew = zeroMatches || (manualAddNew && !selectedClient);
+
+  const [serviceIds, setServiceIds] = useState<string[]>(() => (services.find((s) => s.is_default) ?? services[0])?.id ? [(services.find((s) => s.is_default) ?? services[0]).id] : []);
   const [requestedStaffId, setRequestedStaffId] = useState<string>('');
   const [apptDate, setApptDate] = useState(new Date().toISOString().slice(0, 10));
   const [apptTime, setApptTime] = useState('10:00');
@@ -717,71 +823,109 @@ function CheckInPanel({
   const checkIn = useMutation({
     mutationFn: () =>
       api.post('/queue/check-in', {
-        mode,
-        phone: mode === 'phone' ? phone : undefined,
+        mode: mode === 'customer' ? 'phone' : 'guest',
+        clientId: mode === 'customer' ? selectedClient?.id : undefined,
+        phone: mode === 'customer' && !selectedClient ? addNewPhone : undefined,
+        newClientName: mode === 'customer' && !selectedClient ? addNewName : undefined,
         guestName: mode === 'guest' ? guestName : undefined,
-        newClientName: needsNewClientName ? newClientName : undefined,
         serviceId: serviceIds[0],
         serviceIds,
         requestedStaffId: requestedStaffId || undefined,
         isAppointment,
         apptAt: isAppointment ? new Date(`${apptDate}T${apptTime}:00`).toISOString() : undefined,
+        serviceNotes: notes.trim() || undefined,
       }),
     onSuccess: () => {
       onDone();
       onClose();
     },
-    onError: (err) => {
-      if (err instanceof ApiError && err.body?.code === 'NEW_CLIENT_NAME_REQUIRED') {
-        setNeedsNewClientName(true);
-        setError(null);
-      } else if (err instanceof ApiError) {
-        setError(err.body?.message ?? 'Check-in failed');
-      }
-    },
+    onError: (err) => setError(err instanceof ApiError ? (err.body?.message ?? 'Check-in failed') : 'Check-in failed'),
   });
+
+  const canSubmit = mode === 'customer'
+    ? !!selectedClient || (addNewName.trim().length > 0 && addNewPhone.trim().length > 0)
+    : guestName.trim().length > 0;
 
   return (
     <Modal onClose={onClose}>
       <h3 className="font-semibold mb-4">{isAppointment ? 'Book appointment' : 'Walk-in check-in'}</h3>
       <div className="flex gap-2 mb-4">
-        <Button variant={mode === 'phone' ? 'solid' : 'default'} onClick={() => setMode('phone')}>
-          Phone
+        <Button variant={mode === 'customer' ? 'solid' : 'default'} onClick={() => setMode('customer')}>
+          Customer
         </Button>
         <Button variant={mode === 'guest' ? 'solid' : 'default'} onClick={() => setMode('guest')}>
           Guest
         </Button>
       </div>
 
-      {mode === 'phone' ? (
-        <input
-          type="tel"
-          inputMode="tel"
-          autoComplete="tel"
-          className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
-          placeholder="313-555-1212"
-          value={phone}
-          onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-        />
-      ) : (
+      {mode === 'customer' && (
+        <div className="mb-3">
+          <input
+            autoFocus
+            type="text"
+            className="w-full border border-black/15 rounded-lg px-3 py-2"
+            placeholder="Name or phone number"
+            value={customerQuery}
+            onChange={(e) => { setCustomerQuery(e.target.value); setSelectedClient(null); setManualAddNew(false); }}
+          />
+          {trimmedQuery.length >= 2 && !selectedClient && !addingNew && (
+            <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-black/10 divide-y divide-black/5">
+              {customerResults.isLoading && <p className="px-3 py-2 text-sm text-gray-500">Searching…</p>}
+              {customerResults.data?.map((client) => (
+                <button
+                  key={client.id}
+                  type="button"
+                  onClick={() => setSelectedClient({ id: client.id, name: client.name })}
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-black/[0.03]"
+                >
+                  <span className="truncate font-medium">{client.name}</span>
+                  <span className="shrink-0 text-gray-500">{client.phone_display ?? '—'}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {trimmedQuery.length >= 2 && !selectedClient && !customerResults.isLoading && !addingNew && (
+            <button type="button" className="mt-2 text-xs font-medium text-[#175642] hover:underline" onClick={() => setManualAddNew(true)}>
+              + Not them — add as a new customer
+            </button>
+          )}
+
+          {selectedClient && (
+            <p className="mt-2 text-sm text-[#175642]">
+              Adding <strong>{selectedClient.name}</strong> to the line. <button type="button" className="underline" onClick={() => setSelectedClient(null)}>Not this person?</button>
+            </p>
+          )}
+
+          {addingNew && (
+            <div className="mt-2 rounded-lg border border-black/10 p-3">
+              <p className="mb-2 text-xs text-gray-500">{zeroMatches ? "No matching profiles — add them as a new customer." : 'New customer'}</p>
+              <input
+                className="w-full border border-black/15 rounded-lg px-3 py-2 mb-2"
+                placeholder="Full name"
+                value={addNewName}
+                onChange={(e) => setAddNewName(e.target.value)}
+              />
+              <input
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                className="w-full border border-black/15 rounded-lg px-3 py-2"
+                placeholder="313-555-1212"
+                value={addNewPhone}
+                onChange={(e) => setAddNewPhone(formatPhoneInput(e.target.value))}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {mode === 'guest' && (
         <input
           className="w-full border border-black/15 rounded-lg px-3 py-2 mb-3"
           placeholder="Guest name"
           value={guestName}
           onChange={(e) => setGuestName(e.target.value)}
         />
-      )}
-
-      {needsNewClientName && (
-        <div className="mb-3">
-          <p className="text-sm text-amber-700 mb-1">This number isn't on file — enter a name to create a profile.</p>
-          <input
-            className="w-full border border-black/15 rounded-lg px-3 py-2"
-            placeholder="Client name"
-            value={newClientName}
-            onChange={(e) => setNewClientName(e.target.value)}
-          />
-        </div>
       )}
 
       {isAppointment && (
@@ -795,11 +939,21 @@ function CheckInPanel({
 
       <ProfessionalPicker options={team} selected={requestedStaffId} isAppointment={isAppointment} onSelect={setRequestedStaffId} />
 
+      <label className="mb-3 block text-xs font-medium text-gray-500">Notes <span className="font-normal text-gray-400">(optional)</span>
+        <textarea
+          className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black"
+          rows={2}
+          placeholder="Anything staff should know — allergies, a request, running late…"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+        />
+      </label>
+
       {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
 
       <div className="flex justify-end gap-2">
         <Button onClick={onClose}>Cancel</Button>
-        <Button variant="solid" onClick={() => checkIn.mutate()} disabled={!serviceIds.length || checkIn.isPending}>
+        <Button variant="solid" onClick={() => checkIn.mutate()} disabled={!serviceIds.length || checkIn.isPending || !canSubmit}>
           {isAppointment ? 'Book' : 'Check in'}
         </Button>
       </div>

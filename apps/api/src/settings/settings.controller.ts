@@ -168,6 +168,12 @@ export class SettingsController {
     return this.settings.removeService(requireAuth().locationId, id);
   }
 
+  @Post('services/:id/set-default')
+  setDefaultService(@Param('id') id: string) {
+    requireManager();
+    return this.settings.setDefaultService(requireAuth().locationId, id);
+  }
+
   @Get('products')
   products() {
     return this.settings.products(requireAuth().locationId);

@@ -59,6 +59,12 @@ export default function LocationLayout({ children, params }: { children: React.R
     { href: `${base}/sales`, label: 'Sales', icon: '$' },
     ...(communicationSettings.data?.enabled !== false ? [{ href: `${base}/communications`, label: 'Messages', icon: '✉' }] : []),
   ] : [];
+  // Its own section (not folded into Manage/Front desk) so it reads as customer-facing
+  // operations rather than a back-office setting — visible to the same audience that acts
+  // on complaints (front desk + managers).
+  const customer = (isManager || isFrontDesk) ? [
+    { href: `${base}/complaints`, label: 'Complaints', icon: '⚑' },
+  ] : [];
   const isActive = (item: { href: string; exact?: boolean }) => item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
 
   return (
@@ -69,6 +75,18 @@ export default function LocationLayout({ children, params }: { children: React.R
           <span className="nav-section-label">Operate</span>
           {primary.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}
           {management.length > 0 && <><span className="nav-section-label">{isManager ? 'Manage' : 'Front desk'}</span>{management.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</>}
+          {customer.length > 0 && (
+            <>
+              <span className="nav-section-label">Customer</span>
+              {customer.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}
+              {/* A separate top-level, unauthenticated route (not nested under this
+                  layout) — opens in a new tab so staff keep their place on the Floor
+                  instead of navigating away from the authenticated app. */}
+              <a href={`/book/${params.locationId}`} target="_blank" rel="noopener noreferrer" className="app-nav-link">
+                <span aria-hidden="true">↗</span>Check-in link
+              </a>
+            </>
+          )}
         </nav>
         <div className="sidebar-user"><span className="avatar">{auth.fullName.split(/\s+/).map((part) => part[0]).slice(0, 2).join('')}</span><div><strong>{auth.fullName}</strong><span>{auth.role.replace('_', ' ')}</span></div>{auth.role === 'org_owner' && <Link href="/org" aria-label="Open owner dashboard">↗</Link>}</div>
       </aside>

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from 'kysely';
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
-import { countProducts, requestedPremiumIsEarned, resolveShopState } from './payments.rules';
+import { countProducts, requestedPremiumIsEarned, resolveShopState, validateCheckoutAmounts } from './payments.rules';
 import { dateInTimezone, startOfDayInTimezone } from '../common/time';
 import { appendEvent } from '../queue/event-log';
 import { QueueService } from '../queue/queue.service';
@@ -78,6 +78,8 @@ export class PaymentsService {
     if (dto.lineItems.length === 0) {
       throw new BadRequestException('At least one line item is required');
     }
+    const amountError = validateCheckoutAmounts({ lineItems: dto.lineItems, tip: dto.tip });
+    if (amountError) throw new BadRequestException(amountError);
 
     const entry = await trx.selectFrom('queue_entries').selectAll().where('id', '=', dto.queueEntryId).executeTakeFirst();
     if (!entry) throw new NotFoundException('Queue entry not found');

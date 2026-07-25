@@ -7,6 +7,8 @@ export interface MultiServiceOption {
   name: string;
   duration_minutes: number;
   price: string;
+  /** The location's configured default service (Settings > Services) — used by callers to seed a fresh picker, not read by this component itself. */
+  is_default?: boolean;
 }
 
 export function ServiceMultiPicker({

@@ -15,9 +15,49 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Dependency-audit gate. Set to `critical` so it passes today (0 critical) while
+      # catching the worst regressions. The 17 pre-existing advisories (5 high, 12 moderate)
+      # need breaking major upgrades — tracked in docs/LAUNCH-READINESS-TRACKER.md (#25).
+      # Tighten to `high`, then `moderate`, as that backlog clears.
+      - run: npm audit --audit-level=critical
       - run: npm test --workspace @salon-platform/api
       - run: npm test --workspace @salon-platform/web
       - run: npm run typecheck --workspace @salon-platform/api
       - run: npm run typecheck --workspace @salon-platform/web
       - run: npm run build --workspace @salon-platform/api
       - run: npm run build --workspace @salon-platform/web
+
+  # Proves every migration applies cleanly on a FRESH database (catches drift,
+  # bad ordering, or a migration that assumes state a clean DB doesn't have —
+  # e.g. 0021 grants to salon_app, which must exist first). Tracker #24.
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: salon
+          POSTGRES_PASSWORD: salon_dev_password
+          POSTGRES_DB: salon_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U salon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_MIGRATE_URL: postgres://salon:salon_dev_password@localhost:5432/salon_platform
+    steps:
+      - uses: actions/checkout@v4
+      # 0021 grants EXECUTE on a function to salon_app, so the app login role must
+      # exist before migrations run. Mirrors real provisioning, where the app role
+      # is created ahead of schema migration (see db/grant-app-role.sql).
+      - name: Create app login role
+        run: psql "$DATABASE_MIGRATE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE salon_app LOGIN PASSWORD 'salon_app_dev_password';"
+      - name: Run all migrations on a fresh database
+        run: npm run db:migrate
+      - name: Grant app-role table access
+        run: npm run db:grant-app-role
+      - name: Verify a late migration actually landed
+        run: psql "$DATABASE_MIGRATE_URL" -v ON_ERROR_STOP=1 -c "select 1/count(*) as ok from information_schema.columns where table_name='queue_entries' and column_name='identity_note';"

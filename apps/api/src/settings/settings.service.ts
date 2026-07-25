@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { db } from '../common/request-context';
 import type {
   AddStaffDto,
@@ -125,6 +125,18 @@ export class SettingsService {
 
   async removeService(locationId: string, id: string) {
     await db().deleteFrom('services').where('id', '=', id).where('location_id', '=', locationId).execute();
+    return { ok: true };
+  }
+
+  /** Exactly one default service per location (migration 0049's partial unique index enforces
+   *  this at the DB layer too) — clear the current one, then set the target, inside this
+   *  request's transaction so the board is never briefly without or with two defaults. */
+  async setDefaultService(locationId: string, id: string) {
+    const trx = db();
+    const target = await trx.selectFrom('services').select('id').where('id', '=', id).where('location_id', '=', locationId).executeTakeFirst();
+    if (!target) throw new NotFoundException('Service not found');
+    await trx.updateTable('services').set({ is_default: false }).where('location_id', '=', locationId).where('is_default', '=', true).execute();
+    await trx.updateTable('services').set({ is_default: true }).where('id', '=', id).execute();
     return { ok: true };
   }
 
@@ -423,7 +435,14 @@ export class SettingsService {
         effective_from: now,
       })
       .returningAll()
-      .executeTakeFirstOrThrow();
+      .executeTakeFirstOrThrow()
+      .catch((err) => {
+        // uq_staff_comp_current (migration 0047) — a concurrent edit already opened a new current row.
+        if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') {
+          throw new ConflictException('This pay rate was just updated in another session. Reload and try again.');
+        }
+        throw err;
+      });
   }
 
   async updateStaffTaxIdentity(locationId: string, locationStaffId: string, dto: UpdateStaffTaxIdentityDto) {

@@ -24,4 +24,14 @@ describe('resolveDefaultServiceIds', () => {
   it('returns nothing for an empty catalog with no history', () => {
     expect(resolveDefaultServiceIds([], [])).toEqual([]);
   });
+
+  it('prefers the explicitly configured default over the Haircut-name fallback', () => {
+    const withDefault = catalog.map((service) => ({ ...service, isDefault: service.id === 'svc-fade' }));
+    expect(resolveDefaultServiceIds(withDefault, [])).toEqual(['svc-fade']);
+  });
+
+  it('history still wins over the configured default', () => {
+    const withDefault = catalog.map((service) => ({ ...service, isDefault: service.id === 'svc-fade' }));
+    expect(resolveDefaultServiceIds(withDefault, ['svc-beard'])).toEqual(['svc-beard']);
+  });
 });

@@ -1,6 +1,8 @@
+import { ConflictException } from '@nestjs/common';
 import type { Kysely } from 'kysely';
 import type { DB } from '../db/kysely.types';
 import { normalizePhone } from '../common/phone';
+import { findExactNameMatch } from './name-match';
 
 /**
  * The fix for the gap flagged in PRD-live-queue-checkin.md §5.4: "today, an
@@ -93,6 +95,28 @@ export interface NewClientInput {
 
 export async function createClient(trx: Kysely<DB>, input: NewClientInput) {
   const phoneNormalized = normalizePhone(input.phone);
+
+  // A household can share one number with different names, but an EXACT same-name profile on the
+  // same number is a true duplicate — block it here so no creation path (public multi-person add,
+  // walk-in intake, booking, rebook) can produce two identical profiles. The caller gets the
+  // existing profile's id so the UI can offer "use that profile" instead of forcing a new name.
+  if (phoneNormalized && input.name?.trim()) {
+    const sameNumber = await trx
+      .selectFrom('clients')
+      .select(['id', 'name'])
+      .where('organization_id', '=', input.organizationId)
+      .where('phone_normalized', '=', phoneNormalized)
+      .execute();
+    const duplicate = findExactNameMatch(sameNumber, input.name);
+    if (duplicate) {
+      throw new ConflictException({
+        code: 'DUPLICATE_NAME_ON_PHONE',
+        message: `A profile named "${duplicate.name}" already exists on this number. Use that profile, or enter a different name.`,
+        existingClientId: duplicate.id,
+      });
+    }
+  }
+
   const client = await trx
     .insertInto('clients')
     .values({
@@ -108,6 +132,18 @@ export async function createClient(trx: Kysely<DB>, input: NewClientInput) {
     .executeTakeFirstOrThrow();
 
   if (phoneNormalized) {
+    // A number may already have an active binding — a household adding a new
+    // person to a shared line (the public multi-person picker's whole point),
+    // or a number being reassigned to someone new. Only one active binding per
+    // number is allowed (idx_phone_bindings_active), so supersede whoever
+    // currently holds it before this new client takes it over. Mirrors the
+    // rebook path in clients.service.ts.
+    await trx
+      .updateTable('phone_bindings')
+      .set({ superseded_at: new Date() })
+      .where('phone_normalized', '=', phoneNormalized)
+      .where('superseded_at', 'is', null)
+      .execute();
     await trx
       .insertInto('phone_bindings')
       .values({ phone_normalized: phoneNormalized, client_id: client.id })

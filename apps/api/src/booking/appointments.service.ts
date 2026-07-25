@@ -2,7 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { sql } from 'kysely';
 import { db } from '../common/request-context';
 import { QueueService } from '../queue/queue.service';
-import { intervalsOverlap } from './booking.rules';
+import { intervalsOverlap, isAppointmentOverlapError } from './booking.rules';
+import { dateInTimezone, instantFromWallClock } from '../common/time';
 
 export interface RescheduleAppointmentDto {
   startsAt?: string;
@@ -45,9 +46,14 @@ export class AppointmentsService {
   /** Locks + checks for a conflicting appointment for this staff member, excluding the appointment being edited (if any). */
   private async assertSlotAvailable(locationId: string, locationStaffId: string, startsAt: Date, durationMinutes: number, excludeAppointmentId?: string) {
     const trx = db();
-    const dateKey = startsAt.toISOString().slice(0, 10);
+    // Same shop-local date key and advisory lock as BookingService, so reschedule and new-booking
+    // attempts for the same professional/day serialize against each other (a UTC-date key here
+    // would diverge from the tz-local key used there and let both slip through).
+    const { timezone } = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const dateKey = dateInTimezone(timezone, startsAt);
     await sql`select pg_advisory_xact_lock(hashtext(${`${locationStaffId}:${dateKey}`}))`.execute(trx);
-    const dayStart = new Date(`${dateKey}T00:00:00`);
+    const [dayYear, dayMonth, dayDate] = dateKey.split('-').map(Number);
+    const dayStart = instantFromWallClock(timezone, dayYear, dayMonth, dayDate, 0, 0);
     let query = trx.selectFrom('appointments as a').innerJoin('services as booked_service', 'booked_service.id', 'a.service_id')
       .select(['a.id as id', 'a.starts_at as startsAt', 'booked_service.duration_minutes as primaryDurationMinutes'])
       .where('a.location_staff_id', '=', locationStaffId)
@@ -89,7 +95,12 @@ export class AppointmentsService {
 
     await this.assertSlotAvailable(locationId, locationStaffId, startsAt, durationMinutes, appointmentId);
 
-    await trx.updateTable('appointments').set({ starts_at: startsAt, location_staff_id: locationStaffId, service_id: serviceIds[0] }).where('id', '=', appointmentId).execute();
+    const endsAt = new Date(startsAt.getTime() + durationMinutes * 60_000);
+    await trx.updateTable('appointments').set({ starts_at: startsAt, ends_at: endsAt, location_staff_id: locationStaffId, service_id: serviceIds[0] }).where('id', '=', appointmentId).execute()
+      .catch((err) => {
+        if (isAppointmentOverlapError(err)) throw new ConflictException('That professional already has an appointment at that time');
+        throw err;
+      });
     await trx.deleteFrom('appointment_services').where('appointment_id', '=', appointmentId).execute();
     await trx.insertInto('appointment_services').values(serviceIds.map((serviceId, sortOrder) => ({ appointment_id: appointmentId, service_id: serviceId, sort_order: sortOrder }))).execute();
 
@@ -120,12 +131,44 @@ export class AppointmentsService {
     return { changed: true };
   }
 
-  async cancel(locationId: string, actorUserId: string, appointmentId: string) {
+  async cancel(locationId: string, actorUserId: string | null, appointmentId: string) {
     const trx = db();
     const updated = await trx.updateTable('appointments').set({ status: 'cancelled', cancelled_at: new Date() }).where('id', '=', appointmentId).where('location_id', '=', locationId).where('status', 'in', ['booked', 'confirmed']).returning('id').executeTakeFirst();
     if (!updated) return { changed: false };
     const linkedEntry = await trx.selectFrom('queue_entries').select(['id', 'present']).where('appointment_id', '=', appointmentId).where('status', 'in', ['waiting', 'in_service']).executeTakeFirst();
     if (linkedEntry && !linkedEntry.present) await this.queue.cancel(locationId, linkedEntry.id, actorUserId);
     return { changed: true };
+  }
+
+  /**
+   * Customer-facing appointment status via the unguessable appointment UUID in the
+   * booking link — returns only scheduling info (time, services, professional), never
+   * other client PII. Same capability model as QueueService.publicStatus.
+   */
+  async publicStatus(locationId: string, appointmentId: string) {
+    const trx = db();
+    const appointment = await trx.selectFrom('appointments as a')
+      .innerJoin('services as s', 's.id', 'a.service_id')
+      .leftJoin('location_staff as ls', 'ls.id', 'a.location_staff_id')
+      .leftJoin('users as u', 'u.id', 'ls.user_id')
+      .select(['a.id', 'a.status', 'a.starts_at as startsAt', 'a.confirmation_code as confirmationCode', 'a.location_staff_id as locationStaffId', 'a.service_id as primaryServiceId', 's.name as primaryService', 'u.full_name as staffName'])
+      .where('a.id', '=', appointmentId).where('a.location_id', '=', locationId).executeTakeFirst();
+    if (!appointment) throw new NotFoundException('Appointment not found');
+    const lines = await trx.selectFrom('appointment_services as aps').innerJoin('services as s', 's.id', 'aps.service_id').select(['aps.service_id as serviceId', 's.name']).where('aps.appointment_id', '=', appointmentId).orderBy('aps.sort_order').execute();
+    return {
+      id: appointment.id,
+      status: appointment.status,
+      startsAt: appointment.startsAt,
+      confirmationCode: appointment.confirmationCode,
+      locationStaffId: appointment.locationStaffId,
+      staffName: appointment.staffName,
+      serviceIds: lines.length ? lines.map((line) => line.serviceId) : [appointment.primaryServiceId],
+      serviceNames: lines.length ? lines.map((line) => line.name) : [appointment.primaryService],
+    };
+  }
+
+  /** Customer self-cancel of their own appointment via the booking link's appointment UUID (null actor, like publicJoin). */
+  async publicCancel(locationId: string, appointmentId: string) {
+    return this.cancel(locationId, null, appointmentId);
   }
 }
