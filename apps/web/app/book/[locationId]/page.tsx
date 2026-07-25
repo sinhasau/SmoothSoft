@@ -8,7 +8,7 @@ import { ServiceMultiPicker } from '../../../components/service-multi-picker';
 
 type Catalog = { location: { name: string }; services: { id: string; name: string; durationMinutes: number; price: string }[]; staff: { id: string; fullName: string }[] };
 type Slot = { startsAt: string; locationStaffId: string; staffName: string };
-type Snapshot = { waitingCount: number; estimatedWaitMinutes: number; entries: { id: string; label: string }[] };
+type Snapshot = { waitingCount: number; estimatedWaitMinutes: number; entries: { id: string; label: string; estimatedStart: string | null }[] };
 type ProfileLookup = { isNewClient: boolean; people: { clientId: string; name: string; maskedPhone: string | null; suggestedServiceIds: string[] }[]; defaultServiceIds: string[]; inputWasPhone: boolean; digits: string };
 type QueueStatus = { id: string; status: string; present: boolean; serviceName: string | null; staffName: string | null; position: number | null; aheadOfCount: number | null; estimatedStart: string | null };
 type BookingConfirmation = { appointmentId: string; confirmationCode: string; startsAt: string; messageQueued: boolean };
@@ -335,7 +335,8 @@ export default function PublicBookingPage({ params }: { params: { locationId: st
                   {snapshot.data.entries.map((entry, index) => (
                     <li key={entry.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 text-sm text-gray-600">
                       <span className="w-5 shrink-0 text-right font-serif tabular-nums text-[#8b6f47]">{index + 1}</span>
-                      <span className="truncate">{entry.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                      {entry.estimatedStart && <span className="shrink-0 tabular-nums text-gray-400">{new Date(entry.estimatedStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>}
                     </li>
                   ))}
                 </ol>
@@ -521,7 +522,8 @@ export default function PublicBookingPage({ params }: { params: { locationId: st
                   {snapshot.data.entries.map((entry, index) => (
                     <li key={entry.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 text-sm text-gray-600">
                       <span className="w-5 shrink-0 text-right font-serif tabular-nums text-[#8b6f47]">{index + 1}</span>
-                      <span className="truncate">{entry.label}</span>
+                      <span className="min-w-0 flex-1 truncate">{entry.label}</span>
+                      {entry.estimatedStart && <span className="shrink-0 tabular-nums text-gray-400">{new Date(entry.estimatedStart).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>}
                     </li>
                   ))}
                 </ol>

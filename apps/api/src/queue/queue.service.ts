@@ -417,7 +417,7 @@ export class QueueService {
     return {
       waitingCount: board.waiting.length,
       estimatedWaitMinutes: backlogMinutes,
-      entries: board.waiting.map((entry) => ({ id: entry.id, label: labels.get(entry.id) ?? 'Guest' })),
+      entries: board.waiting.map((entry) => ({ id: entry.id, label: labels.get(entry.id) ?? 'Guest', estimatedStart: entry.estimatedStart })),
     };
   }
 
