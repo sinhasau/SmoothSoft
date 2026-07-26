@@ -5,10 +5,10 @@
  * "broken" once cross-location viewing actually worked: nothing to show.
  *
  * This backfills ~60 days of realistic queue_entries/transactions/
- * transaction_items for both locations, sets a distinct barber-request
- * pricing policy per location for a meaningful demo of all three modes,
- * and promotes Downtown's Alex to org_owner so there's an account that can
- * actually view other locations (see rls-transaction.middleware.ts).
+ * transaction_items for both locations, and sets a distinct barber-request
+ * pricing policy per location for a meaningful demo of all three modes.
+ * Joel (org_owner from the base seed — see seed.ts) can already view other
+ * locations (see rls-transaction.middleware.ts).
  *
  * Additive; safe to re-run — skips a given CALENDAR DAY for a location if
  * it already has a queue entry on file (not just "skip the whole location"),
@@ -177,18 +177,18 @@ async function main() {
   const org = await db.selectFrom('organizations').selectAll().where('name', '=', "JJ's Barbers").executeTakeFirst();
   if (!org) throw new Error("No organization named \"JJ's Barbers\" found — run `npm run seed` first.");
 
-  // Downtown's real transactions (from live testing) are sparse — just a
+  // Novi's real transactions (from live testing) are sparse — just a
   // handful of days — so its Reports would otherwise be mostly empty over a
   // 60-day window. Day-level idempotency above means this only fills in the
   // days that don't already have real data; nothing gets duplicated.
-  await seedLocationHistory('Downtown', org.id, 'WELCOME10');
-  await seedLocationHistory('Eastside', org.id, 'EASTSIDE10');
-  await seedLocationHistory('Westfield', org.id, 'WESTFIELD10');
+  await seedLocationHistory("JJ's Barbers - Novi", org.id, 'WELCOME10');
+  await seedLocationHistory("JJ's Barber - South Lyon", org.id, 'EASTSIDE10');
+  await seedLocationHistory("JJ's Barbers - New TBD", org.id, 'WESTFIELD10');
 
-  // Distinct pricing-policy demo per location: Downtown = same (default,
-  // no row needed), Eastside = per-staff tier, Westfield = flat surcharge.
-  const eastside = await db.selectFrom('locations').selectAll().where('organization_id', '=', org.id).where('name', '=', 'Eastside').executeTakeFirstOrThrow();
-  const westfield = await db.selectFrom('locations').selectAll().where('organization_id', '=', org.id).where('name', '=', 'Westfield').executeTakeFirstOrThrow();
+  // Distinct pricing-policy demo per location: Novi = same (default, no row
+  // needed), South Lyon = per-staff tier, New TBD = flat surcharge.
+  const eastside = await db.selectFrom('locations').selectAll().where('organization_id', '=', org.id).where('name', '=', "JJ's Barber - South Lyon").executeTakeFirstOrThrow();
+  const westfield = await db.selectFrom('locations').selectAll().where('organization_id', '=', org.id).where('name', '=', "JJ's Barbers - New TBD").executeTakeFirstOrThrow();
 
   await db
     .insertInto('location_pricing_policy')
@@ -212,21 +212,9 @@ async function main() {
     await db.updateTable('location_staff').set({ price_tier_amount: 8 }).where('id', '=', eastsideLead.locationStaffId).execute();
   }
 
-  // Promote Downtown's Alex to org_owner so there's a login that can
-  // actually exercise cross-location viewing (nothing in the base seed had
-  // this role).
-  const downtown = await db.selectFrom('locations').selectAll().where('organization_id', '=', org.id).where('name', '=', 'Downtown').executeTakeFirstOrThrow();
-  const alex = await db
-    .selectFrom('location_staff as ls')
-    .innerJoin('users as u', 'u.id', 'ls.user_id')
-    .select('ls.id as locationStaffId')
-    .where('ls.location_id', '=', downtown.id)
-    .where('u.full_name', '=', 'Alex')
-    .executeTakeFirst();
-  if (alex) {
-    await db.updateTable('location_staff').set({ role: 'org_owner' }).where('id', '=', alex.locationStaffId).execute();
-    console.log('Promoted Alex (Downtown) to org_owner.');
-  }
+  // Joel is org_owner from the base seed (see DOWNTOWN_ROSTER in seed.ts) — a
+  // login that can already exercise cross-location viewing, so no separate
+  // promotion step is needed here.
 
   console.log('Done.');
 }

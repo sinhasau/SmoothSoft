@@ -106,9 +106,9 @@ async function main() {
     .execute();
 
   const byName: Record<string, StaffSeed[]> = {
-    Downtown: DOWNTOWN_EXTRA,
-    Eastside: EASTSIDE_EXTRA,
-    Westfield: WESTFIELD_EXTRA,
+    "JJ's Barbers - Novi": DOWNTOWN_EXTRA,
+    "JJ's Barber - South Lyon": EASTSIDE_EXTRA,
+    "JJ's Barbers - New TBD": WESTFIELD_EXTRA,
   };
 
   for (const location of locations) {

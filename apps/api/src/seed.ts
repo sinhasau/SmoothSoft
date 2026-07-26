@@ -43,14 +43,14 @@ const DOWNTOWN_ROSTER: StaffSeed[] = [
   },
   {
     fullName: 'Joel',
-    role: 'staff',
+    role: 'org_owner',
     classification: '1099',
     boothRentWeekly: 250,
     schedule: [3, 4, 6].map((day) => ({ day, start: '10:00', end: '18:00' })).concat([{ day: 5, start: '13:00', end: '18:00' }]),
   },
   {
     fullName: 'Alex',
-    role: 'location_manager',
+    role: 'staff',
     classification: 'w2',
     employmentStatus: 'inactive',
     commissionPct: 55,
@@ -58,7 +58,7 @@ const DOWNTOWN_ROSTER: StaffSeed[] = [
   },
   {
     fullName: 'Joshua',
-    role: 'staff',
+    role: 'location_manager',
     classification: 'w2',
     commissionPct: 50,
     schedule: [1, 2, 3, 5].map((day) => ({ day, start: '09:00', end: '17:00' })),
@@ -68,14 +68,14 @@ const DOWNTOWN_ROSTER: StaffSeed[] = [
 const EASTSIDE_ROSTER: StaffSeed[] = [
   {
     fullName: 'Rory',
-    role: 'staff',
+    role: 'location_manager',
     classification: '1099',
     boothRentWeekly: 250,
     schedule: [1, 2, 3, 4].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
   {
     fullName: 'Devon Ellis',
-    role: 'location_manager',
+    role: 'staff',
     classification: 'w2',
     commissionPct: 50,
     schedule: [0, 1, 2, 3].map((day) => ({ day, start: '09:00', end: '17:00' })),
@@ -247,9 +247,9 @@ async function main() {
     .returningAll()
     .executeTakeFirstOrThrow();
 
-  const downtown = await seedLocation(org.id, 'Downtown', DOWNTOWN_ROSTER);
-  await seedLocation(org.id, 'Eastside', EASTSIDE_ROSTER);
-  await seedLocation(org.id, 'Westfield', WESTFIELD_ROSTER);
+  const downtown = await seedLocation(org.id, "JJ's Barbers - Novi", DOWNTOWN_ROSTER);
+  await seedLocation(org.id, "JJ's Barber - South Lyon", EASTSIDE_ROSTER);
+  await seedLocation(org.id, "JJ's Barbers - New TBD", WESTFIELD_ROSTER);
 
   // Alex's pending one-off "requested off" for the Monday after next,
   // matching the amber "requested off" cell in the schedule screenshot.
@@ -276,7 +276,7 @@ async function main() {
     .execute();
 
   console.log(`Seeded organization ${org.name} (${org.id})`);
-  console.log('Locations: Downtown, Eastside, Westfield');
+  console.log("Locations: JJ's Barbers - Novi, JJ's Barber - South Lyon, JJ's Barbers - New TBD");
   console.log('Run `npm run dev` in apps/api, then GET /auth/roster to see login options.');
 }
 

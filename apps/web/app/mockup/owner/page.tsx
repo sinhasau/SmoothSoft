@@ -53,7 +53,7 @@ export default function OwnerMockup() {
           <div style={{ width: 40, height: 40, borderRadius: 12, display: 'grid', placeItems: 'center', color: '#fffaf0', fontWeight: 800, fontSize: 15, background: `linear-gradient(145deg, ${PINE_SOFT}, ${PINE})`, boxShadow: '0 5px 14px rgba(31,64,55,.2)' }}>JJ</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 15, color: INK }}>JJ&apos;s Barbers</div>
-            <div style={{ fontSize: 12, color: STONE, display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: '#3f9d6b', display: 'inline-block' }} /> Downtown · Open till 7pm</div>
+            <div style={{ fontSize: 12, color: STONE, display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: 99, background: '#3f9d6b', display: 'inline-block' }} /> Novi · Open till 7pm</div>
           </div>
           <div style={{ position: 'relative', width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', background: '#fff', border: '1px solid rgba(31,64,55,.12)', fontSize: 17 }}>
             <span>◔</span>

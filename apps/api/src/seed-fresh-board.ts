@@ -1,5 +1,6 @@
 /**
- * Refreshes the CURRENT operational board for one location (default: Downtown)
+ * Refreshes the CURRENT operational board for one location (default: JJ's
+ * Barbers - Novi)
  * with realistic, up-to-the-minute data — the piece the base seed and the
  * 60-day history seed deliberately don't create.
  *
@@ -21,7 +22,7 @@ import type { DB } from './db/kysely.types';
 const pool = new Pool({ connectionString: process.env.DATABASE_MIGRATE_URL });
 const db = new Kysely<DB>({ dialect: new PostgresDialect({ pool }) });
 
-const LOCATION_NAME = process.env.SEED_LOCATION ?? 'Downtown';
+const LOCATION_NAME = process.env.SEED_LOCATION ?? "JJ's Barbers - Novi";
 
 async function main() {
   const loc = await db.selectFrom('locations').select(['id', 'organization_id']).where('name', '=', LOCATION_NAME).executeTakeFirstOrThrow();
