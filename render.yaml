@@ -15,16 +15,19 @@ services:
     runtime: node
     plan: free
     autoDeploy: true
-    buildCommand: npm ci && npm run build --workspace @salon-platform/api
+    # --include=dev is required: NODE_ENV=production below applies to this build
+    # step too (not just runtime), and npm's documented behavior is to skip
+    # devDependencies entirely when NODE_ENV=production is set — but the build
+    # itself needs typescript, @types/*, and (for the migrations CI job elsewhere)
+    # vitest. NODE_ENV stays production for the actually-running app, which is
+    # correct/desired; this just stops it from starving the build step first.
+    buildCommand: npm ci --include=dev && npm run build --workspace @salon-platform/api
     startCommand: node apps/api/dist/main.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      # Render defaulted to Node 24.14.1 without this, which resolved npm
-      # workspace devDependencies differently than the Node 22 this was built
-      # and tested against — installed typescript but silently dropped several
-      # @types/* packages and vitest, breaking the build. Pin explicitly.
+      # Pinned for reproducibility — verified against this exact version locally.
       - key: NODE_VERSION
         value: 22.20.0
       # The app's runtime role (NOT the migration-owning role — see .env.example).
