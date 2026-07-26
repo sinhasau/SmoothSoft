@@ -21,6 +21,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Render defaulted to Node 24.14.1 without this, which resolved npm
+      # workspace devDependencies differently than the Node 22 this was built
+      # and tested against — installed typescript but silently dropped several
+      # @types/* packages and vitest, breaking the build. Pin explicitly.
+      - key: NODE_VERSION
+        value: 22.20.0
       # The app's runtime role (NOT the migration-owning role — see .env.example).
       - key: DATABASE_URL
         sync: false
