@@ -1,0 +1,31 @@
+# Render Blueprint for the SmoothSoft API. Connect this repo in Render as a
+# "Blueprint" and it reads this file automatically.
+#
+# The database and Redis are NOT defined here on purpose — Render's free-tier
+# Postgres expires after 90 days. Use Neon (Postgres) and Upstash (Redis)
+# instead, both free with no expiry, and paste their connection strings in
+# when Render prompts for the env vars below.
+services:
+  - type: web
+    name: smoothsoft-api
+    runtime: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm ci && npm run build --workspace @salon-platform/api
+    startCommand: node apps/api/dist/main.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # The app's runtime role (NOT the migration-owning role — see .env.example).
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: STAFF_PII_ENCRYPTION_KEY
+        sync: false
+      # Your Vercel deployment's URL, e.g. https://smoothsoft.vercel.app
+      - key: CORS_ORIGIN
+        sync: false

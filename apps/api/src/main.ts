@@ -17,7 +17,10 @@ async function bootstrap() {
     credentials: true,
   });
 
-  const port = Number(process.env.API_PORT ?? 3001);
+  // Most PaaS hosts (Render, Railway, Heroku) assign a port at runtime via PORT
+  // and require the app to bind to it; API_PORT stays authoritative for local
+  // dev where PORT is normally unset.
+  const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3001);
   await app.listen(port);
   // eslint-disable-next-line no-console
   console.log(`salon-platform-api listening on :${port}`);
