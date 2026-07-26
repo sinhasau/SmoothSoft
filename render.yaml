@@ -1,10 +1,14 @@
 # Render Blueprint for the SmoothSoft API. Connect this repo in Render as a
 # "Blueprint" and it reads this file automatically.
 #
-# The database and Redis are NOT defined here on purpose — Render's free-tier
-# Postgres expires after 90 days. Use Neon (Postgres) and Upstash (Redis)
-# instead, both free with no expiry, and paste their connection strings in
-# when Render prompts for the env vars below.
+# The database is NOT defined here on purpose — Render's free-tier Postgres
+# expires after 90 days. Use Neon instead (free, no expiry) and paste its
+# connection string in when Render prompts for the env var below.
+#
+# No Redis: REDIS_URL is listed in .env.example as planned future
+# infrastructure (multi-instance socket.io/rate-limit scaling — see the
+# comments in app.module.ts and queue.gateway.ts) but nothing in the API
+# actually connects to Redis yet. Add it back here once that lands.
 services:
   - type: web
     name: smoothsoft-api
@@ -19,8 +23,6 @@ services:
         value: production
       # The app's runtime role (NOT the migration-owning role — see .env.example).
       - key: DATABASE_URL
-        sync: false
-      - key: REDIS_URL
         sync: false
       - key: JWT_SECRET
         sync: false
