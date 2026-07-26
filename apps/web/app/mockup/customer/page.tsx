@@ -50,7 +50,7 @@ export default function CustomerMockup() {
             <div style={{ width: 44, height: 44, borderRadius: 13, display: 'grid', placeItems: 'center', color: '#fffaf0', fontWeight: 800, background: `linear-gradient(145deg, ${PINE_SOFT}, ${PINE})` }}>JJ</div>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 700, fontSize: 16, color: INK }}>JJ&apos;s Barbers</div>
-              <div style={{ fontSize: 12.5, color: STONE }}>Downtown · ★ 4.9 (312) · 0.4 mi</div>
+              <div style={{ fontSize: 12.5, color: STONE }}>Novi · ★ 4.9 (312) · 0.4 mi</div>
             </div>
           </div>
         </header>
