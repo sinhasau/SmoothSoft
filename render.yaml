@@ -33,6 +33,13 @@ services:
       # The app's runtime role (NOT the migration-owning role — see .env.example).
       - key: DATABASE_URL
         sync: false
+      # Deliberately ALSO required at runtime, not just for one-off migration scripts:
+      # roster-bootstrap.ts connects with this role specifically to list the dev-login
+      # roster across every org before any session/location scope exists, which RLS
+      # correctly blocks the normal DATABASE_URL role from doing. Same Neon connection
+      # string as DATABASE_URL, but with neondb_owner as the user instead of salon_app.
+      - key: DATABASE_MIGRATE_URL
+        sync: false
       - key: JWT_SECRET
         sync: false
       - key: STAFF_PII_ENCRYPTION_KEY
