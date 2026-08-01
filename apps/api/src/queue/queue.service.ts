@@ -344,7 +344,18 @@ export class QueueService {
       displayName = known.name;
       await touchClientConfirmed(trx, clientId);
     } else if (dto.mode === 'phone') {
-      if (!dto.phone) throw new BadRequestException('phone is required when mode is "phone"');
+      // A contact record with no way to reach the person is not a contact — it
+      // is an unidentifiable row that pollutes the directory and makes every
+      // future phone lookup ambiguous (two "Mike Smith"s with no number cannot
+      // be told apart by any later check-in). Anyone without a number belongs
+      // on the Floor as a guest, which creates a queue entry and nothing else.
+      const phone = dto.phone ?? '';
+      if (!normalizePhone(phone)) {
+        throw new BadRequestException({
+          code: 'PHONE_REQUIRED_FOR_CLIENT',
+          message: 'A phone number is required to save a client profile. Check this person in as a Guest instead.',
+        });
+      }
 
       // forceNewClient: the caller (the public multi-person picker) already
       // resolved every existing profile on this phone via findClientsByPhone
@@ -354,7 +365,7 @@ export class QueueService {
       // existing client that lookup happens to return first.
       const lookup = dto.forceNewClient
         ? { clientId: null, isNewClient: true, isStale: false, staleLastConfirmedAt: null }
-        : await findClientByPhone(trx, organizationId, dto.phone);
+        : await findClientByPhone(trx, organizationId, phone);
 
       if (lookup.clientId) {
         if (lookup.isStale && !dto.confirmedStaleMatch) {
@@ -379,7 +390,7 @@ export class QueueService {
         const client = await createClient(trx, {
           organizationId,
           name: dto.newClientName,
-          phone: dto.phone,
+          phone,
           referralSource: dto.referralSource ?? null,
           allergyFlag: dto.allergyFlag ?? false,
         });
@@ -388,6 +399,26 @@ export class QueueService {
       }
     } else {
       if (!dto.guestName) throw new BadRequestException('guestName is required when mode is "guest"');
+    }
+
+    // One live spot per client. A double-tapped Join, a resubmitted form, or a
+    // retry after a partial multi-person failure would otherwise put the same
+    // person in line twice. Returning the existing entry rather than throwing
+    // matches ensureQueueEntryForAppointment's idempotency and keeps a retry
+    // harmless — the caller gets the spot they already hold.
+    //
+    // Guests are exempt: they have no client_id, and two walk-ins genuinely
+    // named "Mike Smith" are two different people (identity_note and
+    // disambiguateWaitingNames are what tell them apart on the Floor).
+    if (clientId && !dto.isAppointment) {
+      const live = await trx
+        .selectFrom('queue_entries')
+        .select('id')
+        .where('location_id', '=', locationId)
+        .where('client_id', '=', clientId)
+        .where('status', 'in', ['waiting', 'in_service'])
+        .executeTakeFirst();
+      if (live) return this.getEntryOrThrow(live.id);
     }
 
     const maxOrder = await trx
