@@ -1,0 +1,24 @@
+name: Keep Render API warm
+
+# Render's free tier spins a service down after ~15 minutes with no traffic;
+# the first request after that pays a ~10s+ cold-start penalty. Pinging every
+# 10 minutes keeps it inside that window so real users never see it.
+#
+# Deliberate tradeoff (confirmed with the user): this keeps the API running
+# ~24/7, which burns close to the entire ~750 free instance-hours/month
+# Render allots across ALL your free services combined — one always-warm
+# service uses ~730 of those hours by itself. If you add more free Render
+# services later and start hitting that cap, either drop this workflow or
+# upgrade the API to a paid plan (which removes spin-down natively and makes
+# this file unnecessary).
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API health endpoint
+        run: curl -fsS --max-time 20 https://smoothsoft-api.onrender.com/health
