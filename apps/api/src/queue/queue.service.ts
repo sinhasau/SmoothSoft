@@ -5,6 +5,8 @@ import { estimateWaitTimes } from './wait-time';
 import { rollingServiceAverages } from './service-performance';
 import { chooseBestMatch } from './best-match';
 import { reorderForAppointmentSla } from './appointment-sla';
+import { projectInProgressJob } from './overrun';
+import { buildBarberTimelines } from './barber-timeline';
 import { disambiguateWaitingNames } from './display-name';
 import { exceedsClosingGrace } from './closing-guard';
 import { resolveDefaultServiceIds } from './default-service';
@@ -231,9 +233,60 @@ export class QueueService {
     const estimates = estimateWaitTimes(sla.order.map((id) => ({ queueEntryId: id, serviceDurationMinutes: durationByEntry.get(id) ?? 20 })));
     const estimateByEntry = new Map(estimates.map((e) => [e.queueEntryId, e.estimatedStart]));
 
+    // Per-barber day projection ("Outlook"). Staffing follows live clock
+    // state, not the published roster — see barber-timeline.ts. Every
+    // in-progress job gets the proportional overrun adjustment first, so a
+    // chair that's running late pushes that barber's whole remaining day by
+    // exactly how late it actually is (see overrun.ts).
+    const now = new Date();
+    const predictedFor = (entry: (typeof nowServingWithServices)[number]) =>
+      entry.services.reduce((total, service) => total + (
+        performanceByPair.get(`${entry.assignedStaffId ?? entry.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
+      ), 0) || 20;
+    const inProgressProjections = nowServingWithServices
+      .filter((entry) => entry.assignedStaffId && entry.serviceStartedAt)
+      .map((entry) => projectInProgressJob({
+        queueEntryId: entry.id,
+        staffId: entry.assignedStaffId!,
+        startedAt: new Date(entry.serviceStartedAt!),
+        predictedDurationMinutes: predictedFor(entry),
+      }, now));
+    const projectionByEntry = new Map(inProgressProjections.map((projection) => [projection.queueEntryId, projection]));
+    const boardLabel = (entry: { clientName: string | null; guestName: string | null }) => entry.clientName ?? entry.guestName ?? 'Guest';
+    const timelineResult = buildBarberTimelines(
+      team.filter((member) => member.role !== 'front_desk').map((member) => ({
+        staffId: member.locationStaffId,
+        fullName: member.fullName,
+        status: member.status as 'available' | 'break' | 'off',
+      })),
+      [
+        ...nowServingWithServices.map((entry) => ({
+          queueEntryId: entry.id,
+          label: boardLabel(entry),
+          durationMinutes: predictedFor(entry),
+          inServiceWithStaffId: entry.assignedStaffId,
+          projectedEnd: projectionByEntry.get(entry.id)?.projectedEnd ?? null,
+        })),
+        ...sla.order.map((id) => {
+          const entry = waitingWithServices.find((w) => w.id === id)!;
+          return {
+            queueEntryId: id,
+            label: boardLabel(entry),
+            durationMinutes: durationByEntry.get(id) ?? 20,
+            requestedStaffId: entry.requestedSpecificStaff ? entry.requestedStaffId : null,
+            apptAt: entry.isAppt && entry.apptAt ? new Date(entry.apptAt) : null,
+          };
+        }),
+      ],
+      now,
+    );
+
     return {
       timezone: location.timezone,
       team,
+      staffTimelines: timelineResult.timelines,
+      timelineUnassigned: timelineResult.unassigned,
+      overrunByEntry: Object.fromEntries(inProgressProjections.map((p) => [p.queueEntryId, Math.round(p.overrunMinutes)])),
       nowServing: nowServingWithServices,
       priorityOrder: sla.order,
       waiting: waitingWithServices.map((w) => {

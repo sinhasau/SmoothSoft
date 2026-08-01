@@ -7,7 +7,7 @@ This document specifies the **full target algorithm** (multi-barber simulation w
 | Spec section | Full spec | Currently built |
 |---|---|---|
 | §2 Expected duration | Per-barber rolling average → employee default → location default | **Location/service default only** (`Haircut` 20 min, `Beard trim` 12 min, `Haircut + beard trim` 30 min), now sourced from the **Services** table in Settings rather than hardcoded |
-| §3–4 Multi-barber simulation | Per-barber timelines, greedy slotting across all eligible barbers, SLA-aware | **Simple running total** — one shared clock starting at the real current time, incremented by each waiting person's own service duration, in queue order. Does not model which specific barber is busy vs. free. |
+| §3–4 Multi-barber simulation | Per-barber timelines, greedy slotting across all eligible barbers, SLA-aware | **Both, side by side.** The customer-facing wait estimate still uses the simple shared running clock (`wait-time.ts`). The staff-facing **Outlook** section on the queue board uses a real per-barber projection (`barber-timeline.ts`): in-progress work anchors each barber's clock, then waiting entries are seated greedily on whichever eligible barber frees up soonest, honoring requested-barber holds, appointment times, and shift ends. Staffing follows **live clock status, not the published roster** — a barber who clocks out drops off the projection and their remaining work resurfaces under "Needs a chair" for staff to reseat by hand, rather than being silently reassigned. |
 | §5 Range display | 90–115% band | **Not yet implemented** — wait times currently display as a single `~` estimate, not a range |
 | §6 Recalc triggers | Full list | Implemented for the events that affect the simple model (queue order, service defaults, real-time clock); barber-status-based recalculation not yet meaningful since barber availability isn't modeled |
 | §9 Configurables | Full table | All fields now live in **Settings → Queue & wait-time settings**, editable by the manager, but only `location_default[service_type]` (via the Services table) actually feeds the current calculation. The rest (`cleanup_buffer_minutes`, `overrun_increment_minutes`, `long_shift_*`, `appointment_max_wait_minutes`, etc.) are captured and stored but **not yet wired into any calculation** — they're staged for when the full simulation is built. |
@@ -73,14 +73,21 @@ block_duration = expected_duration + cleanup_buffer_minutes
 **Running over — live overrun adjustment:**
 
 ```
-elapsed = now − job_start
-if elapsed <= expected_duration:
-    projected_end = job_start + expected_duration + cleanup_buffer_minutes
+predicted_end = job_start + expected_duration
+overrun       = now − predicted_end
+if overrun < minimum_overrun_minutes:
+    projected_end = predicted_end
 else:
-    projected_end = now + overrun_increment_minutes
+    projected_end = now          # i.e. predicted_end + overrun, exactly
 ```
 
-Once a barber is visibly running past their own predicted time, the estimate stops trusting the stale prediction and instead nudges forward by `overrun_increment_minutes` every time it's recalculated — so everyone waiting behind them sees their estimate creep up in small steps as the overrun continues, rather than a frozen number that's obviously wrong or a wild one-time guess.
+Once a barber is visibly running past their own predicted time, the estimate stops trusting the stale prediction. **The buffer added is exactly how far behind the job actually is** — which is the same as saying the projected end becomes `now`, the honest statement "this ends no earlier than right now." The estimate then grows continuously as the overrun continues, rather than in arbitrary fixed steps.
+
+`minimum_overrun_minutes` (default 2) is a deadband, not a fixed increment: a barber 40 seconds past their prediction is not meaningfully behind, and re-rendering every waiting customer's estimate for that is noise. Below the threshold the original prediction stands.
+
+> **Superseded:** this replaces the original fixed `overrun_increment_minutes` design. A fixed step was a guess at how much longer the job would take; the actual elapsed overrun is a measurement, and it's both simpler and more accurate. Implemented in `apps/api/src/queue/overrun.ts`.
+
+**Shop-wide lateness** — `shopOverrunMinutes()` reports how far behind the floor as a whole is running: the **largest single** overrun across in-progress jobs, not the sum or the average. Overruns happen in parallel, so three barbers each 5 minutes behind have put the shop 5 minutes behind, not 15; summing would wildly overstate the delay on a busy floor, and averaging would hide one badly stuck chair behind several on-time ones.
 
 **Long-shift fatigue buffer** — barbers slow down late in a long shift. Once a barber's elapsed shift time passes `long_shift_threshold_hours`, add `long_shift_extra_minutes` to their expected duration for each subsequent service:
 
@@ -110,7 +117,7 @@ Barbers on `break` or `off` are excluded from the pool entirely.
 | `location_default[service_type]` | Haircut 20 min, beard trim 12 min, haircut + beard 30 min | Fallback expected duration when a barber has no history and no employee default |
 | `employee_default[barber][service_type]` | Set once at profile creation, optional | Overrides the location default for that barber until real data (10 services) takes over |
 | `cleanup_buffer_minutes` | 3 | Added after every service block before the next can start |
-| `overrun_increment_minutes` | 5 | How far a running-over service's projected end gets pushed forward each recalculation |
+| `minimum_overrun_minutes` | 2 | Deadband before a running-over service is treated as behind. Past it, the projected end is pushed forward by the *actual* overrun (see §2) — this replaces the superseded fixed `overrun_increment_minutes`. |
 | `long_shift_threshold_hours` | 5 | Elapsed shift time after which the fatigue buffer kicks in |
 | `long_shift_extra_minutes` | 5 | Extra time added per service once a barber is past the fatigue threshold |
 | `max_break_minutes` | 30 | If a barber's break exceeds this, their chip gets a visual warning — doesn't auto-change their status, just flags it for staff |
