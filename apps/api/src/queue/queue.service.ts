@@ -9,6 +9,8 @@ import { projectInProgressJob } from './overrun';
 import { buildBarberTimelines } from './barber-timeline';
 import { disambiguateWaitingNames } from './display-name';
 import { exceedsClosingGrace } from './closing-guard';
+import { localDayOfWeek, resolveTodayHours } from './store-hours';
+import { dateInTimezone, dayOfWeekForDate, minutesOfDayInTimezone } from '../common/time';
 import { resolveDefaultServiceIds } from './default-service';
 import { disambiguateProfiles } from './profile-disambiguation';
 import { normalizePhone } from '../common/phone';
@@ -441,25 +443,24 @@ export class QueueService {
     return entry;
   }
 
-  /** Today's closing time for this location — special-hours override, else the weekly store_hours row. Mirrors BookingService.slots()'s own hours resolution. */
-  private async closingTimeForToday(locationId: string): Promise<{ closed: boolean; closeAt: Date | null }> {
+  /**
+   * Today's hours for this location — special-hours override, else the weekly
+   * store_hours row — resolved in the *location's* timezone, the same way
+   * BookingService.slots() does it. See store-hours.ts for what the previous
+   * server-clock version got wrong and why it turned customers away during
+   * real opening hours.
+   */
+  private async closingTimeForToday(locationId: string): Promise<{ closed: boolean; openAt: Date | null; closeAt: Date | null }> {
     const trx = db();
     const now = new Date();
-    const dateStr = now.toISOString().slice(0, 10);
-    const special = await trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '=', dateStr).executeTakeFirst();
-    const toCloseAt = (closeTime: string) => {
-      const [h, m] = closeTime.split(':').map(Number);
-      const closeAt = new Date(`${dateStr}T00:00:00`);
-      closeAt.setHours(h, m, 0, 0);
-      return closeAt;
-    };
-    if (special) {
-      if (special.is_closed || !special.close_time) return { closed: true, closeAt: null };
-      return { closed: false, closeAt: toCloseAt(special.close_time) };
-    }
-    const weekly = await trx.selectFrom('store_hours').selectAll().where('location_id', '=', locationId).where('day_of_week', '=', now.getDay()).executeTakeFirst();
-    if (!weekly || !weekly.is_open || !weekly.close_time) return { closed: true, closeAt: null };
-    return { closed: false, closeAt: toCloseAt(weekly.close_time) };
+    const { timezone } = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
+    const localDate = dateInTimezone(timezone, now);
+    const [special, weekly] = await Promise.all([
+      trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '=', localDate).executeTakeFirst(),
+      trx.selectFrom('store_hours').selectAll().where('location_id', '=', locationId).where('day_of_week', '=', localDayOfWeek(timezone, now)).executeTakeFirst(),
+    ]);
+    const hours = resolveTodayHours(timezone, special, weekly, now);
+    return { closed: hours.closed, openAt: hours.openAt, closeAt: hours.closeAt };
   }
 
   /** Public, aggregate-only wait snapshot — an anonymous visitor sees the current line and rough wait, not who's ahead beyond a privacy-safe label. */
@@ -1530,9 +1531,15 @@ export class QueueService {
 
     if (entry.is_appt && entry.appt_at) {
       const apptAt = new Date(entry.appt_at);
-      const dow = apptAt.getDay();
-      const dateStr = apptAt.toISOString().slice(0, 10);
-      const minutes = apptAt.getHours() * 60 + apptAt.getMinutes();
+      // Shift rows are keyed to the shop's local calendar day and wall clock, so
+      // the date, weekday, and minute-of-day all have to be read in the
+      // location's timezone — the same fix as closingTimeForToday above. Reading
+      // them off the server clock shifted an evening appointment onto the next
+      // day's shifts, hiding the barbers who are actually working it.
+      const { timezone } = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
+      const dateStr = dateInTimezone(timezone, apptAt);
+      const dow = dayOfWeekForDate(dateStr);
+      const minutes = minutesOfDayInTimezone(timezone, apptAt);
       const staffIds = roster.map((r) => r.locationStaffId);
 
       const [exceptions, weekly] = staffIds.length

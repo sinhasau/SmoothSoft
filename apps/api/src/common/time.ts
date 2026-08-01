@@ -40,6 +40,12 @@ export function dayOfWeekForDate(date: string) {
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 }
 
+/** Minutes since local midnight for an instant, read on `timezone`'s clock. */
+export function minutesOfDayInTimezone(timezone: string, now = new Date()) {
+  const { hour, minute } = partsInTimezone(timezone, now, true);
+  return hour * 60 + minute;
+}
+
 export function dayOfWeekInTimezone(timezone: string, now = new Date()) {
   const label = new Intl.DateTimeFormat('en-US', { timeZone: timezone, weekday: 'short' }).format(now);
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(label);
