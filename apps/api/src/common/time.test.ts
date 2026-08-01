@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dateInTimezone, dayOfWeekForDate, dayOfWeekInTimezone, instantFromWallClock, startOfDayInTimezone } from './time';
+import { dateInTimezone, dayOfWeekForDate, dayOfWeekInTimezone, instantFromWallClock, startOfDayInTimezone, minutesOfDayInTimezone } from './time';
 
 describe('location time', () => {
   it('keeps late-evening Detroit activity on the correct business date', () => {
@@ -31,5 +31,21 @@ describe('dayOfWeekForDate', () => {
   it('returns the calendar weekday independent of timezone', () => {
     expect(dayOfWeekForDate('2026-07-21')).toBe(2); // Tuesday
     expect(dayOfWeekForDate('2026-07-25')).toBe(6); // Saturday
+  });
+});
+
+describe('minutesOfDayInTimezone', () => {
+  it('reads minutes since local midnight, not server midnight', () => {
+    // 00:30Z is still 8:30 PM the previous evening in Detroit (EDT).
+    expect(minutesOfDayInTimezone('America/Detroit', new Date('2026-08-02T00:30:00Z'))).toBe(20 * 60 + 30);
+  });
+
+  it('is DST-aware — the same wall-clock time in winter maps to the same minute count', () => {
+    expect(minutesOfDayInTimezone('America/Detroit', new Date('2026-01-15T14:30:00Z'))).toBe(9 * 60 + 30);
+    expect(minutesOfDayInTimezone('America/Detroit', new Date('2026-07-25T13:30:00Z'))).toBe(9 * 60 + 30);
+  });
+
+  it('is 0 at local midnight', () => {
+    expect(minutesOfDayInTimezone('America/Detroit', new Date('2026-07-25T04:00:00Z'))).toBe(0);
   });
 });
