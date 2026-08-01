@@ -84,6 +84,17 @@ export class ScheduleService {
       }
     }
 
+    const [storeHours, specialHours] = await Promise.all([
+      trx.selectFrom('store_hours').selectAll().where('location_id', '=', locationId).execute(),
+      trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '>=', startDate).where('special_date', '<', endKey).execute(),
+    ]);
+    const hoursByDay = new Map(storeHours.map((item) => [item.day_of_week, item]));
+    const specialByDate = new Map(specialHours.map((item) => [item.special_date, item]));
+    const isOpen = (date: string, dow: number) => {
+      const special = specialByDate.get(date);
+      return special ? !special.is_closed : hoursByDay.get(dow)?.is_open !== false;
+    };
+
     const rows = [];
     for (let i = 0; i < days; i++) {
       const d = new Date(start);
@@ -140,25 +151,19 @@ export class ScheduleService {
         dayOfWeek: dow,
         entries,
         coverageCount,
-        belowMinimum: coverageCount < minimumCoverage,
+        belowMinimum: isOpen(key, dow) && coverageCount < minimumCoverage,
         peakChairUsage,
         overChairCapacity: peakChairUsage > chairCount,
       });
     }
 
-    const [storeHours, specialHours, bookedAppointments] = await Promise.all([
-      trx.selectFrom('store_hours').selectAll().where('location_id', '=', locationId).execute(),
-      trx.selectFrom('location_special_hours').selectAll().where('location_id', '=', locationId).where('special_date', '>=', startDate).where('special_date', '<', endKey).execute(),
-      trx.selectFrom('appointments as a').innerJoin('services as s', 's.id', 'a.service_id').select(['a.id as id', 's.duration_minutes as primaryDurationMinutes', 'a.starts_at as startsAt']).where('a.location_id', '=', locationId).where('a.starts_at', '>=', start).where('a.starts_at', '<', end).where('a.status', 'in', ['booked', 'confirmed']).execute(),
-    ]);
+    const bookedAppointments = await trx.selectFrom('appointments as a').innerJoin('services as s', 's.id', 'a.service_id').select(['a.id as id', 's.duration_minutes as primaryDurationMinutes', 'a.starts_at as startsAt']).where('a.location_id', '=', locationId).where('a.starts_at', '>=', start).where('a.starts_at', '<', end).where('a.status', 'in', ['booked', 'confirmed']).execute();
     const bookedAppointmentIds = bookedAppointments.map((appointment) => appointment.id);
     const appointmentServiceLines = bookedAppointmentIds.length
       ? await trx.selectFrom('appointment_services as aps').innerJoin('services as s', 's.id', 'aps.service_id').select(['aps.appointment_id as appointmentId', 's.duration_minutes as durationMinutes']).where('aps.appointment_id', 'in', bookedAppointmentIds).execute()
       : [];
     const appointmentDurationById = new Map<string, number>();
     for (const line of appointmentServiceLines) appointmentDurationById.set(line.appointmentId, (appointmentDurationById.get(line.appointmentId) ?? 0) + line.durationMinutes);
-    const hoursByDay = new Map(storeHours.map((item) => [item.day_of_week, item]));
-    const specialByDate = new Map(specialHours.map((item) => [item.special_date, item]));
     const availableChairMinutes = rows.reduce((sum, row) => {
       const special = specialByDate.get(row.date);
       const hours = special ? { is_open: !special.is_closed, open_time: special.open_time, close_time: special.close_time } : hoursByDay.get(row.dayOfWeek);
