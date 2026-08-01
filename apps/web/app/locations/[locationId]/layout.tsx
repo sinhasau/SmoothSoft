@@ -6,14 +6,27 @@ import { useRequireAuth } from '../../../lib/auth';
 import { setActiveLocationId } from '../../../lib/api';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../lib/api';
 
 export default function LocationLayout({ children, params }: { children: React.ReactNode; params: { locationId: string } }) {
   const auth = useRequireAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const queryClient = useQueryClient();
   const base = `/locations/${params.locationId}`;
+
+  // The dev sign-in picker (see /login) has no session concept of its own —
+  // this is the only way back to it once you're in as a given role. Clearing
+  // the ['auth','me'] cache makes useRequireAuth's own effect do the redirect,
+  // so this doesn't need to duplicate that logic.
+  const logout = useMutation({
+    mutationFn: () => api.post('/auth/logout'),
+    onSuccess: () => {
+      queryClient.setQueryData(['auth', 'me'], null);
+      router.replace('/login');
+    },
+  });
 
   // Every API call under this layout goes to params.locationId — see
   // apps/web/lib/api.ts. Only org_owner is actually allowed to view a
@@ -88,7 +101,21 @@ export default function LocationLayout({ children, params }: { children: React.R
             </>
           )}
         </nav>
-        <div className="sidebar-user"><span className="avatar">{auth.fullName.split(/\s+/).map((part) => part[0]).slice(0, 2).join('')}</span><div><strong>{auth.fullName}</strong><span>{auth.role.replace('_', ' ')}</span></div>{auth.role === 'org_owner' && <Link href="/org" aria-label="Open owner dashboard">↗</Link>}</div>
+        <div className="sidebar-user">
+          <span className="avatar">{auth.fullName.split(/\s+/).map((part) => part[0]).slice(0, 2).join('')}</span>
+          <div><strong>{auth.fullName}</strong><span>{auth.role.replace('_', ' ')}</span></div>
+          {auth.role === 'org_owner' && <Link href="/org" aria-label="Open owner dashboard">↗</Link>}
+          <button
+            type="button"
+            onClick={() => logout.mutate()}
+            disabled={logout.isPending}
+            aria-label="Switch user"
+            title="Switch user"
+            className="ml-1 shrink-0 text-xs font-medium text-gray-400 hover:text-black disabled:opacity-40"
+          >
+            Switch
+          </button>
+        </div>
       </aside>
       <div className="app-main">
         <header className="mobile-app-header"><div className="app-brand"><span className="brand-mark">S</span><div><strong>SmoothSoft</strong><span>JJ&apos;s Barbers</span></div></div><span className="avatar">{auth.fullName[0]}</span></header>

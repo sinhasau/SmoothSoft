@@ -46,7 +46,13 @@ body {
 .app-nav-link.active { background: #fffdf8; color: #173e32; box-shadow: 0 5px 16px rgb(57 48 34 / .07), inset 3px 0 #557c6f; }
 .sidebar-user { display: flex; align-items: center; gap: .55rem; margin-top: auto; border-top: 1px solid rgb(0 0 0 / .07); padding: .9rem .35rem 0; }
 .sidebar-user strong { font-size: .75rem; }
-.sidebar-user > a { margin-left: auto; color: #78716c; }
+.sidebar-user > a { color: #78716c; }
+/* Right-aligns the trailing controls as a group — margin-left:auto on both
+   means whichever comes first (the owner-only "open dashboard" link, if
+   present, else the switch-user button) absorbs the free space, and the
+   other sits right after it either way. */
+.sidebar-user > a, .sidebar-user > button { margin-left: auto; }
+.sidebar-user > a + button { margin-left: 0; }
 .app-main { min-width: 0; }
 .app-content { width: 100%; max-width: 1500px; margin: 0 auto; padding: 1.75rem 2rem 4rem; }
 .mobile-app-header, .mobile-bottom-nav { display: none; }
