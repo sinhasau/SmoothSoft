@@ -45,6 +45,7 @@ export default function PublicBookingPage({ params }: { params: { locationId: st
   const [phone, setPhone] = useState('');            // number to reach the customer / create a new client
   const [lookupInput, setLookupInput] = useState(''); // name OR phone the customer types to find their profile
   const [people, setPeople] = useState<Person[]>(emptyPeople);
+  const [joinError, setJoinError] = useState<string | null>(null);
   const [defaultServiceIds, setDefaultServiceIds] = useState<string[]>([]);
   const [addingName, setAddingName] = useState('');
   const [addingOpen, setAddingOpen] = useState(false);
@@ -195,21 +196,37 @@ export default function PublicBookingPage({ params }: { params: { locationId: st
       // Sequential, not Promise.all: everyone on one phone joins in list order
       // so the queue positions are deterministic, and two joins for the same
       // number never race to (re)bind that phone to a new profile.
+      //
+      // Because it is sequential and not one transaction, a later person can
+      // fail after an earlier one is already in line. Collect what succeeded
+      // and report who didn't, rather than throwing the whole batch away —
+      // silently discarding it is what made a failed second join look like
+      // "nothing happened", and invited a retry that double-booked the first.
       const results: QueueStatus[] = [];
       for (const person of selectedPeople) {
         const ids = person.serviceIds.length ? person.serviceIds : defaultServiceIds;
-        results.push(await publicRequest<QueueStatus>(`/public/locations/${params.locationId}/queue/join`, {
-          method: 'POST',
-          body: JSON.stringify({ phone: person.clientId ? undefined : phone, clientId: person.clientId, name: person.clientId ? undefined : person.name, forceNewClient: !person.clientId, serviceId: ids[0], serviceIds: ids }),
-        }));
+        try {
+          results.push(await publicRequest<QueueStatus>(`/public/locations/${params.locationId}/queue/join`, {
+            method: 'POST',
+            body: JSON.stringify({ phone: person.clientId ? undefined : phone, clientId: person.clientId, name: person.clientId ? undefined : person.name, forceNewClient: !person.clientId, serviceId: ids[0], serviceIds: ids }),
+          }));
+        } catch (err) {
+          const reason = err instanceof ApiError ? (err.body?.message ?? 'Could not join the queue.') : 'Could not join the queue.';
+          return { results, failed: { name: person.name, reason } };
+        }
       }
-      return results;
+      return { results, failed: null };
     },
-    onSuccess: (results) => {
+    onSuccess: ({ results, failed }) => {
+      setJoinError(failed ? `${failed.name} couldn't be added — ${failed.reason}` : null);
+      if (!results.length) return;
       const ids = results.map((r) => r.id);
       setQueueEntryIds(ids);
       window.history.replaceState(null, '', `${window.location.pathname}?queue=${ids.join(',')}`);
       setStep('confirmed');
+    },
+    onError: (err) => {
+      setJoinError(err instanceof ApiError ? (err.body?.message ?? 'Could not join the queue.') : 'Could not join the queue.');
     },
   });
 
@@ -463,10 +480,11 @@ export default function PublicBookingPage({ params }: { params: { locationId: st
           {submitError instanceof ApiError ? (submitError.body?.title ? `${submitError.body.title} — ${submitError.body.message}` : submitError.body?.message) ?? 'Something went wrong.' : 'Something went wrong.'}
         </p>}
 
+        {joinError && <p role="alert" className="mb-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{joinError}</p>}
         <div className="flex items-center justify-between pb-2">
           <button onClick={() => setStep('landing')} className="text-sm text-gray-500 hover:text-black">← Back</button>
           {mode === 'queue' ? (
-            <button disabled={!everyoneHasService || missingPhone || joinQueue.isPending} onClick={() => joinQueue.mutate()} className="rounded-xl bg-[#294f44] px-5 py-3 font-semibold text-[#fffdf7] shadow-md transition hover:bg-[#1f4037] disabled:opacity-40">{joinQueue.isPending ? 'Joining…' : selectedPeople.length > 1 ? `Join the queue (${selectedPeople.length})` : 'Join the queue'}</button>
+            <button disabled={!everyoneHasService || missingPhone || joinQueue.isPending} onClick={() => { setJoinError(null); joinQueue.mutate(); }} className="rounded-xl bg-[#294f44] px-5 py-3 font-semibold text-[#fffdf7] shadow-md transition hover:bg-[#1f4037] disabled:opacity-40">{joinQueue.isPending ? 'Joining…' : selectedPeople.length > 1 ? `Join the queue (${selectedPeople.length})` : 'Join the queue'}</button>
           ) : (
             <button disabled={!slot || !apptPerson?.name.trim() || !(apptPerson?.serviceIds.length) || !phone.trim() || bookAppointment.isPending} onClick={() => bookAppointment.mutate()} className="rounded-xl bg-[#294f44] px-5 py-3 font-semibold text-[#fffdf7] shadow-md transition hover:bg-[#1f4037] disabled:opacity-40">{bookAppointment.isPending ? 'Booking…' : slot ? `Book ${new Date(slot.startsAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}` : 'Choose a time to continue'}</button>
           )}
