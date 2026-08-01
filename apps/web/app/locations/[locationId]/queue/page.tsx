@@ -12,6 +12,7 @@ import { SanitationReminder, type SanitationReminderState } from '../../../../co
 import { CardPaymentFields, type BrowserPaymentConfig } from '../../../../components/card-payment-fields';
 import { useRequireAuth } from '../../../../lib/auth';
 import { StaffOutlook, type StaffTimeline, type UnassignedEntry } from './staff-outlook';
+import { Modal } from '../../../../components/modal';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
 function useClock() {
@@ -662,19 +663,6 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   );
 }
 
-function Modal({ children, onClose, wide = false }: { children: React.ReactNode; onClose: () => void; wide?: boolean }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-24 backdrop-blur-[2px]" onClick={onClose}>
-      <div
-        className={`max-h-[86vh] w-full ${wide ? 'max-w-2xl' : 'max-w-md'} overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5`}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
 function IdentityNotePanel({ name, onClose, onSave }: { name: string; onClose: () => void; onSave: (note?: string) => void }) {
   const [note, setNote] = useState('');
   return (
@@ -776,7 +764,7 @@ function CheckoutShell({ children, busy, onClose }: { children: React.ReactNode;
         role="dialog"
         aria-modal="true"
         aria-label="Complete service"
-        className="max-h-[calc(100vh-2rem)] w-[min(960px,100%)] overflow-y-auto rounded-2xl bg-[#fffefa] p-5 shadow-[0_24px_70px_rgba(27,32,29,0.24)] ring-1 ring-black/10"
+        className="max-h-[calc(100dvh-2rem)] w-[min(960px,100%)] overflow-y-auto rounded-2xl bg-[#fffefa] p-5 shadow-[0_24px_70px_rgba(27,32,29,0.24)] ring-1 ring-black/10"
         onClick={(event) => event.stopPropagation()}
       >
         {children}
