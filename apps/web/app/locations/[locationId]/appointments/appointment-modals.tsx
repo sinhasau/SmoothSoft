@@ -8,16 +8,7 @@ import { Button } from '../../../../components/ui';
 import { ProfessionalPicker, type ProfessionalOption } from '../../../../components/professional-picker';
 import { ServiceMultiPicker, type MultiServiceOption } from '../../../../components/service-multi-picker';
 import type { Appointment } from './appointment-section';
-
-function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-24 backdrop-blur-[2px]" onClick={onClose}>
-      <div className="max-h-[86vh] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl ring-1 ring-black/5" onClick={(e) => e.stopPropagation()}>
-        {children}
-      </div>
-    </div>
-  );
-}
+import { Modal } from '../../../../components/modal';
 
 function splitStartsAt(startsAt: string) {
   const d = new Date(startsAt);
