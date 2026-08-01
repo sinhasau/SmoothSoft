@@ -45,7 +45,7 @@ export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(RlsTransactionMiddleware)
-      .exclude('health')
+      .exclude('health', 'health/(.*)')
       .forRoutes('*');
   }
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '../../lib/api';
@@ -17,6 +17,7 @@ interface RosterEntry {
 
 export default function LoginPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: roster, isLoading } = useQuery({
     queryKey: ['auth', 'roster'],
     queryFn: () => api.get<RosterEntry[]>('/auth/roster'),
@@ -25,6 +26,11 @@ export default function LoginPage() {
   const login = useMutation({
     mutationFn: (locationStaffId: string) => api.post<{ locationId: string }>('/auth/login', { locationStaffId }),
     onSuccess: (claims) => {
+      // The "Switch" button (see LocationLayout) sets ['auth','me'] to null
+      // with setQueryData, which react-query treats as fresh for the full
+      // staleTime — so without this, useRequireAuth on the next page reads
+      // that stale null and bounces straight back here instead of refetching.
+      queryClient.setQueryData(['auth', 'me'], claims);
       router.push(`/locations/${claims.locationId}/queue`);
     },
   });
