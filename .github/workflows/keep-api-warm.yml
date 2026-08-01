@@ -1,8 +1,16 @@
 name: Keep Render API warm
 
 # Render's free tier spins a service down after ~15 minutes with no traffic;
-# the first request after that pays a ~10s+ cold-start penalty. Pinging every
-# 10 minutes keeps it inside that window so real users never see it.
+# the first request after that pays a ~10s+ cold-start penalty. Separately,
+# Neon's free-tier Postgres scales its compute to zero after just 5 minutes
+# of no queries — a /health-only ping never touches the database, so it does
+# nothing to prevent that. Pinging /health/db (which runs a real `SELECT 1`)
+# every 5 minutes keeps both the Render process and the Neon compute inside
+# their respective windows.
+#
+# GitHub Actions cron is documented as best-effort and can slip by a few
+# minutes under load, which is why this uses the tighter 5-minute interval
+# rather than cutting it close to either provider's timeout.
 #
 # Deliberate tradeoff (confirmed with the user): this keeps the API running
 # ~24/7, which burns close to the entire ~750 free instance-hours/month
@@ -13,12 +21,12 @@ name: Keep Render API warm
 # this file unnecessary).
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping API health endpoint
-        run: curl -fsS --max-time 20 https://smoothsoft-api.onrender.com/health
+      - name: Ping API health endpoint (touches the database too)
+        run: curl -fsS --max-time 20 https://smoothsoft-api.onrender.com/health/db
