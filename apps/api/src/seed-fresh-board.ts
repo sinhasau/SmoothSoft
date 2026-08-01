@@ -34,7 +34,20 @@ async function main() {
   const st = (name: string) => { const s = staff.find((x) => x.fullName === name); if (!s) throw new Error(`No staff "${name}" at ${LOCATION_NAME}`); return s; };
 
   const clients = await db.selectFrom('clients').select(['id', 'name']).where('organization_id', '=', loc.organization_id).orderBy('created_at').limit(40).execute();
-  const client = (name: string, fallbackIndex: number) => clients.find((c) => c.name === name) ?? clients[fallbackIndex % clients.length];
+  // The fallback must not hand back someone already placed on this board. It
+  // used to index blindly, so a name missing from the client seed (e.g.
+  // "Marcus J.") silently resolved to clients[0] — who was already waiting —
+  // and the board came up with one person both in a chair and in line, a state
+  // the check-in path itself refuses to create.
+  const usedClientIds = new Set<string>();
+  const client = (name: string, fallbackIndex: number) => {
+    const match = clients.find((c) => c.name === name && !usedClientIds.has(c.id))
+      ?? clients.find((c, index) => index >= fallbackIndex && !usedClientIds.has(c.id))
+      ?? clients.find((c) => !usedClientIds.has(c.id));
+    if (!match) throw new Error(`Ran out of distinct clients seeding the ${LOCATION_NAME} board`);
+    usedClientIds.add(match.id);
+    return match;
+  };
 
   const now = new Date();
   const minsAgo = (m: number) => new Date(now.getTime() - m * 60_000);

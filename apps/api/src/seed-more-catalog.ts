@@ -25,6 +25,9 @@ const SERVICES = [
   { name: 'Line-up', duration_minutes: 10, price: 12, taxable: false },
   { name: 'Hot towel shave', duration_minutes: 25, price: 30, taxable: false },
   { name: 'Color / grey blending', duration_minutes: 45, price: 55, taxable: false },
+  // seed-fresh-board.ts puts a walk-in on this service, so the catalog has to
+  // carry it or that seed fails outright with "No service \"Kids cut\"".
+  { name: 'Kids cut', duration_minutes: 15, price: 22, taxable: false },
 ];
 
 async function main() {
