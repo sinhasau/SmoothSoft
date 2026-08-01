@@ -20,9 +20,14 @@ export default function LocationLayout({ children, params }: { children: React.R
   // this is the only way back to it once you're in as a given role. Clearing
   // the ['auth','me'] cache makes useRequireAuth's own effect do the redirect,
   // so this doesn't need to duplicate that logic.
+  //
+  // Clear the cache and navigate in onMutate (before the request resolves),
+  // not onSuccess: this is only a client-side cookie clear, so there's no
+  // reason to make the user wait out a slow/cold API round-trip just to
+  // leave the page they're already trying to leave.
   const logout = useMutation({
     mutationFn: () => api.post('/auth/logout'),
-    onSuccess: () => {
+    onMutate: () => {
       queryClient.setQueryData(['auth', 'me'], null);
       router.replace('/login');
     },
