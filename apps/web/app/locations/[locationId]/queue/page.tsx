@@ -11,6 +11,7 @@ import { ServiceMultiPicker } from '../../../../components/service-multi-picker'
 import { SanitationReminder, type SanitationReminderState } from '../../../../components/sanitation-reminder';
 import { CardPaymentFields, type BrowserPaymentConfig } from '../../../../components/card-payment-fields';
 import { useRequireAuth } from '../../../../lib/auth';
+import { StaffOutlook, type StaffTimeline, type UnassignedEntry } from './staff-outlook';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
 function useClock() {
@@ -75,6 +76,12 @@ interface Board {
   /** Effective seating-priority order (ids) computed server-side — same as `waiting`'s order except when an appointment SLA bump reorders it for matching purposes. */
   priorityOrder?: string[];
   waiting: QueueEntry[];
+  /** Projected day per barber currently on the floor — see barber-timeline.ts. */
+  staffTimelines?: StaffTimeline[];
+  /** Entries no on-floor barber could take, with why. */
+  timelineUnassigned?: UnassignedEntry[];
+  /** Minutes each in-progress job is currently running behind its prediction. */
+  overrunByEntry?: Record<string, number>;
 }
 
 interface Service {
@@ -545,6 +552,13 @@ export default function QueuePage({ params }: { params: { locationId: string } }
           </div>
         </section>
       </div>
+
+      <StaffOutlook
+        timelines={board.data?.staffTimelines ?? []}
+        unassigned={board.data?.timelineUnassigned ?? []}
+        timezone={board.data?.timezone}
+        now={now}
+      />
 
       <div>
         <button
