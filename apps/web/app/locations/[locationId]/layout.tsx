@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../lib/api';
+import { buildNavSections } from './nav-sections';
 
 export default function LocationLayout({ children, params }: { children: React.ReactNode; params: { locationId: string } }) {
   const auth = useRequireAuth();
@@ -69,35 +70,14 @@ export default function LocationLayout({ children, params }: { children: React.R
   if (auth.role !== 'org_owner' && auth.locationId !== params.locationId) return null;
 
   const isManager = auth.role === 'org_owner' || auth.role === 'location_manager';
-  const isFrontDesk = auth.role === 'front_desk';
-  const primary = [
-    { href: `${base}/queue`, label: 'Today', icon: '◉' },
-    { href: `${base}/appointments`, label: 'Appointments', icon: '◷' },
-    { href: `${base}/schedule`, label: 'Schedule', icon: '▦' },
-    { href: `${base}/clients`, label: 'Clients', icon: '♙' },
-    ...(!isManager ? [{ href: base, label: 'Overview', icon: '⌂', exact: true }] : []),
-  ];
-  const management = isManager ? [
-    { href: base, label: 'Overview', icon: '⌂', exact: true },
-      { href: `${base}/staff`, label: 'Team', icon: '♧' },
-      { href: `${base}/sales`, label: 'Sales', icon: '$' },
-      { href: `${base}/reports`, label: 'Reports', icon: '↗' },
-      ...(communicationSettings.data?.enabled !== false ? [{ href: `${base}/communications`, label: 'Messages', icon: '✉' }] : []),
-      { href: `${base}/settings`, label: 'Settings', icon: '⚙' },
-  ] : isFrontDesk ? [
-    { href: `${base}/sales`, label: 'Sales', icon: '$' },
-    ...(communicationSettings.data?.enabled !== false ? [{ href: `${base}/communications`, label: 'Messages', icon: '✉' }] : []),
-  ] : [];
-  // Its own section (not folded into Manage/Front desk) so it reads as customer-facing
-  // operations rather than a back-office setting — visible to the same audience that acts
-  // on complaints (front desk + managers).
-  const customer = (isManager || isFrontDesk) ? [
-    { href: `${base}/complaints`, label: 'Complaints', icon: '⚑' },
-  ] : [];
+  // Shared by the desktop sidebar and the mobile bottom nav / More sheet, so a
+  // section can never exist on one and not the other — see nav-sections.ts.
+  const { primary, management, customer, more, showCheckInLink } = buildNavSections(
+    auth.role,
+    base,
+    communicationSettings.data?.enabled !== false,
+  );
   const isActive = (item: { href: string; exact?: boolean }) => item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
-  // Everything the desktop sidebar puts under Manage/Front desk/Customer — deduped
-  // against `primary`, since managers already get Overview there via `primary`.
-  const more = [...management, ...customer].filter((item) => !primary.some((p) => p.href === item.href));
   const isMoreActive = more.some(isActive);
 
   return (
@@ -108,7 +88,7 @@ export default function LocationLayout({ children, params }: { children: React.R
           <span className="nav-section-label">Operate</span>
           {primary.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}
           {management.length > 0 && <><span className="nav-section-label">{isManager ? 'Manage' : 'Front desk'}</span>{management.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</>}
-          {customer.length > 0 && (
+          {showCheckInLink && (
             <>
               <span className="nav-section-label">Customer</span>
               {customer.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}
@@ -165,10 +145,17 @@ export default function LocationLayout({ children, params }: { children: React.R
                 <span aria-hidden="true">{item.icon}</span>{item.label}
               </Link>
             ))}
-            {customer.length > 0 && (
+            {showCheckInLink && (
               <a href={`/book/${params.locationId}`} target="_blank" rel="noopener noreferrer" className="app-nav-link" onClick={() => setMoreOpen(false)}>
                 <span aria-hidden="true">↗</span>Check-in link
               </a>
+            )}
+            {/* Desktop reaches this via the sidebar's user row, which is hidden on
+                mobile — without it an owner has no route to the org dashboard on a phone. */}
+            {auth.role === 'org_owner' && (
+              <Link href="/org" className="app-nav-link" onClick={() => setMoreOpen(false)}>
+                <span aria-hidden="true">↗</span>Owner dashboard
+              </Link>
             )}
           </div>
         </>
