@@ -59,9 +59,17 @@ describe('unassignedReasonLabel', () => {
 });
 
 describe('StaffOutlook', () => {
-  it('renders nothing when there is no projection to show', () => {
-    const { container } = render(<StaffOutlook timelines={[]} unassigned={[]} now={NOW} />);
-    expect(container).toBeEmptyDOMElement();
+  it('explains itself when nobody is clocked in, instead of vanishing', () => {
+    // Staff default to `off`, so this is the state a fresh shop is in —
+    // rendering nothing here reads as a broken feature.
+    render(<StaffOutlook timelines={[]} unassigned={[]} now={NOW} />);
+    expect(screen.getByRole('button', { name: /outlook/i })).toBeInTheDocument();
+    expect(screen.getByText(/no one is clocked in yet/i)).toBeInTheDocument();
+  });
+
+  it('drops the empty-state note once a barber is on the floor', () => {
+    render(<StaffOutlook timelines={[timeline()]} unassigned={[]} now={NOW} />);
+    expect(screen.queryByText(/no one is clocked in yet/i)).not.toBeInTheDocument();
   });
 
   it('lists each on-floor barber with their booked work in order', () => {

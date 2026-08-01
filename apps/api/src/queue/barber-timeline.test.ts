@@ -42,6 +42,17 @@ describe('buildBarberTimelines — staffing follows live clock state', () => {
     expect(result.timelines).toEqual([]);
     expect(result.unassigned).toEqual([{ queueEntryId: 'j1', label: 'j1', reason: 'no_eligible_staff' }]);
   });
+
+  it('keeps a busy barber on the floor — busy is mid-service, not clocked out', () => {
+    const result = buildBarberTimelines([staff('a', { status: 'busy' })], [job('j1', 20)], NOW);
+    expect(result.timelines.map((t) => t.staffId)).toEqual(['a']);
+    expect(result.unassigned).toEqual([]);
+  });
+
+  it('returns no timelines at all when the whole roster is off — the default seeded state', () => {
+    const result = buildBarberTimelines([staff('a', { status: 'off' }), staff('b', { status: 'off' })], [], NOW);
+    expect(result.timelines).toEqual([]);
+  });
 });
 
 describe('buildBarberTimelines — in-progress work anchors the clock', () => {

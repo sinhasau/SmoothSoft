@@ -257,7 +257,7 @@ export class QueueService {
       team.filter((member) => member.role !== 'front_desk').map((member) => ({
         staffId: member.locationStaffId,
         fullName: member.fullName,
-        status: member.status as 'available' | 'break' | 'off',
+        status: member.status as 'available' | 'busy' | 'break' | 'off',
       })),
       [
         ...nowServingWithServices.map((entry) => ({

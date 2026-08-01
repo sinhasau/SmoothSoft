@@ -20,7 +20,9 @@
 export interface TimelineStaff {
   staffId: string;
   fullName: string;
-  status: 'available' | 'break' | 'off';
+  /** Mirrors location_staff.status (db/migrations/0002_staff.sql). `busy` is
+   *  system-derived while a barber is mid-service — still on the floor. */
+  status: 'available' | 'busy' | 'break' | 'off';
   /** End of the current break, or when a not-yet-free barber frees up. Defaults to `now`. */
   availableAt?: Date | null;
   /** End of this barber's shift. Work is not projected past it. Null = open-ended. */

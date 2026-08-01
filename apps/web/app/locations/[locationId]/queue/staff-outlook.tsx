@@ -60,8 +60,6 @@ export function StaffOutlook({
   now: Date;
 }) {
   const [open, setOpen] = useState(true);
-  if (timelines.length === 0 && unassigned.length === 0) return null;
-
   const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: timezone });
 
   return (
@@ -73,6 +71,16 @@ export function StaffOutlook({
       >
         <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>›</span> Outlook — projected day
       </button>
+      {open && timelines.length === 0 && unassigned.length === 0 && (
+        // Staff default to `off` (db/migrations/0002_staff.sql), so an
+        // untouched shop has nobody on the floor. Say that plainly — silently
+        // rendering nothing here reads as a broken feature.
+        <Card className="p-4">
+          <p className="text-sm text-gray-500">
+            No one is clocked in yet. Set a barber to <strong>Available</strong> on the floor above and their projected day appears here.
+          </p>
+        </Card>
+      )}
       {open && (
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {timelines.map((timeline) => (
