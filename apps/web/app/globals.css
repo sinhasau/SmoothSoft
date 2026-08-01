@@ -194,9 +194,12 @@ summary:focus-visible { outline: 3px solid rgb(72 120 103 / .20); outline-offset
   .mobile-switch-user { min-height: 2rem; border-radius: .5rem; padding: 0 .6rem; color: #5f5a52; font-size: .72rem; font-weight: 700; background: rgb(0 0 0 / .04); }
   .mobile-switch-user:disabled { opacity: .5; }
   .mobile-bottom-nav { position: fixed; inset: auto 0 0; z-index: 50; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid rgb(0 0 0 / .09); background: rgb(255 255 255 / .96); padding: .35rem .35rem max(.35rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
-  .mobile-bottom-nav a { display: flex; min-height: 2.8rem; flex-direction: column; align-items: center; justify-content: center; gap: .1rem; border-radius: .45rem; color: #78716c; font-size: .6rem; font-weight: 700; }
-  .mobile-bottom-nav a span { font-size: .9rem; }
-  .mobile-bottom-nav a.active { background: #eef3f1; color: #173e32; }
+  .mobile-bottom-nav a, .mobile-bottom-nav button { display: flex; min-height: 2.8rem; flex-direction: column; align-items: center; justify-content: center; gap: .1rem; border-radius: .45rem; color: #78716c; font-size: .6rem; font-weight: 700; background: none; border: none; }
+  .mobile-bottom-nav a span, .mobile-bottom-nav button span { font-size: .9rem; }
+  .mobile-bottom-nav a.active, .mobile-bottom-nav button.active { background: #eef3f1; color: #173e32; }
+  .mobile-more-backdrop { position: fixed; inset: 0; z-index: 55; background: rgb(0 0 0 / .28); }
+  .mobile-more-sheet { position: fixed; right: .5rem; bottom: calc(3.6rem + max(.35rem, env(safe-area-inset-bottom))); left: .5rem; z-index: 60; display: flex; max-height: 60vh; flex-direction: column; gap: .15rem; overflow-y: auto; border-radius: 1rem; background: #fff; padding: .6rem; box-shadow: 0 -12px 40px rgb(0 0 0 / .18); }
+  .mobile-more-sheet .app-nav-link { min-height: 2.8rem; }
   .app-content { padding: 1rem .85rem 5.5rem; }
   .schedule-toolbar-actions { width: 100%; }
   .schedule-toolbar-actions > strong { order: -1; width: 100%; text-align: left; }

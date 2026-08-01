@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useRequireAuth } from '../../../lib/auth';
 import { setActiveLocationId } from '../../../lib/api';
@@ -15,6 +15,13 @@ export default function LocationLayout({ children, params }: { children: React.R
   const pathname = usePathname();
   const queryClient = useQueryClient();
   const base = `/locations/${params.locationId}`;
+  const [moreOpen, setMoreOpen] = useState(false);
+  // Mobile has no room for the desktop sidebar's separate Manage/Customer
+  // sections in the fixed 4-slot bottom nav — this is the one entry point
+  // to Team/Sales/Reports/Settings/Complaints/the check-in link on a phone,
+  // so it must stay in sync with whatever the sidebar shows a manager or
+  // front-desk person on desktop.
+  useEffect(() => setMoreOpen(false), [pathname]);
 
   // The dev sign-in picker (see /login) has no session concept of its own —
   // this is the only way back to it once you're in as a given role. Clearing
@@ -88,6 +95,10 @@ export default function LocationLayout({ children, params }: { children: React.R
     { href: `${base}/complaints`, label: 'Complaints', icon: '⚑' },
   ] : [];
   const isActive = (item: { href: string; exact?: boolean }) => item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
+  // Everything the desktop sidebar puts under Manage/Front desk/Customer — deduped
+  // against `primary`, since managers already get Overview there via `primary`.
+  const more = [...management, ...customer].filter((item) => !primary.some((p) => p.href === item.href));
+  const isMoreActive = more.some(isActive);
 
   return (
     <div className="app-shell">
@@ -145,9 +156,30 @@ export default function LocationLayout({ children, params }: { children: React.R
         </header>
         <div className="app-content">{children}</div>
       </div>
+      {moreOpen && (
+        <>
+          <div className="mobile-more-backdrop" onClick={() => setMoreOpen(false)} />
+          <div className="mobile-more-sheet" role="dialog" aria-label="More">
+            {more.map((item) => (
+              <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`} onClick={() => setMoreOpen(false)}>
+                <span aria-hidden="true">{item.icon}</span>{item.label}
+              </Link>
+            ))}
+            {customer.length > 0 && (
+              <a href={`/book/${params.locationId}`} target="_blank" rel="noopener noreferrer" className="app-nav-link" onClick={() => setMoreOpen(false)}>
+                <span aria-hidden="true">↗</span>Check-in link
+              </a>
+            )}
+          </div>
+        </>
+      )}
       <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
         {primary.map((item) => <Link key={item.href} href={item.href} className={isActive(item) ? 'active' : ''}><span>{item.icon}</span>{item.label}</Link>)}
-        <Link href={base} className={pathname === base ? 'active' : ''}><span>•••</span>More</Link>
+        {more.length > 0 && (
+          <button type="button" onClick={() => setMoreOpen((open) => !open)} className={isMoreActive || moreOpen ? 'active' : ''} aria-expanded={moreOpen} aria-label="More">
+            <span>•••</span>More
+          </button>
+        )}
       </nav>
     </div>
   );
