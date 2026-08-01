@@ -1,31 +1,34 @@
 'use client';
 
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '../../lib/api';
+import { filterRoster, findLastUsedEntry, groupByLocation, readLastStaffId, rememberLastStaffId, type RosterEntry } from './roster-helpers';
 
-interface RosterEntry {
-  locationStaffId: string;
-  fullName: string;
-  role: string;
-  classification: string | null;
-  organizationName: string;
-  locationId: string;
-  locationName: string;
-}
+// Staff/org/location assignments change rarely relative to how often someone
+// switches roles during a shift, so treat the roster as long-lived cache
+// instead of the app's default 5s staleTime — combined with the prefetch
+// LocationLayout's Switch button kicks off, this makes the picker render
+// from cache instantly rather than reshowing the loading state on every
+// switch.
+const ROSTER_STALE_TIME = 5 * 60_000;
 
 export default function LoginPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [query, setQuery] = useState('');
   const { data: roster, isLoading } = useQuery({
     queryKey: ['auth', 'roster'],
     queryFn: () => api.get<RosterEntry[]>('/auth/roster'),
+    staleTime: ROSTER_STALE_TIME,
   });
 
   const login = useMutation({
     mutationFn: (locationStaffId: string) => api.post<{ locationId: string }>('/auth/login', { locationStaffId }),
-    onSuccess: (claims) => {
+    onSuccess: (claims, locationStaffId) => {
+      rememberLastStaffId(locationStaffId);
       // The "Switch" button (see LocationLayout) sets ['auth','me'] to null
       // with setQueryData, which react-query treats as fresh for the full
       // staleTime — so without this, useRequireAuth on the next page reads
@@ -35,12 +38,9 @@ export default function LoginPage() {
     },
   });
 
-  const byLocation = new Map<string, RosterEntry[]>();
-  for (const r of roster ?? []) {
-    const key = `${r.organizationName} — ${r.locationName}`;
-    if (!byLocation.has(key)) byLocation.set(key, []);
-    byLocation.get(key)!.push(r);
-  }
+  const lastUsed = useMemo(() => findLastUsedEntry(roster ?? [], readLastStaffId()), [roster]);
+  const filtered = useMemo(() => filterRoster(roster ?? [], query), [roster, query]);
+  const byLocation = useMemo(() => groupByLocation(filtered), [filtered]);
   const customerLocations = Array.from(new Map((roster ?? []).map((entry) => [entry.locationId, entry])).values());
 
   return (
@@ -55,6 +55,31 @@ export default function LoginPage() {
         </p>
 
         {isLoading && <p className="text-gray-500">Loading staff roster…</p>}
+
+        {lastUsed && (
+          <button
+            onClick={() => login.mutate(lastUsed.locationStaffId)}
+            disabled={login.isPending}
+            className="mb-5 flex w-full items-center justify-between rounded-xl border border-[#315c4f]/30 bg-[#f4f8f6] px-4 py-3 text-left shadow-sm transition hover:border-[#78988d] hover:bg-white disabled:opacity-50"
+          >
+            <span>
+              <span className="block text-[10px] font-semibold uppercase tracking-wider text-[#8b6f47]">Continue as</span>
+              <span className="font-medium">{lastUsed.fullName}</span>
+            </span>
+            <span className="text-sm text-gray-500">{lastUsed.role.replace('_', ' ')}</span>
+          </button>
+        )}
+
+        {roster && roster.length > 6 && (
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by name, role, or location…"
+            aria-label="Filter staff roster"
+            className="mb-5 w-full rounded-xl border border-black/[0.08] bg-white/90 px-3 py-2 text-sm shadow-sm"
+          />
+        )}
 
         {Array.from(byLocation.entries()).map(([locationLabel, people]) => (
           <div key={locationLabel} className="mb-6">
@@ -76,6 +101,8 @@ export default function LoginPage() {
             </div>
           </div>
         ))}
+
+        {query && byLocation.size === 0 && <p className="text-sm text-gray-500 mb-6">No staff match "{query}".</p>}
 
         {customerLocations.length > 0 && <div className="mt-7 border-t border-black/[0.07] pt-6"><h2 className="text-sm font-semibold text-gray-700">Customer view</h2><p className="mt-1 text-xs text-gray-500">Preview the booking experience without signing in as an employee.</p><div className="mt-3 flex flex-col gap-2">{customerLocations.map((location) => <Link key={location.locationId} href={`/book/${location.locationId}`} className="flex items-center justify-between rounded-xl border border-[#cfded7] bg-[#f4f8f6] px-4 py-3 text-sm font-medium text-[#315c4f] transition hover:border-[#78988d] hover:bg-white"><span>Book at {location.locationName}</span><span aria-hidden="true">→</span></Link>)}</div></div>}
 
