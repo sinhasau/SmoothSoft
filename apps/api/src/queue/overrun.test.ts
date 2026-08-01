@@ -9,11 +9,16 @@ const job = (overrides: Partial<InProgressJob> = {}): InProgressJob => ({
   ...overrides,
 });
 
-describe('projectInProgressJob', () => {
-  it('keeps the original prediction while the job is still on time', () => {
+describe('projectInProgressJob — on time', () => {
+  it('keeps the original prediction while the job is still running on time', () => {
     const projection = projectInProgressJob(job(), new Date('2026-07-22T14:10:00Z'));
     expect(projection.projectedEnd.toISOString()).toBe('2026-07-22T14:20:00.000Z');
     expect(projection.overrunMinutes).toBe(0);
+  });
+
+  it('adds no cushion to a healthy job — padding every chair would inflate the board', () => {
+    const projection = projectInProgressJob(job(), new Date('2026-07-22T14:19:00Z'));
+    expect(projection.projectedEnd.toISOString()).toBe('2026-07-22T14:20:00.000Z');
   });
 
   it('reports no overrun exactly at the predicted end', () => {
@@ -21,23 +26,38 @@ describe('projectInProgressJob', () => {
     expect(projection.overrunMinutes).toBe(0);
     expect(projection.projectedEnd.toISOString()).toBe('2026-07-22T14:20:00.000Z');
   });
+});
 
-  it('holds the prediction inside the deadband rather than twitching the board', () => {
-    // 1 minute over, default 2-minute deadband.
-    const projection = projectInProgressJob(job(), new Date('2026-07-22T14:21:00Z'));
-    expect(projection.projectedEnd.toISOString()).toBe('2026-07-22T14:20:00.000Z');
-    expect(projection.overrunMinutes).toBeCloseTo(1);
-  });
-
-  it('pushes the projected end to exactly now once genuinely behind', () => {
-    // 8 minutes over — the buffer added is the real lateness, not a fixed step.
-    const now = new Date('2026-07-22T14:28:00Z');
-    const projection = projectInProgressJob(job(), now);
-    expect(projection.projectedEnd.toISOString()).toBe(now.toISOString());
+describe('projectInProgressJob — running behind adds overrun + catch-up cushion', () => {
+  it('adds the real overrun plus 3 minutes: 8 min behind projects 11 min past the prediction', () => {
+    const projection = projectInProgressJob(job(), new Date('2026-07-22T14:28:00Z'));
+    // predicted end 14:20, 8 min over -> 14:20 + 8 + 3 = 14:31, i.e. now + 3.
+    expect(projection.projectedEnd.toISOString()).toBe('2026-07-22T14:31:00.000Z');
     expect(projection.overrunMinutes).toBeCloseTo(8);
   });
 
-  it('grows continuously as the overrun continues, not in fixed increments', () => {
+  it('applies the cushion to even a slight overrun', () => {
+    const projection = projectInProgressJob(job(), new Date('2026-07-22T14:21:00Z'));
+    expect(projection.projectedEnd.toISOString()).toBe('2026-07-22T14:24:00.000Z');
+    expect(projection.overrunMinutes).toBeCloseTo(1);
+  });
+
+  it('always lands exactly `catch-up buffer` past now, whatever the overrun', () => {
+    for (const [nowIso, expected] of [
+      ['2026-07-22T14:22:00Z', '2026-07-22T14:25:00.000Z'],
+      ['2026-07-22T14:35:00Z', '2026-07-22T14:38:00.000Z'],
+      ['2026-07-22T15:00:00Z', '2026-07-22T15:03:00.000Z'],
+    ]) {
+      expect(projectInProgressJob(job(), new Date(nowIso)).projectedEnd.toISOString()).toBe(expected);
+    }
+  });
+
+  it('never quotes an end in the past, however far behind the job runs', () => {
+    const now = new Date('2026-07-22T16:00:00Z');
+    expect(projectInProgressJob(job(), now).projectedEnd.getTime()).toBeGreaterThan(now.getTime());
+  });
+
+  it('measures overrun continuously rather than in fixed increments', () => {
     const first = projectInProgressJob(job(), new Date('2026-07-22T14:25:00Z'));
     const later = projectInProgressJob(job(), new Date('2026-07-22T14:33:00Z'));
     expect(first.overrunMinutes).toBeCloseTo(5);
@@ -45,10 +65,18 @@ describe('projectInProgressJob', () => {
     expect(later.projectedEnd.getTime()).toBeGreaterThan(first.projectedEnd.getTime());
   });
 
-  it('honors a custom deadband', () => {
-    const now = new Date('2026-07-22T14:23:00Z');
-    expect(projectInProgressJob(job(), now, 10).projectedEnd.toISOString()).toBe('2026-07-22T14:20:00.000Z');
-    expect(projectInProgressJob(job(), now, 1).projectedEnd.toISOString()).toBe(now.toISOString());
+  it('honors a custom catch-up buffer', () => {
+    const now = new Date('2026-07-22T14:28:00Z');
+    expect(projectInProgressJob(job(), now, 0).projectedEnd.toISOString()).toBe(now.toISOString());
+    expect(projectInProgressJob(job(), now, 5).projectedEnd.toISOString()).toBe('2026-07-22T14:33:00.000Z');
+  });
+
+  it('derives lateness from the start stamp alone — no barber ever reports it', () => {
+    // A longer predicted duration for the same start time means less overrun,
+    // purely from data the Start action already records.
+    const now = new Date('2026-07-22T14:28:00Z');
+    expect(projectInProgressJob(job({ predictedDurationMinutes: 20 }), now).overrunMinutes).toBeCloseTo(8);
+    expect(projectInProgressJob(job({ predictedDurationMinutes: 45 }), now).overrunMinutes).toBe(0);
   });
 });
 

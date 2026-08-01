@@ -75,17 +75,20 @@ block_duration = expected_duration + cleanup_buffer_minutes
 ```
 predicted_end = job_start + expected_duration
 overrun       = now − predicted_end
-if overrun < minimum_overrun_minutes:
+if overrun <= 0:
     projected_end = predicted_end
 else:
-    projected_end = now          # i.e. predicted_end + overrun, exactly
+    projected_end = predicted_end + overrun + catch_up_buffer_minutes
+                  # equivalently: now + catch_up_buffer_minutes
 ```
 
-Once a barber is visibly running past their own predicted time, the estimate stops trusting the stale prediction. **The buffer added is exactly how far behind the job actually is** — which is the same as saying the projected end becomes `now`, the honest statement "this ends no earlier than right now." The estimate then grows continuously as the overrun continues, rather than in arbitrary fixed steps.
+Once a barber is running past their predicted time, the estimate stops trusting the stale prediction. **The buffer added is how far behind the job actually is, plus a small catch-up cushion** (`catch_up_buffer_minutes`, default 3). A job 8 minutes behind is projected to finish 11 minutes past its original prediction.
 
-`minimum_overrun_minutes` (default 2) is a deadband, not a fixed increment: a barber 40 seconds past their prediction is not meaningfully behind, and re-rendering every waiting customer's estimate for that is noise. Below the threshold the original prediction stands.
+**No barber is ever asked how behind they are.** The overrun is measured from `queue_entries.service_started_at`, stamped automatically when staff hit **Start** — an action they already take to begin the service — against the predicted duration. There is no reporting step, and nothing for a barber to do differently.
 
-> **Superseded:** this replaces the original fixed `overrun_increment_minutes` design. A fixed step was a guess at how much longer the job would take; the actual elapsed overrun is a measurement, and it's both simpler and more accurate. Implemented in `apps/api/src/queue/overrun.ts`.
+Why the cushion rather than projecting the end at exactly `now`: a job that has already run over is almost never finishing this exact second. Quoting `now` would be revised upward again moments later, and everyone waiting would watch their estimate ratchet up in a series of small disappointments. The cushion absorbs the tail of the overrun so the number holds still. It applies only to jobs already running over — healthy jobs get no padding, since inflating every chair would inflate the whole board.
+
+> **Superseded:** this replaces the original fixed `overrun_increment_minutes` design. A fixed step was a guess at how much longer the job would take; the elapsed overrun is a measurement, and the cushion covers the remaining uncertainty explicitly rather than by repeated nudging. Implemented in `apps/api/src/queue/overrun.ts`.
 
 **Shop-wide lateness** — `shopOverrunMinutes()` reports how far behind the floor as a whole is running: the **largest single** overrun across in-progress jobs, not the sum or the average. Overruns happen in parallel, so three barbers each 5 minutes behind have put the shop 5 minutes behind, not 15; summing would wildly overstate the delay on a busy floor, and averaging would hide one badly stuck chair behind several on-time ones.
 
@@ -117,7 +120,7 @@ Barbers on `break` or `off` are excluded from the pool entirely.
 | `location_default[service_type]` | Haircut 20 min, beard trim 12 min, haircut + beard 30 min | Fallback expected duration when a barber has no history and no employee default |
 | `employee_default[barber][service_type]` | Set once at profile creation, optional | Overrides the location default for that barber until real data (10 services) takes over |
 | `cleanup_buffer_minutes` | 3 | Added after every service block before the next can start |
-| `minimum_overrun_minutes` | 2 | Deadband before a running-over service is treated as behind. Past it, the projected end is pushed forward by the *actual* overrun (see §2) — this replaces the superseded fixed `overrun_increment_minutes`. |
+| `catch_up_buffer_minutes` | 3 | Cushion added on top of a running-over service's *actual* measured overrun (see §2). Replaces the superseded fixed `overrun_increment_minutes`. Applies only once a job is past its prediction — on-time jobs get no padding. |
 | `long_shift_threshold_hours` | 5 | Elapsed shift time after which the fatigue buffer kicks in |
 | `long_shift_extra_minutes` | 5 | Extra time added per service once a barber is past the fatigue threshold |
 | `max_break_minutes` | 30 | If a barber's break exceeds this, their chip gets a visual warning — doesn't auto-change their status, just flags it for staff |

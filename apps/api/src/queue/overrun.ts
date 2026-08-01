@@ -1,20 +1,27 @@
 /**
  * Live overrun adjustment for in-progress services.
  *
+ * Nothing here asks a barber anything. The overrun is derived entirely from
+ * `service_started_at` — stamped automatically when staff hit Start, an
+ * action they already take to begin the cut — measured against the predicted
+ * duration. Staff never report how behind they are.
+ *
  * The spec (docs/wait-time-algorithm-spec.md §2, "Running over") originally
- * called for nudging a running-over job's projected end forward by a fixed
- * `overrun_increment_minutes` on each recalculation. This implements the
- * agreed replacement: use *exactly* how far behind the job actually is,
- * rather than a fixed guess.
+ * called for nudging a running-over job forward by a fixed
+ * `overrun_increment_minutes` per recalculation. This implements the agreed
+ * replacement:
  *
- * Once a job passes its predicted end, its projected end simply becomes
- * `now` — the honest statement "this ends no earlier than right now" — which
- * grows continuously as the overrun continues, instead of in arbitrary steps.
+ *     buffer = actual_overrun + catch_up_buffer_minutes
  *
- * A small `minimumOverrunMinutes` deadband keeps the board from twitching:
- * a barber who is 40 seconds past their prediction is not meaningfully
- * "behind", and re-rendering everyone's wait for that is noise. Below the
- * threshold the original prediction stands.
+ * i.e. a job running x minutes behind is projected to end x + 3 minutes past
+ * its original prediction, which is the same as `now + 3`.
+ *
+ * The `catchUpBufferMinutes` cushion matters: a job that has already run over
+ * is almost never finishing this exact second, so projecting it to end at
+ * `now` would be revised upward again moments later, and everyone waiting
+ * would watch their estimate creep up in a series of small disappointments.
+ * Quoting a little past the current moment absorbs the tail of the overrun,
+ * so the number holds still instead of ratcheting.
  */
 export interface InProgressJob {
   queueEntryId: string;
@@ -32,22 +39,32 @@ export interface JobProjection {
   overrunMinutes: number;
 }
 
+/** Cushion added on top of the measured overrun, so the quote stops ratcheting. */
+export const DEFAULT_CATCH_UP_BUFFER_MINUTES = 3;
+
 export function projectInProgressJob(
   job: InProgressJob,
   now: Date,
-  minimumOverrunMinutes = 2,
+  catchUpBufferMinutes = DEFAULT_CATCH_UP_BUFFER_MINUTES,
 ): JobProjection {
   const predictedEnd = new Date(job.startedAt.getTime() + job.predictedDurationMinutes * 60_000);
-  const overrunMs = now.getTime() - predictedEnd.getTime();
-  const overrunMinutes = overrunMs / 60_000;
+  const overrunMinutes = (now.getTime() - predictedEnd.getTime()) / 60_000;
 
-  if (overrunMinutes < minimumOverrunMinutes) {
-    return { queueEntryId: job.queueEntryId, staffId: job.staffId, projectedEnd: predictedEnd, overrunMinutes: Math.max(0, overrunMinutes) };
+  // Still on time: the original prediction stands. No cushion — this job has
+  // given no reason to doubt it yet, and padding every healthy job would
+  // inflate the whole board.
+  if (overrunMinutes <= 0) {
+    return { queueEntryId: job.queueEntryId, staffId: job.staffId, projectedEnd: predictedEnd, overrunMinutes: 0 };
   }
-  // Past the deadband: the job is genuinely late, so the earliest it can end
-  // is now. This IS the "add exactly how far behind we are" buffer —
-  // predictedEnd + overrun === now, by definition.
-  return { queueEntryId: job.queueEntryId, staffId: job.staffId, projectedEnd: new Date(now), overrunMinutes };
+
+  // Running over: buffer = the real overrun + the catch-up cushion, which is
+  // exactly `now + cushion`.
+  return {
+    queueEntryId: job.queueEntryId,
+    staffId: job.staffId,
+    projectedEnd: new Date(now.getTime() + catchUpBufferMinutes * 60_000),
+    overrunMinutes,
+  };
 }
 
 /**
