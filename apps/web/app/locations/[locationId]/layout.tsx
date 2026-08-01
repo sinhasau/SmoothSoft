@@ -29,6 +29,10 @@ export default function LocationLayout({ children, params }: { children: React.R
     mutationFn: () => api.post('/auth/logout'),
     onMutate: () => {
       queryClient.setQueryData(['auth', 'me'], null);
+      // Warm the login page's roster query before navigating there — the roster
+      // rarely changes, so this turns the picker into an instant, cached render
+      // instead of a fresh "Loading staff roster…" spinner on every switch.
+      queryClient.prefetchQuery({ queryKey: ['auth', 'roster'], queryFn: () => api.get('/auth/roster') });
       router.replace('/login');
     },
   });
@@ -123,7 +127,22 @@ export default function LocationLayout({ children, params }: { children: React.R
         </div>
       </aside>
       <div className="app-main">
-        <header className="mobile-app-header"><div className="app-brand"><span className="brand-mark">S</span><div><strong>SmoothSoft</strong><span>JJ&apos;s Barbers</span></div></div><span className="avatar">{auth.fullName[0]}</span></header>
+        <header className="mobile-app-header">
+          <div className="app-brand"><span className="brand-mark">S</span><div><strong>SmoothSoft</strong><span>JJ&apos;s Barbers</span></div></div>
+          <div className="mobile-header-actions">
+            <span className="avatar">{auth.fullName[0]}</span>
+            <button
+              type="button"
+              onClick={() => logout.mutate()}
+              disabled={logout.isPending}
+              aria-label="Switch user"
+              title="Switch user"
+              className="mobile-switch-user"
+            >
+              Switch
+            </button>
+          </div>
+        </header>
         <div className="app-content">{children}</div>
       </div>
       <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
