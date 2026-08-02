@@ -467,9 +467,11 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                     <RowMenu items={[
                       { label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } },
                       { label: 'Change service', onClick: () => setChangeServiceEntry(entry) },
-                      /* Offered once they are actually past the estimate — before that
-                         there is nothing to forgive, and the option would just be noise. */
-                      { label: 'Mark late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: true }), hidden: !!entry.lateArrival || !late },
+                      /* Always available, not gated on being past the estimate: the
+                         common case is a client phoning ahead to say they are running
+                         late, which is precisely when staff want to take them out of
+                         the estimate — before they have started distorting it. */
+                      { label: 'Mark late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: true }), hidden: !!entry.lateArrival },
                       { label: 'Clear late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: false }), hidden: !entry.lateArrival },
                       { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present },
                       { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present },
