@@ -18,6 +18,7 @@ interface ClientProfile {
   recordedVisits: number;
   recordedSpend: number;
   recordedSpendCaveat: string;
+  servicePace: { medianMinutes: number | null; timedVisitCount: number; factor: number | null; minimumVisitsForFactor: number };
   serviceHistory: { transactionId: string; date: string; serviceName: string; staffName: string | null; price: string; tip: string }[];
   upcomingAppointments: { id: string; startsAt: string; status: string; notes: string | null; serviceName: string; staffName: string | null }[];
   consents: { id: string; consentType: string; version: string; accepted: boolean; capturedAt: string; notes: string | null }[];
@@ -63,7 +64,7 @@ export default function ClientProfilePage({ params }: { params: { locationId: st
           {client.allergy_flag && <span className="text-amber-700 text-sm font-medium">⚠ Allergy flag</span>}
         </div>
 
-        <div className="grid grid-cols-3 gap-4 mb-4 text-sm">
+        <div className="grid grid-cols-2 gap-4 mb-4 text-sm sm:grid-cols-4">
           <div>
             <div className="text-gray-500">Phone</div>
             <div>{client.phone_display ?? '—'}</div>
@@ -76,7 +77,23 @@ export default function ClientProfilePage({ params }: { params: { locationId: st
             <div className="text-gray-500">Recorded spend</div>
             <div>${data.recordedSpend.toFixed(2)}</div>
           </div>
+          <div>
+            <div className="text-gray-500">Typical service time</div>
+            <div>
+              {data.servicePace?.medianMinutes != null ? `${data.servicePace.medianMinutes} min` : '—'}
+              {data.servicePace?.factor != null && (
+                <span className="ml-1.5 text-xs text-[#8b6f47]">
+                  {data.servicePace.factor > 1 ? `${Math.round((data.servicePace.factor - 1) * 100)}% longer than usual` : `${Math.round((1 - data.servicePace.factor) * 100)}% quicker than usual`}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
+        {data.servicePace && data.servicePace.timedVisitCount > 0 && data.servicePace.factor == null && (
+          <p className="mb-2 text-xs text-gray-400">
+            Median of {data.servicePace.timedVisitCount} timed {data.servicePace.timedVisitCount === 1 ? 'visit' : 'visits'} — {data.servicePace.minimumVisitsForFactor} are needed before this adjusts their wait estimate.
+          </p>
+        )}
         <p className="text-xs text-gray-400 mb-4">{data.recordedSpendCaveat}</p>
 
         <div className="mb-3">

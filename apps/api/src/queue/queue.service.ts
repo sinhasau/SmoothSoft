@@ -3,6 +3,7 @@ import { db } from '../common/request-context';
 import { appendEvent } from './event-log';
 import { estimateWaitTimes } from './wait-time';
 import { rollingServiceAverages } from './service-performance';
+import { clientPaceFactors, paceMultiplier } from './client-pace';
 import { chooseBestMatch } from './best-match';
 import { reorderForAppointmentSla } from './appointment-sla';
 import { projectInProgressJob } from './overrun';
@@ -192,14 +193,41 @@ export class QueueService {
       historyCounts.set(key, (historyCounts.get(key) ?? 0) + 1);
     }
 
-    const completedTimings = await trx.selectFrom('queue_entries').select([
-      'assigned_location_staff_id as staffId', 'service_id as serviceId', 'service_started_at as serviceStartedAt', 'service_completed_at as serviceCompletedAt',
-    ]).where('location_id', '=', locationId).where('status', '=', 'completed').where('assigned_location_staff_id', 'is not', null).where('service_id', 'is not', null).where('service_started_at', 'is not', null).where('service_completed_at', 'is not', null).orderBy('service_completed_at', 'desc').limit(1000).execute();
-    const performance = rollingServiceAverages(completedTimings.map((row) => ({ staffId: row.staffId!, serviceId: row.serviceId!, serviceStartedAt: row.serviceStartedAt!, serviceCompletedAt: row.serviceCompletedAt! })));
+    // Completed history feeds two medians: how fast each barber does each
+    // service, and how much longer or shorter each client's visits run than
+    // predicted. The service's catalog duration comes along so implausible
+    // readings can be bounded relative to it — see service-performance.ts.
+    const completedTimings = await trx.selectFrom('queue_entries as qe')
+      .leftJoin('services as s', 's.id', 'qe.service_id')
+      .select([
+        'qe.assigned_location_staff_id as staffId', 'qe.service_id as serviceId', 'qe.client_id as clientId',
+        'qe.service_started_at as serviceStartedAt', 'qe.service_completed_at as serviceCompletedAt',
+        's.duration_minutes as catalogMinutes',
+      ])
+      .where('qe.location_id', '=', locationId).where('qe.status', '=', 'completed')
+      .where('qe.assigned_location_staff_id', 'is not', null).where('qe.service_id', 'is not', null)
+      .where('qe.service_started_at', 'is not', null).where('qe.service_completed_at', 'is not', null)
+      .orderBy('qe.service_completed_at', 'desc').limit(1000).execute();
+    const performance = rollingServiceAverages(completedTimings.map((row) => ({ staffId: row.staffId!, serviceId: row.serviceId!, serviceStartedAt: row.serviceStartedAt!, serviceCompletedAt: row.serviceCompletedAt!, catalogMinutes: row.catalogMinutes })));
     const performanceByPair = new Map(performance.filter((item) => item.sampleCount >= 3).map((item) => [`${item.staffId}:${item.serviceId}`, item]));
-    const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, w.services.reduce((total, service) => total + (
+
+    // Each visit's ratio is taken against what the algorithm would have
+    // predicted without knowing the client (barber median where available,
+    // else the catalog duration), so the factor captures the client rather
+    // than re-counting the barber's speed.
+    const clientPaces = clientPaceFactors(completedTimings
+      .filter((row) => row.clientId)
+      .map((row) => ({
+        clientId: row.clientId!,
+        actualMinutes: (row.serviceCompletedAt!.getTime() - row.serviceStartedAt!.getTime()) / 60_000,
+        expectedMinutes: performanceByPair.get(`${row.staffId}:${row.serviceId}`)?.averageMinutes ?? row.catalogMinutes ?? 20,
+        catalogMinutes: row.catalogMinutes,
+      })));
+    const paceFor = (clientId: string | null | undefined) => paceMultiplier(clientId ? clientPaces.get(clientId) : undefined);
+
+    const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, Math.round(w.services.reduce((total, service) => total + (
       performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
-    ), 0) || 20]));
+    ), 0) * paceFor(w.clientId)) || 20]));
 
     // Appointment SLA soft-bump — see appointment-sla.ts. Only reorders the
     // estimate math and which entries get first pick of an available staff
@@ -293,7 +321,10 @@ export class QueueService {
       priorityOrder: sla.order,
       waiting: waitingWithServices.map((w) => {
         const predictions = w.services.map((service) => performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`));
-        const predictedDurationMinutes = w.services.reduce((total, service, index) => total + (predictions[index]?.averageMinutes ?? service.durationMinutes), 0) || 20;
+        const clientPace = w.clientId ? clientPaces.get(w.clientId) : undefined;
+        const predictedDurationMinutes = Math.round(
+          w.services.reduce((total, service, index) => total + (predictions[index]?.averageMinutes ?? service.durationMinutes), 0) * paceFor(w.clientId),
+        ) || 20;
         const historical = predictions.filter((prediction) => !!prediction);
         const recommendation = recommendationByEntry.get(w.id);
         return {
@@ -306,6 +337,8 @@ export class QueueService {
           recommendedStaffName: recommendation?.staffName ?? null,
           matchReason: recommendation?.reason ?? null,
           continuityVisitCount: recommendation?.clientVisitCount ?? 0,
+          clientPaceFactor: paceMultiplier(clientPace) === 1 ? null : clientPace?.factor ?? null,
+          clientPaceSampleCount: clientPace?.sampleCount ?? 0,
           apptSlaProtected: sla.protected.has(w.id),
           apptSlaDeadline: w.isAppt && w.apptAt ? new Date(new Date(w.apptAt).getTime() + appointmentMaxWaitMinutes * 60_000) : null,
         };

@@ -6,7 +6,7 @@ This document specifies the **full target algorithm** (multi-barber simulation w
 
 | Spec section | Full spec | Currently built |
 |---|---|---|
-| §2 Expected duration | Per-barber rolling average → employee default → location default | **Location/service default only** (`Haircut` 20 min, `Beard trim` 12 min, `Haircut + beard trim` 30 min), now sourced from the **Services** table in Settings rather than hardcoded |
+| §2 Expected duration | Per-barber rolling average → employee default → location default | **Built, as a median.** Per-barber rolling median over the last 10 plausible completions (min 3 samples), falling back to the location/service default from the **Services** table in Settings. Readings beyond 5x a service's catalog duration are discarded as left-open jobs. A per-client pace factor then adjusts the result — see §2 "Client pace". The `employee_default` tier is still not built. |
 | §3–4 Multi-barber simulation | Per-barber timelines, greedy slotting across all eligible barbers, SLA-aware | **Both, side by side.** The customer-facing wait estimate still uses the simple shared running clock (`wait-time.ts`). The staff-facing **Outlook** section on the queue board uses a real per-barber projection (`barber-timeline.ts`): in-progress work anchors each barber's clock, then waiting entries are seated greedily on whichever eligible barber frees up soonest, honoring requested-barber holds, appointment times, and shift ends. Staffing follows **live clock status, not the published roster** — a barber who clocks out drops off the projection and their remaining work resurfaces under "Needs a chair" for staff to reseat by hand, rather than being silently reassigned. |
 | §5 Range display | 90–115% band | **Not yet implemented** — wait times currently display as a single `~` estimate, not a range |
 | §6 Recalc triggers | Full list | Implemented for the events that affect the simple model (queue order, service defaults, real-time clock); barber-status-based recalculation not yet meaningful since barber availability isn't modeled |
@@ -52,17 +52,40 @@ shop_settings
 **Resolution order, per barber + service type:**
 
 ```
-1. If the barber has ≥1 completed service of this type:
-     expected = mean(last min(10, count) completed durations for this barber + service)
+1. If the barber has >=3 completed services of this type:
+     base = median(last min(10, count) plausible durations for this barber + service)
 2. Else if the barber has a manager-set starting default for this service
    (entered once when the profile was created, e.g. a trainee gets 30 min,
    an experienced hire gets 15 min):
-     expected = employee_default[service]
+     base = employee_default[service]
 3. Else:
-     expected = location_default[service]     (shop_settings, manager-editable per service type)
+     base = location_default[service]     (shop_settings, manager-editable per service type)
+
+then, if this client has >=3 timed visits of their own:
+     expected = base * client_pace_factor      (see "Client pace" below)
 ```
 
-This is a simple moving average over the last 10 completed services, not a smoothed running average — easy for a shop owner to reason about ("what's Kim's haircut time based on lately"), and it naturally ages out an early bad day once 10 more cuts have happened. Location defaults exist so a brand-new barber with zero history still produces a sane estimate on day one, and the employee default lets you seed that number based on experience rather than everyone starting from the same shop-wide guess.
+A rolling window of the last 10 completed services — easy for a shop owner to reason about ("what's Kim's haircut time based on lately"), and it naturally ages out an early bad day once 10 more cuts have happened. Location defaults exist so a brand-new barber with zero history still produces a sane estimate on day one, and the employee default lets you seed that number based on experience rather than everyone starting from the same shop-wide guess.
+
+**Median, not mean.** Over a 10-sample window a single extreme reading moves a mean by `(outlier - typical) / 10` and stays there for the next ten jobs: one four-hour "forgot to hit Complete" turns a 20-minute average into 42. The median is unmoved by one or two extremes, needs no tuning to stay honest, and makes a low-end guard unnecessary — an accidental complete-immediately click is just another value the middle ignores.
+
+**Outlier bound scales with the service.** A reading is discarded when it exceeds `OUTLIER_MULTIPLE` (5) times the service's own catalog duration, rather than a flat ceiling. 5x lets a 20-minute haircut run to 100 minutes for a genuinely difficult head of hair, while a 10-minute line-up is cut off at 50 — a single absolute cap cannot tell those apart. Past that it is not a slow service, it is a job someone left open. Services with no catalog duration fall back to a 12-hour backstop. Discarded readings never occupy one of the 10 sample slots.
+
+### Client pace
+
+Some clients simply take longer — thick hair, a talkative chair, a child who will not sit still. That is real, repeatable signal, and it is a property of the *client*, not the barber or the service.
+
+It is tracked as a **ratio, not an absolute median**: `median(actual / expected)` across the client's recent timed visits, where `expected` is what the algorithm would have predicted without knowing them. A client is a small sample spread across different services and barbers — someone with three visits might have had a haircut, a beard trim, and a colour, from two barbers — so an absolute per-client-per-service median would almost never reach a usable sample count, whereas "this person runs about 1.3x expected" pools every visit into one number that transfers even to a service they have never had before. Taking the ratio against the barber-aware expectation also keeps it from re-counting how fast the barber is.
+
+Guards, all in `client-pace.ts`:
+
+| Guard | Value | Why |
+|---|---|---|
+| `MIN_CLIENT_VISITS` | 3 | Below this a client's pace is noise; the factor is not applied at all and a new client is predicted from the service alone. |
+| `MIN_FACTOR` / `MAX_FACTOR` | 0.6 / 1.6 | One client can nudge an estimate, never dominate it — the queue behind them pays for an overestimate just as surely as an underestimate, and the live overrun adjustment already covers a visit that runs long. |
+| Plausibility bound | shared with above | The same 5x rule, so a forgotten Complete cannot define someone's pace either. |
+
+The client's median service time and this factor are shown on their profile, so staff can see why someone is quoted longer than the service default.
 
 **Cleanup buffer** — every service block reserves the expected duration *plus* a fixed cleanup buffer before the next block can start, so the timeline reflects check-in-to-check-out, not just scissors-on-hair time:
 
