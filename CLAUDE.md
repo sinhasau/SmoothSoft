@@ -3,6 +3,92 @@
 Read before making changes. These are rules learned from things that actually
 broke, not general style preferences.
 
+## How to approach any change
+
+Hold four perspectives at once. They disagree, and the disagreement is the
+point — a change that satisfies only one of them is usually the wrong change.
+
+- **CEO** — does this serve the business we are actually building? What does it
+  cost to run, support, and undo? Is this the highest-value use of the effort,
+  or a detour that feels productive?
+- **Product manager** — what is the real job the user is hiring this for? Which
+  workflow does it sit in? What is the smallest version that genuinely solves
+  it? What breaks for someone mid-shift when this ships?
+- **Software architect** — where does this belong? What does it couple to?
+  What will this look like at 10x the data and 10x the locations? Is this a
+  special case, or the general rule surfacing?
+- **Coder** — is it correct at the boundaries, tested, readable by the next
+  person, and honest about what it does not handle?
+
+And always the **customer's** perspective — the person in the chair and the
+barber holding the clippers. They do not care about the model. They care that
+the wait time is right, the button works on a phone, and nothing surprises
+them. When an internal abstraction and a customer's experience conflict, the
+customer wins.
+
+Practically: state the trade-off you are making and why, rather than silently
+picking one. If a request would be better served by something adjacent to what
+was literally asked, say so in a sentence — then do what was asked unless told
+otherwise.
+
+## Product docs (PRDs) are part of the change
+
+`docs/` is the source of truth for intended behavior, not a historical
+artifact. The ones that matter most:
+
+| Doc | Covers |
+|---|---|
+| `PRD-salon-management-platform.md` | The 13 product modules and what each must do |
+| `PRD-live-queue-checkin.md` | The flagship live-queue / check-in module |
+| `wait-time-algorithm-spec.md` | Wait-time math, spec vs. what is built |
+| `ARCHITECTURE-data-and-perspectives.md` | Multi-tenancy, event sourcing, roles |
+| `PRODUCT-STRATEGY-personas-workflows-differentiators.md` | Personas and workflows |
+
+**Before starting any behavioral change:**
+
+1. **Read the relevant PRD section.** Not skimmed — find what it actually
+   specifies about the area being changed.
+2. **Write down what is being requested** and how it relates to what the PRD
+   says: does it match, extend, contradict, or fill a gap the PRD left open?
+3. **If it changes documented intent, stop and ask for approval before
+   building.** Say plainly what the PRD currently says, what the change would
+   make it say, and what that trades away. A request that quietly contradicts
+   the PRD is usually a decision worth making explicitly, not a detail.
+4. **Update the PRD in the same commit as the code.** Never ship behavior that
+   makes a doc wrong. A spec that lies is worse than no spec, because the next
+   person trusts it. If the built version is deliberately simpler than the
+   spec, say so in the doc and mark what is not built — as
+   `wait-time-algorithm-spec.md` §0 does.
+
+Docs that describe something superseded should say so in place, with the
+reasoning, rather than being silently overwritten — the "why we changed our
+mind" is the valuable part.
+
+## Backwards compatibility
+
+**Assume something already depends on current behavior**: a running shop, a
+queue full of real customers, a phone with the app open, a row already in the
+database. Default to additive.
+
+- **Database** — add columns and tables; do not rename or drop in the same
+  change that stops using them. New columns need a default or must be nullable,
+  so existing rows stay valid. A migration must never require the new API build
+  to already be running.
+- **API responses** — adding a field is safe; removing or retyping one is not.
+  An older client must keep working against a newer server, because during any
+  deploy both are live at once.
+- **Request payloads** — new fields must be optional with a sane default. Do
+  not make a previously optional field required.
+- **Stored data** — code must tolerate rows written by every earlier version,
+  including nulls where a value is now always written.
+- **Settings and config** — a missing setting must fall back to today's
+  behavior, not to an error or a new default that silently changes operations.
+
+When a genuinely breaking change is the right call, **say so and get approval
+first**, with the migration path: what breaks, who notices, and how it is
+sequenced (usually add → migrate → switch → remove, across separate deploys).
+Do not smuggle a breaking change in as an implementation detail.
+
 ## Database migrations
 
 **Every migration must be safe to run against a database that already has it.**
