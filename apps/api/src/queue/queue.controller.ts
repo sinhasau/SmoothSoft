@@ -9,6 +9,7 @@ import type {
   ReorderDto,
   ReturnToWaitingDto,
   SetLateArrivalDto,
+  UpdateServiceNotesDto,
   SetStaffStatusDto,
   StartDto,
   TogglePresentDto,
@@ -101,6 +102,12 @@ export class QueueController {
   ready(@Param('id') id: string, @Body() dto: ToggleReadyDto) {
     const auth = requireAuth();
     return this.queue.toggleReady(auth.locationId, id, dto);
+  }
+
+  @Post('queue/:id/notes')
+  updateNotes(@Param('id') id: string, @Body() dto: UpdateServiceNotesDto) {
+    const auth = requireAuth();
+    return this.queue.updateServiceNotes(auth.locationId, id, dto);
   }
 
   @Post('queue/:id/late-arrival')

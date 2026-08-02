@@ -57,6 +57,11 @@ export interface ToggleReadyDto {
   ready: boolean;
 }
 
+export interface UpdateServiceNotesDto {
+  /** Notes for THIS visit. Never touches the client's general notes. */
+  serviceNotes: string;
+}
+
 export interface SetLateArrivalDto {
   /** True holds the entry out of the wait-time estimate; false returns it to the normal queue. */
   lateArrival: boolean;

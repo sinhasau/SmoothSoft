@@ -12,6 +12,7 @@ import { exceedsClosingGrace } from './closing-guard';
 import { localDayOfWeek, resolveTodayHours } from './store-hours';
 import { dateInTimezone, dayOfWeekForDate, minutesOfDayInTimezone } from '../common/time';
 import { resolveDefaultServiceIds } from './default-service';
+import { initialServiceNotes } from './visit-notes';
 import { disambiguateProfiles } from './profile-disambiguation';
 import { normalizePhone } from '../common/phone';
 import { createClient, findClientByPhone, findClientsByPhone, touchClientConfirmed } from '../clients/client-lookup';
@@ -22,6 +23,7 @@ import type {
   ReorderDto,
   ReturnToWaitingDto,
   SetLateArrivalDto,
+  UpdateServiceNotesDto,
   SetStaffStatusDto,
   StartDto,
   TogglePresentDto,
@@ -104,6 +106,7 @@ export class QueueService {
         'qe.status as status',
         'qe.client_id as clientId',
         'c.name as clientName',
+        'c.notes as clientGeneralNotes',
         'qe.guest_name as guestName',
         'qe.service_id as serviceId',
         's.name as serviceName',
@@ -326,13 +329,35 @@ export class QueueService {
       now,
     );
 
+    // Last visit's service notes, per client on the board — shown beside (not
+    // merged into) today's notes so a barber can see what the previous barber
+    // recorded without the two becoming one blob. Scoped to entries currently
+    // on the board rather than fetched per card.
+    const boardClientIds = [...new Set([...waitingWithServices, ...nowServingWithServices].map((e) => e.clientId).filter((id): id is string => !!id))];
+    const previousVisits = boardClientIds.length
+      ? await trx.selectFrom('queue_entries')
+        .select(['client_id as clientId', 'service_notes as serviceNotes', 'service_completed_at as completedAt'])
+        .where('client_id', 'in', boardClientIds)
+        .where('status', '=', 'completed')
+        .where('service_notes', 'is not', null)
+        .orderBy('service_completed_at', 'desc')
+        .execute()
+      : [];
+    const lastVisitNotesByClient = new Map<string, string>();
+    for (const row of previousVisits) {
+      if (row.clientId && row.serviceNotes && !lastVisitNotesByClient.has(row.clientId)) {
+        lastVisitNotesByClient.set(row.clientId, row.serviceNotes);
+      }
+    }
+    const lastVisitNotesFor = (clientId: string | null | undefined) => (clientId ? lastVisitNotesByClient.get(clientId) ?? null : null);
+
     return {
       timezone: location.timezone,
       team,
       staffTimelines: timelineResult.timelines,
       timelineUnassigned: timelineResult.unassigned,
       overrunByEntry: Object.fromEntries(inProgressProjections.map((p) => [p.queueEntryId, Math.round(p.overrunMinutes)])),
-      nowServing: nowServingWithServices,
+      nowServing: nowServingWithServices.map((entry) => ({ ...entry, lastVisitNotes: lastVisitNotesFor(entry.clientId) })),
       priorityOrder: sla.order,
       waiting: waitingWithServices.map((w) => {
         const predictions = w.services.map((service) => performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`));
@@ -351,6 +376,7 @@ export class QueueService {
           recommendedStaffName: recommendation?.staffName ?? null,
           matchReason: recommendation?.reason ?? null,
           continuityVisitCount: recommendation?.clientVisitCount ?? 0,
+          lastVisitNotes: lastVisitNotesFor(w.clientId),
           apptSlaProtected: sla.protected.has(w.id),
           apptSlaDeadline: w.isAppt && w.apptAt ? new Date(new Date(w.apptAt).getTime() + appointmentMaxWaitMinutes * 60_000) : null,
         };
@@ -474,6 +500,20 @@ export class QueueService {
       .executeTakeFirst();
     const nextOrder = (maxOrder?.max ?? -1) + 1;
 
+    // A returning client picks up where the last visit left off: their previous
+    // service notes are COPIED onto this entry so the barber can edit them for
+    // today without rewriting what the last barber recorded. Anything typed at
+    // check-in wins — see visit-notes.ts.
+    const carriedNotes = clientId
+      ? (await trx.selectFrom('queue_entries')
+          .select('service_notes')
+          .where('client_id', '=', clientId)
+          .where('status', '=', 'completed')
+          .where('service_notes', 'is not', null)
+          .orderBy('service_completed_at', 'desc')
+          .executeTakeFirst())?.service_notes ?? null
+      : null;
+
     // Default present value: guest walk-ins default present; appointments
     // default not-present until check-in day-of; explicit dto.present wins
     // when the caller specifies it (algorithm spec §"New items", item 8).
@@ -496,7 +536,7 @@ export class QueueService {
         present_checked_at: present ? new Date() : null,
         waiting_order: nextOrder,
         original_waiting_order: nextOrder,
-        service_notes: dto.serviceNotes?.trim() || null,
+        service_notes: initialServiceNotes({ providedNotes: dto.serviceNotes, lastVisitNotes: carriedNotes }),
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -1159,6 +1199,23 @@ export class QueueService {
    * the wait-time estimate so they stop pushing everyone behind them back, and
    * gives up on quoting them a start time staff will choose opportunistically.
    */
+  /**
+   * Edits the notes for THIS visit only. Deliberately cannot reach
+   * clients.notes: general notes are a standing record (allergies, standing
+   * preferences) and must not be rewritten by whatever happened in one chair.
+   */
+  async updateServiceNotes(locationId: string, queueEntryId: string, dto: UpdateServiceNotesDto) {
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (!['waiting', 'in_service'].includes(entry.status)) {
+      throw new ConflictException('Notes can only be edited while the client is waiting or in service');
+    }
+    await db().updateTable('queue_entries').set({
+      service_notes: dto.serviceNotes.trim() || null,
+      updated_at: new Date(),
+    }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
+    this.broadcast(locationId);
+  }
+
   async setLateArrival(locationId: string, queueEntryId: string, dto: SetLateArrivalDto) {
     const entry = await this.getEntryOrThrow(queueEntryId);
     if (entry.status !== 'waiting') throw new ConflictException('Only a waiting client can be marked a late arrival');
