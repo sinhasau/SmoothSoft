@@ -70,3 +70,30 @@ export function rollingServiceAverages(rows: CompletedServiceTiming[], sampleLim
     };
   });
 }
+
+/**
+ * The stand-in for "the barber's average" when no specific barber is known —
+ * the shop's primary path, where a walk-in takes whoever frees up first.
+ *
+ * Median of the on-floor barbers' own medians, not a median over their pooled
+ * completions: "next available" means roughly any of them could take the
+ * chair, so each barber should count once rather than in proportion to how
+ * busy they happen to have been. It also moves with the shift — a floor of
+ * your three quickest barbers really is faster than a floor of your three
+ * slowest, which a static catalog number cannot express.
+ */
+export function poolMediansByService(
+  barberMedians: ServicePerformanceAverage[],
+  onFloorStaffIds: Set<string>,
+): Map<string, number> {
+  const byService = new Map<string, number[]>();
+  for (const item of barberMedians) {
+    if (!onFloorStaffIds.has(item.staffId)) continue;
+    byService.set(item.serviceId, [...(byService.get(item.serviceId) ?? []), item.averageMinutes]);
+  }
+  const pooled = new Map<string, number>();
+  for (const [serviceId, medians] of byService) {
+    pooled.set(serviceId, Math.round(medianOf(medians) * 10) / 10);
+  }
+  return pooled;
+}

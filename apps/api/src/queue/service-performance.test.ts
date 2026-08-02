@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rollingServiceAverages } from './service-performance';
+import { poolMediansByService, rollingServiceAverages } from './service-performance';
 
 describe('rollingServiceAverages', () => {
   it('averages only the latest ten valid employee/service completions', () => {
@@ -85,5 +85,48 @@ describe('outlier bound scales with the service, at 5x its catalog duration', ()
   it('drops a discarded reading entirely rather than letting it use a sample slot', () => {
     const rows = [at('2026-07-21T10:00:00Z', 500), ...Array.from({ length: 10 }, () => at('2026-07-21T11:00:00Z', 20))];
     expect(rollingServiceAverages(rows)[0].sampleCount).toBe(10);
+  });
+});
+
+describe('poolMediansByService — the stand-in when no barber is known yet', () => {
+  const median = (staffId: string, serviceId: string, averageMinutes: number) => ({ staffId, serviceId, averageMinutes, sampleCount: 5 });
+
+  it('takes the median across the on-floor barbers for that service', () => {
+    const pooled = poolMediansByService(
+      [median('a', 'cut', 18), median('b', 'cut', 22), median('c', 'cut', 26)],
+      new Set(['a', 'b', 'c']),
+    );
+    expect(pooled.get('cut')).toBe(22);
+  });
+
+  it('counts each barber once, not in proportion to how busy they were', () => {
+    // Barber medians are already per-barber, so a busy barber cannot outvote a quiet one.
+    const pooled = poolMediansByService([median('a', 'cut', 20), median('b', 'cut', 40)], new Set(['a', 'b']));
+    expect(pooled.get('cut')).toBe(30);
+  });
+
+  it('moves with the shift — a faster floor gives a faster pool', () => {
+    const all = [median('fast1', 'cut', 16), median('fast2', 'cut', 18), median('slow1', 'cut', 30), median('slow2', 'cut', 32)];
+    expect(poolMediansByService(all, new Set(['fast1', 'fast2']))!.get('cut')).toBe(17);
+    expect(poolMediansByService(all, new Set(['slow1', 'slow2']))!.get('cut')).toBe(31);
+  });
+
+  it('excludes barbers who are off the floor', () => {
+    const pooled = poolMediansByService([median('on', 'cut', 20), median('off', 'cut', 60)], new Set(['on']));
+    expect(pooled.get('cut')).toBe(20);
+  });
+
+  it('keeps services separate', () => {
+    const pooled = poolMediansByService([median('a', 'cut', 20), median('a', 'colour', 50)], new Set(['a']));
+    expect(pooled.get('cut')).toBe(20);
+    expect(pooled.get('colour')).toBe(50);
+  });
+
+  it('reports nothing for a service no on-floor barber has history for', () => {
+    expect(poolMediansByService([median('a', 'cut', 20)], new Set(['a'])).get('colour')).toBeUndefined();
+  });
+
+  it('is empty when nobody is on the floor, so callers fall through to the catalog', () => {
+    expect(poolMediansByService([median('a', 'cut', 20)], new Set()).size).toBe(0);
   });
 });

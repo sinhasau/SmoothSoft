@@ -52,13 +52,15 @@ shop_settings
 **Resolution order, per barber + service type:**
 
 ```
-1. If the barber has >=3 completed services of this type:
+1. If a specific barber is known AND has >=3 completed services of this type:
      base = median(last min(10, count) plausible durations for this barber + service)
-2. Else if the barber has a manager-set starting default for this service
+2. Else (the "next available" case — this shop's primary path):
+     base = pool median = median of the ON-FLOOR barbers' own medians for this service
+3. Else if the barber has a manager-set starting default for this service
    (entered once when the profile was created, e.g. a trainee gets 30 min,
    an experienced hire gets 15 min):
      base = employee_default[service]
-3. Else:
+4. Else:
      base = location_default[service]     (shop_settings, manager-editable per service type)
 
 then, if this client has >=3 timed visits of their own:
@@ -85,7 +87,9 @@ Guards, all in `client-pace.ts`:
 | `MIN_FACTOR` / `MAX_FACTOR` | 0.6 / 1.6 | One client can nudge an estimate, never dominate it — the queue behind them pays for an overestimate just as surely as an underestimate, and the live overrun adjustment already covers a visit that runs long. |
 | Plausibility bound | shared with above | The same 5x rule, so a forgotten Complete cannot define someone's pace either. |
 
-**The divisor is the invariant.** `expected` must be the barber's own median wherever one exists, not the catalog duration. Divide by the catalog instead and the barber's pace lands inside the client's factor: a client who only ever sees a barber running 26 minutes on a 20-minute cut reads as "30% longer" when they are perfectly average, and the queue then multiplies that against the barber median it already uses — counting the same slowness twice. Every call site that computes a factor (the queue board and the client profile) has to divide by the same thing, or the two numbers disagree.
+**"Next available" is the common case, so tier 2 matters most.** A walk-in reaches the estimate with no `assigned_location_staff_id` and no `requested_location_staff_id`, so a per-barber lookup finds nothing. Without a pool median it would drop straight to the static catalog duration and none of the measured history would apply at all on the path the shop actually runs on. The pool median is the median of the on-floor barbers' *own* medians — each barber counted once, since any of them might take the chair, rather than in proportion to how busy they have been — and it moves with the shift, which a catalog number cannot.
+
+**The divisor is the invariant.** `expected` must be the barber's own median wherever one exists, not the catalog duration. `expectedMinutesFor()` in `queue.service.ts` is the single definition, used both as the divisor when measuring a ratio and as the base it is applied to — a ratio measured against barber medians but applied to a catalog duration is a unit mismatch that systematically under-predicts wherever the floor runs slower than the catalog claims. Divide by the catalog instead and the barber's pace also lands inside the client's factor: a client who only ever sees a barber running 26 minutes on a 20-minute cut reads as "30% longer" when they are perfectly average, and the queue then multiplies that against the barber median it already uses — counting the same slowness twice. Every call site that computes a factor (the queue board and the client profile) has to divide by the same thing, or the two numbers disagree.
 
 The client's median service time and this factor are shown on their profile, so staff can see why someone is quoted longer than the service default.
 

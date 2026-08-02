@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { db } from '../common/request-context';
 import { appendEvent } from './event-log';
 import { estimateWaitTimes } from './wait-time';
-import { rollingServiceAverages } from './service-performance';
+import { poolMediansByService, rollingServiceAverages } from './service-performance';
 import { clientPaceFactors, paceMultiplier } from './client-pace';
 import { chooseBestMatch } from './best-match';
 import { reorderForAppointmentSla } from './appointment-sla';
@@ -211,22 +211,39 @@ export class QueueService {
     const performance = rollingServiceAverages(completedTimings.map((row) => ({ staffId: row.staffId!, serviceId: row.serviceId!, serviceStartedAt: row.serviceStartedAt!, serviceCompletedAt: row.serviceCompletedAt!, catalogMinutes: row.catalogMinutes })));
     const performanceByPair = new Map(performance.filter((item) => item.sampleCount >= 3).map((item) => [`${item.staffId}:${item.serviceId}`, item]));
 
-    // Each visit's ratio is taken against what the algorithm would have
-    // predicted without knowing the client (barber median where available,
-    // else the catalog duration), so the factor captures the client rather
-    // than re-counting the barber's speed.
+    // "Next available" is this shop's primary path, so most entries reach the
+    // estimate with no barber attached at all. The pool median — the median of
+    // the on-floor barbers' own medians — stands in for "the barber's average"
+    // in exactly those cases, instead of dropping to a static catalog number.
+    const onFloorStaffIds = new Set(team.filter((member) => member.status !== 'off' && member.role !== 'front_desk').map((member) => member.locationStaffId));
+    const poolMedians = poolMediansByService(performance.filter((item) => item.sampleCount >= 3), onFloorStaffIds);
+
+    /**
+     * The one definition of "expected minutes", used BOTH as the divisor when
+     * measuring a client's pace ratio and as the base that ratio is applied
+     * to. They have to be the same function: a ratio measured against barber
+     * medians but applied to a catalog duration is a unit mismatch, and would
+     * systematically under-predict wherever the floor runs slower than the
+     * catalog says.
+     */
+    const expectedMinutesFor = (staffId: string | null | undefined, serviceId: string, catalogMinutes: number | null | undefined) =>
+      (staffId ? performanceByPair.get(`${staffId}:${serviceId}`)?.averageMinutes : undefined)
+        ?? poolMedians.get(serviceId)
+        ?? catalogMinutes
+        ?? 20;
+
     const clientPaces = clientPaceFactors(completedTimings
       .filter((row) => row.clientId)
       .map((row) => ({
         clientId: row.clientId!,
         actualMinutes: (row.serviceCompletedAt!.getTime() - row.serviceStartedAt!.getTime()) / 60_000,
-        expectedMinutes: performanceByPair.get(`${row.staffId}:${row.serviceId}`)?.averageMinutes ?? row.catalogMinutes ?? 20,
+        expectedMinutes: expectedMinutesFor(row.staffId, row.serviceId!, row.catalogMinutes),
         catalogMinutes: row.catalogMinutes,
       })));
     const paceFor = (clientId: string | null | undefined) => paceMultiplier(clientId ? clientPaces.get(clientId) : undefined);
 
     const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, Math.round(w.services.reduce((total, service) => total + (
-      performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
+      expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes)
     ), 0) * paceFor(w.clientId)) || 20]));
 
     // Appointment SLA soft-bump — see appointment-sla.ts. Only reorders the
@@ -271,8 +288,8 @@ export class QueueService {
     const now = new Date();
     const predictedFor = (entry: (typeof nowServingWithServices)[number]) =>
       entry.services.reduce((total, service) => total + (
-        performanceByPair.get(`${entry.assignedStaffId ?? entry.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
-      ), 0) || 20;
+        expectedMinutesFor(entry.assignedStaffId ?? entry.requestedStaffId, service.id, service.durationMinutes)
+      ), 0) * paceFor(entry.clientId) || 20;
     const inProgressProjections = nowServingWithServices
       .filter((entry) => entry.assignedStaffId && entry.serviceStartedAt)
       .map((entry) => projectInProgressJob({
@@ -323,7 +340,7 @@ export class QueueService {
         const predictions = w.services.map((service) => performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`));
         const clientPace = w.clientId ? clientPaces.get(w.clientId) : undefined;
         const predictedDurationMinutes = Math.round(
-          w.services.reduce((total, service, index) => total + (predictions[index]?.averageMinutes ?? service.durationMinutes), 0) * paceFor(w.clientId),
+          w.services.reduce((total, service) => total + expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes), 0) * paceFor(w.clientId),
         ) || 20;
         const historical = predictions.filter((prediction) => !!prediction);
         const recommendation = recommendationByEntry.get(w.id);
