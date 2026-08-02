@@ -50,6 +50,14 @@ jobs:
       DATABASE_MIGRATE_URL: postgres://salon:salon_dev_password@localhost:5432/salon_platform
     steps:
       - uses: actions/checkout@v4
+      # db:migrate is a Node script (scripts/migrate.mjs) that imports `pg`, so
+      # this job needs dependencies installed. It did not when db:migrate was a
+      # plain psql shell loop.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       # 0021 grants EXECUTE on a function to salon_app, so the app login role must
       # exist before migrations run. Mirrors real provisioning, where the app role
       # is created ahead of schema migration (see db/grant-app-role.sql).
@@ -61,3 +69,17 @@ jobs:
         run: npm run db:grant-app-role
       - name: Verify a late migration actually landed
         run: psql "$DATABASE_MIGRATE_URL" -v ON_ERROR_STOP=1 -c "select 1/count(*) as ok from information_schema.columns where table_name='queue_entries' and column_name='identity_note';"
+      # The guarantee this repo now makes: migrations are safe from ANY applied
+      # state, not just an empty database. A second run must apply nothing and
+      # still exit 0 — which is precisely what the old psql loop could not do.
+      - name: Re-run migrations — must be a no-op
+        run: |
+          output=$(npm run --silent db:migrate)
+          echo "$output"
+          echo "$output" | grep -q "Up to date" || { echo "::error::Second run was not a no-op — migrations are not safely re-runnable."; exit 1; }
+      - name: Verify every migration is recorded as applied
+        run: |
+          tracked=$(psql "$DATABASE_MIGRATE_URL" -tAc "select count(*) from schema_migrations")
+          onDisk=$(ls db/migrations/*.sql | wc -l)
+          echo "tracked=$tracked onDisk=$onDisk"
+          [ "$tracked" -eq "$onDisk" ] || { echo "::error::schema_migrations has $tracked rows but there are $onDisk migration files."; exit 1; }

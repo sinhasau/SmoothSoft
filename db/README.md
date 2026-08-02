@@ -13,9 +13,20 @@ psql -d postgres -c "CREATE DATABASE salon_platform OWNER salon;"
 
 cp .env.example .env   # DATABASE_MIGRATE_URL (owner) + DATABASE_URL (app) both point here
 
-npm run db:migrate           # runs 0001-0010 as the owner role
+npm run db:migrate           # applies whatever this database is missing
 npm run db:grant-app-role    # creates salon_app and grants it table access — see below
 ```
+
+`db:migrate` tracks what it has applied in `schema_migrations` and runs each
+file in its own transaction, so it is safe to run repeatedly and from any
+state. `db:migrate:dry-run` lists what would run. For a database that was
+migrated by hand before tracking existed, run `db:migrate:baseline` once — it
+records every file as applied without executing any of it.
+
+**Every new migration must be safe to re-run** (`create table if not exists`,
+`add column if not exists`, `drop policy if exists` before `create policy`, and
+so on). `apps/api/src/db/migration-safety.test.ts` fails CI otherwise. See
+CLAUDE.md for the full table.
 
 10 sequential migrations. Apply in order against a fresh Postgres 15+ database
 (the `db:migrate` script does this):
