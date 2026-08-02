@@ -105,3 +105,39 @@ describe('paceMultiplier — a new client is predicted from the service alone', 
     expect(paceMultiplier(paces.get('c1'))).toBeCloseTo(1.3);
   });
 });
+
+describe('the ratio must be taken against the barber-aware expectation', () => {
+  // A client who is perfectly ordinary but only ever sees a barber who runs
+  // 26 minutes on a 20-minute cut. Both call sites (the queue board and the
+  // client profile) must divide by that barber's median, not the catalog
+  // duration, or the barber's pace gets counted as the client's.
+  const actual = 26;
+  const barberMedian = 26;
+  const catalogMinutes = 20;
+
+  it('reads an average client as average when divided by the barber median', () => {
+    const paces = clientPaceFactors(Array.from({ length: 3 }, () => ({
+      clientId: 'c1', actualMinutes: actual, expectedMinutes: barberMedian, catalogMinutes,
+    })));
+    expect(paces.get('c1')!.factor).toBeCloseTo(1.0);
+    // Prediction stays at the barber's own pace — no double count.
+    expect(barberMedian * paceMultiplier(paces.get('c1'))).toBeCloseTo(26);
+  });
+
+  it('demonstrates the double count when divided by the catalog duration instead', () => {
+    const paces = clientPaceFactors(Array.from({ length: 3 }, () => ({
+      clientId: 'c1', actualMinutes: actual, expectedMinutes: catalogMinutes, catalogMinutes,
+    })));
+    expect(paces.get('c1')!.factor).toBeCloseTo(1.3);
+    // The barber's 26-minute median then gets inflated by the barber's own
+    // slowness a second time — the bug this guards against.
+    expect(barberMedian * paceMultiplier(paces.get('c1'))).toBeCloseTo(33.8);
+  });
+
+  it('still isolates a genuinely slow client seeing that same slow barber', () => {
+    const paces = clientPaceFactors(Array.from({ length: 3 }, () => ({
+      clientId: 'c1', actualMinutes: 39, expectedMinutes: barberMedian, catalogMinutes,
+    })));
+    expect(paces.get('c1')!.factor).toBeCloseTo(1.5);
+  });
+});

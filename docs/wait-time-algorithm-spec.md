@@ -85,6 +85,8 @@ Guards, all in `client-pace.ts`:
 | `MIN_FACTOR` / `MAX_FACTOR` | 0.6 / 1.6 | One client can nudge an estimate, never dominate it — the queue behind them pays for an overestimate just as surely as an underestimate, and the live overrun adjustment already covers a visit that runs long. |
 | Plausibility bound | shared with above | The same 5x rule, so a forgotten Complete cannot define someone's pace either. |
 
+**The divisor is the invariant.** `expected` must be the barber's own median wherever one exists, not the catalog duration. Divide by the catalog instead and the barber's pace lands inside the client's factor: a client who only ever sees a barber running 26 minutes on a 20-minute cut reads as "30% longer" when they are perfectly average, and the queue then multiplies that against the barber median it already uses — counting the same slowness twice. Every call site that computes a factor (the queue board and the client profile) has to divide by the same thing, or the two numbers disagree.
+
 The client's median service time and this factor are shown on their profile, so staff can see why someone is quoted longer than the service default.
 
 **Cleanup buffer** — every service block reserves the expected duration *plus* a fixed cleanup buffer before the next block can start, so the timeline reflects check-in-to-check-out, not just scissors-on-hair time:
