@@ -7,7 +7,9 @@
     "packages/*"
   ],
   "scripts": {
-    "db:migrate": "for f in db/migrations/0*.sql; do psql \"$DATABASE_MIGRATE_URL\" -v ON_ERROR_STOP=1 -f \"$f\" || exit 1; done",
-    "db:grant-app-role": "psql \"$DATABASE_MIGRATE_URL\" -v ON_ERROR_STOP=1 -f db/grant-app-role.sql"
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:grant-app-role": "psql \"$DATABASE_MIGRATE_URL\" -v ON_ERROR_STOP=1 -f db/grant-app-role.sql",
+    "db:migrate:dry-run": "node scripts/migrate.mjs --dry-run",
+    "db:migrate:baseline": "node scripts/migrate.mjs --baseline"
   }
 }
