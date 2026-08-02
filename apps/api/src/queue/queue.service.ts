@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { db } from '../common/request-context';
 import { appendEvent } from './event-log';
 import { estimateWaitTimes } from './wait-time';
-import { rollingServiceAverages } from './service-performance';
+import { poolMediansByService, rollingServiceAverages } from './service-performance';
 import { chooseBestMatch } from './best-match';
 import { reorderForAppointmentSla } from './appointment-sla';
 import { projectInProgressJob } from './overrun';
@@ -12,6 +12,7 @@ import { exceedsClosingGrace } from './closing-guard';
 import { localDayOfWeek, resolveTodayHours } from './store-hours';
 import { dateInTimezone, dayOfWeekForDate, minutesOfDayInTimezone } from '../common/time';
 import { resolveDefaultServiceIds } from './default-service';
+import { initialServiceNotes } from './visit-notes';
 import { disambiguateProfiles } from './profile-disambiguation';
 import { normalizePhone } from '../common/phone';
 import { createClient, findClientByPhone, findClientsByPhone, touchClientConfirmed } from '../clients/client-lookup';
@@ -21,6 +22,8 @@ import type {
   ReassignDto,
   ReorderDto,
   ReturnToWaitingDto,
+  SetLateArrivalDto,
+  UpdateServiceNotesDto,
   SetStaffStatusDto,
   StartDto,
   TogglePresentDto,
@@ -103,6 +106,7 @@ export class QueueService {
         'qe.status as status',
         'qe.client_id as clientId',
         'c.name as clientName',
+        'c.notes as clientGeneralNotes',
         'qe.guest_name as guestName',
         'qe.service_id as serviceId',
         's.name as serviceName',
@@ -116,6 +120,7 @@ export class QueueService {
         'qe.present as present',
         'qe.present_checked_at as presentCheckedAt',
         'qe.ready_override as readyOverride',
+        'qe.late_arrival as lateArrival',
         'qe.waiting_order as waitingOrder',
         'qe.service_notes as serviceNotes',
         'qe.identity_note as identityNote',
@@ -192,20 +197,58 @@ export class QueueService {
       historyCounts.set(key, (historyCounts.get(key) ?? 0) + 1);
     }
 
-    const completedTimings = await trx.selectFrom('queue_entries').select([
-      'assigned_location_staff_id as staffId', 'service_id as serviceId', 'service_started_at as serviceStartedAt', 'service_completed_at as serviceCompletedAt',
-    ]).where('location_id', '=', locationId).where('status', '=', 'completed').where('assigned_location_staff_id', 'is not', null).where('service_id', 'is not', null).where('service_started_at', 'is not', null).where('service_completed_at', 'is not', null).orderBy('service_completed_at', 'desc').limit(1000).execute();
-    const performance = rollingServiceAverages(completedTimings.map((row) => ({ staffId: row.staffId!, serviceId: row.serviceId!, serviceStartedAt: row.serviceStartedAt!, serviceCompletedAt: row.serviceCompletedAt! })));
+    // Completed history feeds two medians: how fast each barber does each
+    // service, and how much longer or shorter each client's visits run than
+    // predicted. The service's catalog duration comes along so implausible
+    // readings can be bounded relative to it — see service-performance.ts.
+    const completedTimings = await trx.selectFrom('queue_entries as qe')
+      .leftJoin('services as s', 's.id', 'qe.service_id')
+      .select([
+        'qe.assigned_location_staff_id as staffId', 'qe.service_id as serviceId', 'qe.client_id as clientId',
+        'qe.service_started_at as serviceStartedAt', 'qe.service_completed_at as serviceCompletedAt',
+        's.duration_minutes as catalogMinutes',
+      ])
+      .where('qe.location_id', '=', locationId).where('qe.status', '=', 'completed')
+      .where('qe.assigned_location_staff_id', 'is not', null).where('qe.service_id', 'is not', null)
+      .where('qe.service_started_at', 'is not', null).where('qe.service_completed_at', 'is not', null)
+      .orderBy('qe.service_completed_at', 'desc').limit(1000).execute();
+    const performance = rollingServiceAverages(completedTimings.map((row) => ({ staffId: row.staffId!, serviceId: row.serviceId!, serviceStartedAt: row.serviceStartedAt!, serviceCompletedAt: row.serviceCompletedAt!, catalogMinutes: row.catalogMinutes })));
     const performanceByPair = new Map(performance.filter((item) => item.sampleCount >= 3).map((item) => [`${item.staffId}:${item.serviceId}`, item]));
-    const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, w.services.reduce((total, service) => total + (
-      performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
-    ), 0) || 20]));
+
+    // "Next available" is this shop's primary path, so most entries reach the
+    // estimate with no barber attached at all. The pool median — the median of
+    // the on-floor barbers' own medians — stands in for "the barber's average"
+    // in exactly those cases, instead of dropping to a static catalog number.
+    const onFloorStaffIds = new Set(team.filter((member) => member.status !== 'off' && member.role !== 'front_desk').map((member) => member.locationStaffId));
+    const poolMedians = poolMediansByService(performance.filter((item) => item.sampleCount >= 3), onFloorStaffIds);
+
+    /**
+     * The one definition of "expected minutes": this barber's own median where
+     * we know who it will be, otherwise the pool median for the floor, and
+     * only then the static catalog duration.
+     */
+    const expectedMinutesFor = (staffId: string | null | undefined, serviceId: string, catalogMinutes: number | null | undefined) =>
+      (staffId ? performanceByPair.get(`${staffId}:${serviceId}`)?.averageMinutes : undefined)
+        ?? poolMedians.get(serviceId)
+        ?? catalogMinutes
+        ?? 20;
+
+    const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, Math.round(w.services.reduce((total, service) => total + (
+      expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes)
+    ), 0)) || 20]));
 
     // Appointment SLA soft-bump — see appointment-sla.ts. Only reorders the
     // estimate math and which entries get first pick of an available staff
     // match below; the stored, drag-orderable waiting_order is untouched.
+    // A late arrival keeps its place on the board but is held out of every
+    // estimate: it does not push anyone else's start time back, and it gets no
+    // estimate of its own, because nobody can promise one for a client staff
+    // will slot in opportunistically. Everything else about the entry — start,
+    // reassign, cancel, no-show — is unchanged.
+    const estimateParticipants = waitingWithServices.filter((w) => !w.lateArrival);
+
     const sla = reorderForAppointmentSla(
-      waitingWithServices.map((w) => ({
+      estimateParticipants.map((w) => ({
         queueEntryId: w.id,
         serviceDurationMinutes: durationByEntry.get(w.id) ?? 20,
         present: w.present,
@@ -214,7 +257,10 @@ export class QueueService {
       appointmentMaxWaitMinutes,
     );
     const priorityIndex = new Map(sla.order.map((id, index) => [id, index]));
-    const byPriority = [...waitingWithServices].sort((a, b) => (priorityIndex.get(a.id) ?? 0) - (priorityIndex.get(b.id) ?? 0));
+    // Late arrivals are excluded rather than sorted: absent from priorityIndex
+    // they would fall back to 0 and jump the whole queue for staff
+    // recommendations, which is the opposite of what the flag means.
+    const byPriority = [...estimateParticipants].sort((a, b) => (priorityIndex.get(a.id) ?? 0) - (priorityIndex.get(b.id) ?? 0));
 
     const reservedRecommendations = new Set<string>();
     const recommendationByEntry = new Map<string, { staffId: string; staffName: string; reason: string; clientVisitCount: number }>();
@@ -243,7 +289,7 @@ export class QueueService {
     const now = new Date();
     const predictedFor = (entry: (typeof nowServingWithServices)[number]) =>
       entry.services.reduce((total, service) => total + (
-        performanceByPair.get(`${entry.assignedStaffId ?? entry.requestedStaffId}:${service.id}`)?.averageMinutes ?? service.durationMinutes
+        expectedMinutesFor(entry.assignedStaffId ?? entry.requestedStaffId, service.id, service.durationMinutes)
       ), 0) || 20;
     const inProgressProjections = nowServingWithServices
       .filter((entry) => entry.assignedStaffId && entry.serviceStartedAt)
@@ -283,17 +329,41 @@ export class QueueService {
       now,
     );
 
+    // Last visit's service notes, per client on the board — shown beside (not
+    // merged into) today's notes so a barber can see what the previous barber
+    // recorded without the two becoming one blob. Scoped to entries currently
+    // on the board rather than fetched per card.
+    const boardClientIds = [...new Set([...waitingWithServices, ...nowServingWithServices].map((e) => e.clientId).filter((id): id is string => !!id))];
+    const previousVisits = boardClientIds.length
+      ? await trx.selectFrom('queue_entries')
+        .select(['client_id as clientId', 'service_notes as serviceNotes', 'service_completed_at as completedAt'])
+        .where('client_id', 'in', boardClientIds)
+        .where('status', '=', 'completed')
+        .where('service_notes', 'is not', null)
+        .orderBy('service_completed_at', 'desc')
+        .execute()
+      : [];
+    const lastVisitNotesByClient = new Map<string, string>();
+    for (const row of previousVisits) {
+      if (row.clientId && row.serviceNotes && !lastVisitNotesByClient.has(row.clientId)) {
+        lastVisitNotesByClient.set(row.clientId, row.serviceNotes);
+      }
+    }
+    const lastVisitNotesFor = (clientId: string | null | undefined) => (clientId ? lastVisitNotesByClient.get(clientId) ?? null : null);
+
     return {
       timezone: location.timezone,
       team,
       staffTimelines: timelineResult.timelines,
       timelineUnassigned: timelineResult.unassigned,
       overrunByEntry: Object.fromEntries(inProgressProjections.map((p) => [p.queueEntryId, Math.round(p.overrunMinutes)])),
-      nowServing: nowServingWithServices,
+      nowServing: nowServingWithServices.map((entry) => ({ ...entry, lastVisitNotes: lastVisitNotesFor(entry.clientId) })),
       priorityOrder: sla.order,
       waiting: waitingWithServices.map((w) => {
         const predictions = w.services.map((service) => performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`));
-        const predictedDurationMinutes = w.services.reduce((total, service, index) => total + (predictions[index]?.averageMinutes ?? service.durationMinutes), 0) || 20;
+        const predictedDurationMinutes = Math.round(
+          w.services.reduce((total, service) => total + expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes), 0),
+        ) || 20;
         const historical = predictions.filter((prediction) => !!prediction);
         const recommendation = recommendationByEntry.get(w.id);
         return {
@@ -306,6 +376,7 @@ export class QueueService {
           recommendedStaffName: recommendation?.staffName ?? null,
           matchReason: recommendation?.reason ?? null,
           continuityVisitCount: recommendation?.clientVisitCount ?? 0,
+          lastVisitNotes: lastVisitNotesFor(w.clientId),
           apptSlaProtected: sla.protected.has(w.id),
           apptSlaDeadline: w.isAppt && w.apptAt ? new Date(new Date(w.apptAt).getTime() + appointmentMaxWaitMinutes * 60_000) : null,
         };
@@ -429,6 +500,20 @@ export class QueueService {
       .executeTakeFirst();
     const nextOrder = (maxOrder?.max ?? -1) + 1;
 
+    // A returning client picks up where the last visit left off: their previous
+    // service notes are COPIED onto this entry so the barber can edit them for
+    // today without rewriting what the last barber recorded. Anything typed at
+    // check-in wins — see visit-notes.ts.
+    const carriedNotes = clientId
+      ? (await trx.selectFrom('queue_entries')
+          .select('service_notes')
+          .where('client_id', '=', clientId)
+          .where('status', '=', 'completed')
+          .where('service_notes', 'is not', null)
+          .orderBy('service_completed_at', 'desc')
+          .executeTakeFirst())?.service_notes ?? null
+      : null;
+
     // Default present value: guest walk-ins default present; appointments
     // default not-present until check-in day-of; explicit dto.present wins
     // when the caller specifies it (algorithm spec §"New items", item 8).
@@ -451,7 +536,7 @@ export class QueueService {
         present_checked_at: present ? new Date() : null,
         waiting_order: nextOrder,
         original_waiting_order: nextOrder,
-        service_notes: dto.serviceNotes?.trim() || null,
+        service_notes: initialServiceNotes({ providedNotes: dto.serviceNotes, lastVisitNotes: carriedNotes }),
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -1103,6 +1188,39 @@ export class QueueService {
       ready_override: dto.ready,
       present: dto.ready ? true : entry.present,
       present_checked_at: dto.ready && !entry.present ? new Date() : entry.present_checked_at,
+      updated_at: new Date(),
+    }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
+    this.broadcast(locationId);
+  }
+
+  /**
+   * Flags (or clears) a waiting client as a late arrival. They keep their place
+   * on the board and every action stays available — this only removes them from
+   * the wait-time estimate so they stop pushing everyone behind them back, and
+   * gives up on quoting them a start time staff will choose opportunistically.
+   */
+  /**
+   * Edits the notes for THIS visit only. Deliberately cannot reach
+   * clients.notes: general notes are a standing record (allergies, standing
+   * preferences) and must not be rewritten by whatever happened in one chair.
+   */
+  async updateServiceNotes(locationId: string, queueEntryId: string, dto: UpdateServiceNotesDto) {
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (!['waiting', 'in_service'].includes(entry.status)) {
+      throw new ConflictException('Notes can only be edited while the client is waiting or in service');
+    }
+    await db().updateTable('queue_entries').set({
+      service_notes: dto.serviceNotes.trim() || null,
+      updated_at: new Date(),
+    }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
+    this.broadcast(locationId);
+  }
+
+  async setLateArrival(locationId: string, queueEntryId: string, dto: SetLateArrivalDto) {
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (entry.status !== 'waiting') throw new ConflictException('Only a waiting client can be marked a late arrival');
+    await db().updateTable('queue_entries').set({
+      late_arrival: dto.lateArrival,
       updated_at: new Date(),
     }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
     this.broadcast(locationId);

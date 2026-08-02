@@ -12,6 +12,7 @@ import { SanitationReminder, type SanitationReminderState } from '../../../../co
 import { CardPaymentFields, type BrowserPaymentConfig } from '../../../../components/card-payment-fields';
 import { useRequireAuth } from '../../../../lib/auth';
 import { StaffOutlook, type StaffTimeline, type UnassignedEntry } from './staff-outlook';
+import { isLate as isLateEntry, latenessLabel } from './lateness';
 import { Modal } from '../../../../components/modal';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
@@ -65,6 +66,12 @@ interface QueueEntry {
   matchReason?: 'requested' | 'familiar_barber' | 'team_variety' | 'next_available' | null;
   continuityVisitCount?: number;
   /** True when the appointment SLA soft-bump had to protect this entry's seating estimate — see appointment-sla.ts. */
+  /** Held out of the wait-time estimate after arriving past their estimate — see 0050_late_arrival.sql. */
+  lateArrival?: boolean;
+  /** Standing notes on the client record — allergies, standing preferences. Never rewritten by a visit. */
+  clientGeneralNotes?: string | null;
+  /** service_notes from this client's previous completed visit, for reference beside today's. */
+  lastVisitNotes?: string | null;
   apptSlaProtected?: boolean;
   /** apptAt + the shop's appointment_max_wait_minutes — the "seat by" deadline shown when apptSlaProtected. */
   apptSlaDeadline?: string | null;
@@ -198,6 +205,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const cancel = useMutation({ mutationFn: (id: string) => api.post(`/queue/${id}/cancel`), onSuccess: invalidate });
   const noShow = useMutation({ mutationFn: (id: string) => api.post(`/queue/${id}/no-show`), onSuccess: invalidate });
   const abandon = useMutation({ mutationFn: (id: string) => api.post(`/queue/${id}/abandon`), onSuccess: invalidate });
+  const setLateArrival = useMutation({ mutationFn: ({ id, lateArrival }: { id: string; lateArrival: boolean }) => api.post(`/queue/${id}/late-arrival`, { lateArrival }), onSuccess: invalidate });
   const returnToWaiting = useMutation({
     mutationFn: ({ id, position }: { id: string; position: 'top' | 'original' }) => api.post(`/queue/${id}/return-to-waiting`, { position }),
     onSuccess: invalidate,
@@ -241,9 +249,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     togglePresent.mutate({ id: entry.id, present });
   }
 
-  function isLate(e: QueueEntry) {
-    return e.isAppt && !!e.apptAt && new Date(e.apptAt) < now;
-  }
+  const isLate = (e: QueueEntry) => isLateEntry(e, now);
   const lateCount = waitingList.filter(isLate).length;
   // An appointment booked hours/days earlier has not been waiting that whole
   // time. Its wait begins only when marked Arrived; non-present appointments
@@ -443,7 +449,8 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                     <div className="flex min-w-0 items-center gap-2">
                       {entry.clientId ? <button className="truncate text-left text-sm font-semibold hover:text-[#175642]" onClick={(event) => { event.stopPropagation(); setClientPreviewId(entry.clientId); }}>{displayName(entry)}</button> : <span className="truncate text-sm font-semibold">{displayName(entry)}</span>}
                       {entry.isAppt && <Pill tone="gray">Appt</Pill>}
-                      {late && <Pill tone="red">Late</Pill>}
+                      {entry.lateArrival && <Pill tone="amber">Late arrival · not in estimates</Pill>}
+                      {late && <Pill tone="red">{latenessLabel(entry, now)}</Pill>}
                       {entry.apptSlaProtected && <Pill tone="amber">⏰ Seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill>}
                     </div>
                     <div className="mt-0.5 truncate text-xs text-gray-500">{entry.serviceName} · {entry.assignedStaffName ?? 'Any barber'}{entry.identityNote ? ` · ${entry.identityNote}` : ''}</div>
@@ -456,12 +463,24 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                     {wait > 0 && <div className={`font-semibold tabular-nums ${urgent ? 'text-[#c14b25]' : wait >= 40 ? 'text-[#b36f0e]' : 'text-gray-600'}`}>{durationLabel(wait)}</div>}
                     <div className="mt-1 whitespace-nowrap text-gray-500" title="Estimated service time">
                       {entry.isAppt && entry.present && <span className="mr-1 text-[#5c7c6c]">Walk-in est: {timeLabel(entry.estimatedStart)} ·</span>}
-                      {entry.isAppt ? <><span className="text-gray-400">Appt</span> {timeLabel(entry.apptAt)}</> : <><span className="text-gray-400">Est.</span> {timeLabel(entry.estimatedStart)}</>}
+                      {entry.lateArrival ? <span className="text-gray-400">Seat when free</span> : entry.isAppt ? <><span className="text-gray-400">Appt</span> {timeLabel(entry.apptAt)}</> : <><span className="text-gray-400">Est.</span> {timeLabel(entry.estimatedStart)}</>}
                     </div>
                     <button className="mt-1 font-medium text-[#175642] hover:underline" onClick={(event) => { event.stopPropagation(); openStart(entry); }}>Start</button>
                   </div>
                   <div onClick={(event) => event.stopPropagation()}>
-                    <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Change service', onClick: () => setChangeServiceEntry(entry) }, { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present }, { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                    <RowMenu items={[
+                      { label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } },
+                      { label: 'Change service', onClick: () => setChangeServiceEntry(entry) },
+                      /* Always available, not gated on being past the estimate: the
+                         common case is a client phoning ahead to say they are running
+                         late, which is precisely when staff want to take them out of
+                         the estimate — before they have started distorting it. */
+                      { label: 'Mark late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: true }), hidden: !!entry.lateArrival },
+                      { label: 'Clear late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: false }), hidden: !entry.lateArrival },
+                      { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present },
+                      { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present },
+                      { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true },
+                    ]} />
                   </div>
                 </div>
               );
@@ -612,8 +631,10 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       {detailEntry && (
         <EntryDetailModal
           entry={detailEntry}
+          services={services.data ?? []}
           onClose={() => setDetailEntry(null)}
           onOpenProfile={(clientId) => { setDetailEntry(null); setClientPreviewId(clientId); }}
+          onDone={invalidate}
         />
       )}
 
@@ -688,10 +709,27 @@ function IdentityNotePanel({ name, onClose, onSave }: { name: string; onClose: (
 /** Read-only detail view opened by clicking anywhere on a Waiting/Ready/In-service
  *  card — services, staff, timing, and the general note captured at check-in. Editing
  *  stays in the existing dedicated flows (Reassign, Change service, etc. via RowMenu). */
-function EntryDetailModal({ entry, onClose, onOpenProfile }: { entry: QueueEntry; onClose: () => void; onOpenProfile: (clientId: string) => void }) {
+function EntryDetailModal({ entry, services: catalog, onClose, onOpenProfile, onDone }: { entry: QueueEntry; services: Service[]; onClose: () => void; onOpenProfile: (clientId: string) => void; onDone: () => void }) {
   const services = entry.services?.length ? entry.services : [{ id: entry.serviceId, name: entry.serviceName, durationMinutes: entry.serviceDurationMinutes, price: '0' }];
   const totalMinutes = services.reduce((sum, s) => sum + s.durationMinutes, 0);
   const statusLabel = entry.status === 'in_service' ? 'In service' : entry.present ? 'Ready to seat' : 'Waiting';
+
+  const [editingServices, setEditingServices] = useState(false);
+  const [serviceIds, setServiceIds] = useState<string[]>(services.map((s) => s.id).filter((id): id is string => !!id));
+  const [notes, setNotes] = useState(entry.serviceNotes ?? '');
+  const [error, setError] = useState<string | null>(null);
+
+  const saveServices = useMutation({
+    mutationFn: () => api.post(`/queue/${entry.id}/service`, { serviceId: serviceIds[0], serviceIds }),
+    onSuccess: () => { setEditingServices(false); onDone(); onClose(); },
+    onError: (err) => setError(err instanceof ApiError ? (err.body?.message ?? 'Could not update services') : 'Could not update services'),
+  });
+  const saveNotes = useMutation({
+    mutationFn: () => api.post(`/queue/${entry.id}/notes`, { serviceNotes: notes }),
+    onSuccess: () => { onDone(); onClose(); },
+    onError: (err) => setError(err instanceof ApiError ? (err.body?.message ?? 'Could not save notes') : 'Could not save notes'),
+  });
+  const notesDirty = (entry.serviceNotes ?? '') !== notes;
 
   return (
     <Modal onClose={onClose}>
@@ -704,11 +742,30 @@ function EntryDetailModal({ entry, onClose, onOpenProfile }: { entry: QueueEntry
         </div>
       </div>
 
-      <div className="mb-3 space-y-1 rounded-lg bg-stone-50 p-3 text-sm">
-        {services.map((s, i) => (
-          <div key={`${s.id}-${i}`} className="flex justify-between text-gray-700"><span>{s.name}</span><span className="text-gray-500">{s.durationMinutes} min</span></div>
-        ))}
-        <div className="flex justify-between border-t border-black/5 pt-1 text-xs text-gray-400"><span>Total</span><span>{totalMinutes} min</span></div>
+      <div className="mb-3 rounded-lg bg-stone-50 p-3 text-sm">
+        {editingServices ? (
+          <>
+            <ServiceMultiPicker services={catalog} selectedIds={serviceIds} onChange={setServiceIds} />
+            <div className="mt-2 flex justify-end gap-2">
+              <Button onClick={() => { setServiceIds(services.map((s) => s.id).filter((id): id is string => !!id)); setEditingServices(false); }}>Cancel</Button>
+              <Button variant="solid" disabled={!serviceIds.length || saveServices.isPending} onClick={() => saveServices.mutate()}>
+                {saveServices.isPending ? 'Saving…' : 'Save services'}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="space-y-1">
+              {services.map((s, i) => (
+                <div key={`${s.id}-${i}`} className="flex justify-between text-gray-700"><span>{s.name}</span><span className="text-gray-500">{s.durationMinutes} min</span></div>
+              ))}
+            </div>
+            <div className="mt-1 flex justify-between border-t border-black/5 pt-1 text-xs text-gray-400"><span>Total</span><span>{totalMinutes} min</span></div>
+            {catalog.length > 0 && entry.status !== 'completed' && (
+              <button className="mt-2 text-xs font-medium text-[#175642] hover:underline" onClick={() => setEditingServices(true)}>＋ Add or change services</button>
+            )}
+          </>
+        )}
       </div>
 
       <div className="mb-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
@@ -731,10 +788,41 @@ function EntryDetailModal({ entry, onClose, onOpenProfile }: { entry: QueueEntry
         <p className="mb-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">⏰ Appointment SLA protected — seat by {timeLabel(entry.apptSlaDeadline ?? null)}.</p>
       )}
 
+      {/* Two distinct records, deliberately not merged: general notes are a
+          standing fact about the client, last visit's notes are history. Only
+          this visit's notes are editable here — see visit-notes.ts. */}
+      {entry.clientGeneralNotes?.trim() && (
+        <div className="mb-3 rounded-lg bg-[#f4f8f6] px-3 py-2">
+          <div className="text-[11px] uppercase tracking-wide text-[#5c7c6c]">General notes <span className="normal-case text-gray-400">· always applies</span></div>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700">{entry.clientGeneralNotes}</p>
+        </div>
+      )}
+
+      {entry.lastVisitNotes?.trim() && (
+        <div className="mb-3 rounded-lg bg-stone-50 px-3 py-2">
+          <div className="text-[11px] uppercase tracking-wide text-gray-400">Last service notes</div>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600">{entry.lastVisitNotes}</p>
+        </div>
+      )}
+
       <div className="mb-4">
-        <div className="text-[11px] uppercase tracking-wide text-gray-400">Notes</div>
-        <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700">{entry.serviceNotes?.trim() ? entry.serviceNotes : <span className="text-gray-400">No notes.</span>}</p>
+        <label className="text-[11px] uppercase tracking-wide text-gray-400">This visit&apos;s notes</label>
+        <textarea
+          className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black"
+          rows={3}
+          placeholder="What was done, what to watch next time…"
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+        />
+        {notesDirty && (
+          <div className="mt-1 flex justify-end gap-2">
+            <Button onClick={() => setNotes(entry.serviceNotes ?? '')}>Revert</Button>
+            <Button variant="solid" disabled={saveNotes.isPending} onClick={() => saveNotes.mutate()}>{saveNotes.isPending ? 'Saving…' : 'Save notes'}</Button>
+          </div>
+        )}
       </div>
+
+      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
       <div className="flex items-center justify-between">
         {entry.clientId ? <button className="text-sm text-[#175642] underline hover:text-black" onClick={() => onOpenProfile(entry.clientId as string)}>Open full profile</button> : <span />}

@@ -6,7 +6,7 @@ This document specifies the **full target algorithm** (multi-barber simulation w
 
 | Spec section | Full spec | Currently built |
 |---|---|---|
-| §2 Expected duration | Per-barber rolling average → employee default → location default | **Location/service default only** (`Haircut` 20 min, `Beard trim` 12 min, `Haircut + beard trim` 30 min), now sourced from the **Services** table in Settings rather than hardcoded |
+| §2 Expected duration | Per-barber rolling average → employee default → location default | **Built, as a median.** Per-barber rolling median over the last 10 plausible completions (min 3 samples), falling back to the location/service default from the **Services** table in Settings. Readings beyond 5x a service's catalog duration are discarded as left-open jobs. When no specific barber is known — the "next available" primary path — a **pool median** across the on-floor barbers stands in, so measured history still applies. The `employee_default` tier is still not built. |
 | §3–4 Multi-barber simulation | Per-barber timelines, greedy slotting across all eligible barbers, SLA-aware | **Both, side by side.** The customer-facing wait estimate still uses the simple shared running clock (`wait-time.ts`). The staff-facing **Outlook** section on the queue board uses a real per-barber projection (`barber-timeline.ts`): in-progress work anchors each barber's clock, then waiting entries are seated greedily on whichever eligible barber frees up soonest, honoring requested-barber holds, appointment times, and shift ends. Staffing follows **live clock status, not the published roster** — a barber who clocks out drops off the projection and their remaining work resurfaces under "Needs a chair" for staff to reseat by hand, rather than being silently reassigned. |
 | §5 Range display | 90–115% band | **Not yet implemented** — wait times currently display as a single `~` estimate, not a range |
 | §6 Recalc triggers | Full list | Implemented for the events that affect the simple model (queue order, service defaults, real-time clock); barber-status-based recalculation not yet meaningful since barber availability isn't modeled |
@@ -52,52 +52,24 @@ shop_settings
 **Resolution order, per barber + service type:**
 
 ```
-1. If the barber has ≥1 completed service of this type:
-     expected = mean(last min(10, count) completed durations for this barber + service)
-2. Else if the barber has a manager-set starting default for this service
+1. If a specific barber is known AND has >=3 completed services of this type:
+     expected = median(last min(10, count) plausible durations for this barber + service)
+2. Else if any ON-FLOOR barber has >=3 completed services of this type
+   (the "next available" case — this shop's primary path):
+     expected = pool median = median of those barbers' own medians
+3. Else if the barber has a manager-set starting default for this service
    (entered once when the profile was created, e.g. a trainee gets 30 min,
-   an experienced hire gets 15 min):
+   an experienced hire gets 15 min) — NOT YET BUILT:
      expected = employee_default[service]
-3. Else:
-     expected = location_default[service]     (shop_settings, manager-editable per service type)
+4. Else:
+     expected = location_default[service]  (shop_settings, manager-editable per service type)
 ```
 
-This is a simple moving average over the last 10 completed services, not a smoothed running average — easy for a shop owner to reason about ("what's Kim's haircut time based on lately"), and it naturally ages out an early bad day once 10 more cuts have happened. Location defaults exist so a brand-new barber with zero history still produces a sane estimate on day one, and the employee default lets you seed that number based on experience rather than everyone starting from the same shop-wide guess.
+A rolling window of the last 10 completed services — easy for a shop owner to reason about ("what's Kim's haircut time based on lately"), and it naturally ages out an early bad day once 10 more cuts have happened. Location defaults exist so a brand-new barber with zero history still produces a sane estimate on day one, and the employee default lets you seed that number based on experience rather than everyone starting from the same shop-wide guess.
 
-**Cleanup buffer** — every service block reserves the expected duration *plus* a fixed cleanup buffer before the next block can start, so the timeline reflects check-in-to-check-out, not just scissors-on-hair time:
+**Median, not mean.** Over a 10-sample window a single extreme reading moves a mean by `(outlier - typical) / 10` and stays there for the next ten jobs: one four-hour "forgot to hit Complete" turns a 20-minute average into 42. The median is unmoved by one or two extremes, needs no tuning to stay honest, and makes a low-end guard unnecessary — an accidental complete-immediately click is just another value the middle ignores.
 
-```
-block_duration = expected_duration + cleanup_buffer_minutes
-```
-
-**Running over — live overrun adjustment:**
-
-```
-predicted_end = job_start + expected_duration
-overrun       = now − predicted_end
-if overrun <= 0:
-    projected_end = predicted_end
-else:
-    projected_end = predicted_end + overrun + catch_up_buffer_minutes
-                  # equivalently: now + catch_up_buffer_minutes
-```
-
-Once a barber is running past their predicted time, the estimate stops trusting the stale prediction. **The buffer added is how far behind the job actually is, plus a small catch-up cushion** (`catch_up_buffer_minutes`, default 3). A job 8 minutes behind is projected to finish 11 minutes past its original prediction.
-
-**No barber is ever asked how behind they are.** The overrun is measured from `queue_entries.service_started_at`, stamped automatically when staff hit **Start** — an action they already take to begin the service — against the predicted duration. There is no reporting step, and nothing for a barber to do differently.
-
-Why the cushion rather than projecting the end at exactly `now`: a job that has already run over is almost never finishing this exact second. Quoting `now` would be revised upward again moments later, and everyone waiting would watch their estimate ratchet up in a series of small disappointments. The cushion absorbs the tail of the overrun so the number holds still. It applies only to jobs already running over — healthy jobs get no padding, since inflating every chair would inflate the whole board.
-
-> **Superseded:** this replaces the original fixed `overrun_increment_minutes` design. A fixed step was a guess at how much longer the job would take; the elapsed overrun is a measurement, and the cushion covers the remaining uncertainty explicitly rather than by repeated nudging. Implemented in `apps/api/src/queue/overrun.ts`.
-
-**Shop-wide lateness** — `shopOverrunMinutes()` reports how far behind the floor as a whole is running: the **largest single** overrun across in-progress jobs, not the sum or the average. Overruns happen in parallel, so three barbers each 5 minutes behind have put the shop 5 minutes behind, not 15; summing would wildly overstate the delay on a busy floor, and averaging would hide one badly stuck chair behind several on-time ones.
-
-**Long-shift fatigue buffer** — barbers slow down late in a long shift. Once a barber's elapsed shift time passes `long_shift_threshold_hours`, add `long_shift_extra_minutes` to their expected duration for each subsequent service:
-
-```
-if (now − actual_clock_in) > long_shift_threshold_hours:
-    expected_duration += long_shift_extra_minutes
-```
+**Outlier bound scales with the service.** A reading is discarded when it exceeds `OUTLIER_MULTIPLE` (5) times the service's own catalog duration, rather than a flat ceiling. 5x lets a 20-minute haircut run to 100 minutes for a genuinely difficult head of hair, while a 10-minute line-up is cut off at 50 — a single absolute cap cannot tell those apart. Past that it is not a slow service, it is a job someone left open. Services with no catalog duration fall back to a 12-hour backstop. Discarded readings never occupy one of the 10 sample slots.
 
 ## 3. Building each barber's timeline (run fresh on every estimate — never cached)
 
