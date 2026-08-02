@@ -21,6 +21,7 @@ import type {
   ReassignDto,
   ReorderDto,
   ReturnToWaitingDto,
+  SetLateArrivalDto,
   SetStaffStatusDto,
   StartDto,
   TogglePresentDto,
@@ -116,6 +117,7 @@ export class QueueService {
         'qe.present as present',
         'qe.present_checked_at as presentCheckedAt',
         'qe.ready_override as readyOverride',
+        'qe.late_arrival as lateArrival',
         'qe.waiting_order as waitingOrder',
         'qe.service_notes as serviceNotes',
         'qe.identity_note as identityNote',
@@ -235,8 +237,15 @@ export class QueueService {
     // Appointment SLA soft-bump — see appointment-sla.ts. Only reorders the
     // estimate math and which entries get first pick of an available staff
     // match below; the stored, drag-orderable waiting_order is untouched.
+    // A late arrival keeps its place on the board but is held out of every
+    // estimate: it does not push anyone else's start time back, and it gets no
+    // estimate of its own, because nobody can promise one for a client staff
+    // will slot in opportunistically. Everything else about the entry — start,
+    // reassign, cancel, no-show — is unchanged.
+    const estimateParticipants = waitingWithServices.filter((w) => !w.lateArrival);
+
     const sla = reorderForAppointmentSla(
-      waitingWithServices.map((w) => ({
+      estimateParticipants.map((w) => ({
         queueEntryId: w.id,
         serviceDurationMinutes: durationByEntry.get(w.id) ?? 20,
         present: w.present,
@@ -245,7 +254,10 @@ export class QueueService {
       appointmentMaxWaitMinutes,
     );
     const priorityIndex = new Map(sla.order.map((id, index) => [id, index]));
-    const byPriority = [...waitingWithServices].sort((a, b) => (priorityIndex.get(a.id) ?? 0) - (priorityIndex.get(b.id) ?? 0));
+    // Late arrivals are excluded rather than sorted: absent from priorityIndex
+    // they would fall back to 0 and jump the whole queue for staff
+    // recommendations, which is the opposite of what the flag means.
+    const byPriority = [...estimateParticipants].sort((a, b) => (priorityIndex.get(a.id) ?? 0) - (priorityIndex.get(b.id) ?? 0));
 
     const reservedRecommendations = new Set<string>();
     const recommendationByEntry = new Map<string, { staffId: string; staffName: string; reason: string; clientVisitCount: number }>();
@@ -1136,6 +1148,22 @@ export class QueueService {
       ready_override: dto.ready,
       present: dto.ready ? true : entry.present,
       present_checked_at: dto.ready && !entry.present ? new Date() : entry.present_checked_at,
+      updated_at: new Date(),
+    }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
+    this.broadcast(locationId);
+  }
+
+  /**
+   * Flags (or clears) a waiting client as a late arrival. They keep their place
+   * on the board and every action stays available — this only removes them from
+   * the wait-time estimate so they stop pushing everyone behind them back, and
+   * gives up on quoting them a start time staff will choose opportunistically.
+   */
+  async setLateArrival(locationId: string, queueEntryId: string, dto: SetLateArrivalDto) {
+    const entry = await this.getEntryOrThrow(queueEntryId);
+    if (entry.status !== 'waiting') throw new ConflictException('Only a waiting client can be marked a late arrival');
+    await db().updateTable('queue_entries').set({
+      late_arrival: dto.lateArrival,
       updated_at: new Date(),
     }).where('id', '=', queueEntryId).where('location_id', '=', locationId).executeTakeFirstOrThrow();
     this.broadcast(locationId);

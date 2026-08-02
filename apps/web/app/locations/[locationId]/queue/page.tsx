@@ -12,6 +12,7 @@ import { SanitationReminder, type SanitationReminderState } from '../../../../co
 import { CardPaymentFields, type BrowserPaymentConfig } from '../../../../components/card-payment-fields';
 import { useRequireAuth } from '../../../../lib/auth';
 import { StaffOutlook, type StaffTimeline, type UnassignedEntry } from './staff-outlook';
+import { isLate as isLateEntry, latenessLabel } from './lateness';
 import { Modal } from '../../../../components/modal';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
@@ -65,6 +66,8 @@ interface QueueEntry {
   matchReason?: 'requested' | 'familiar_barber' | 'team_variety' | 'next_available' | null;
   continuityVisitCount?: number;
   /** True when the appointment SLA soft-bump had to protect this entry's seating estimate — see appointment-sla.ts. */
+  /** Held out of the wait-time estimate after arriving past their estimate — see 0050_late_arrival.sql. */
+  lateArrival?: boolean;
   apptSlaProtected?: boolean;
   /** apptAt + the shop's appointment_max_wait_minutes — the "seat by" deadline shown when apptSlaProtected. */
   apptSlaDeadline?: string | null;
@@ -198,6 +201,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
   const cancel = useMutation({ mutationFn: (id: string) => api.post(`/queue/${id}/cancel`), onSuccess: invalidate });
   const noShow = useMutation({ mutationFn: (id: string) => api.post(`/queue/${id}/no-show`), onSuccess: invalidate });
   const abandon = useMutation({ mutationFn: (id: string) => api.post(`/queue/${id}/abandon`), onSuccess: invalidate });
+  const setLateArrival = useMutation({ mutationFn: ({ id, lateArrival }: { id: string; lateArrival: boolean }) => api.post(`/queue/${id}/late-arrival`, { lateArrival }), onSuccess: invalidate });
   const returnToWaiting = useMutation({
     mutationFn: ({ id, position }: { id: string; position: 'top' | 'original' }) => api.post(`/queue/${id}/return-to-waiting`, { position }),
     onSuccess: invalidate,
@@ -241,9 +245,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     togglePresent.mutate({ id: entry.id, present });
   }
 
-  function isLate(e: QueueEntry) {
-    return e.isAppt && !!e.apptAt && new Date(e.apptAt) < now;
-  }
+  const isLate = (e: QueueEntry) => isLateEntry(e, now);
   const lateCount = waitingList.filter(isLate).length;
   // An appointment booked hours/days earlier has not been waiting that whole
   // time. Its wait begins only when marked Arrived; non-present appointments
@@ -443,7 +445,8 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                     <div className="flex min-w-0 items-center gap-2">
                       {entry.clientId ? <button className="truncate text-left text-sm font-semibold hover:text-[#175642]" onClick={(event) => { event.stopPropagation(); setClientPreviewId(entry.clientId); }}>{displayName(entry)}</button> : <span className="truncate text-sm font-semibold">{displayName(entry)}</span>}
                       {entry.isAppt && <Pill tone="gray">Appt</Pill>}
-                      {late && <Pill tone="red">Late</Pill>}
+                      {entry.lateArrival && <Pill tone="amber">Late arrival · not in estimates</Pill>}
+                      {late && <Pill tone="red">{latenessLabel(entry, now)}</Pill>}
                       {entry.apptSlaProtected && <Pill tone="amber">⏰ Seat by {timeLabel(entry.apptSlaDeadline ?? null)}</Pill>}
                     </div>
                     <div className="mt-0.5 truncate text-xs text-gray-500">{entry.serviceName} · {entry.assignedStaffName ?? 'Any barber'}{entry.identityNote ? ` · ${entry.identityNote}` : ''}</div>
@@ -456,12 +459,22 @@ export default function QueuePage({ params }: { params: { locationId: string } }
                     {wait > 0 && <div className={`font-semibold tabular-nums ${urgent ? 'text-[#c14b25]' : wait >= 40 ? 'text-[#b36f0e]' : 'text-gray-600'}`}>{durationLabel(wait)}</div>}
                     <div className="mt-1 whitespace-nowrap text-gray-500" title="Estimated service time">
                       {entry.isAppt && entry.present && <span className="mr-1 text-[#5c7c6c]">Walk-in est: {timeLabel(entry.estimatedStart)} ·</span>}
-                      {entry.isAppt ? <><span className="text-gray-400">Appt</span> {timeLabel(entry.apptAt)}</> : <><span className="text-gray-400">Est.</span> {timeLabel(entry.estimatedStart)}</>}
+                      {entry.lateArrival ? <span className="text-gray-400">Seat when free</span> : entry.isAppt ? <><span className="text-gray-400">Appt</span> {timeLabel(entry.apptAt)}</> : <><span className="text-gray-400">Est.</span> {timeLabel(entry.estimatedStart)}</>}
                     </div>
                     <button className="mt-1 font-medium text-[#175642] hover:underline" onClick={(event) => { event.stopPropagation(); openStart(entry); }}>Start</button>
                   </div>
                   <div onClick={(event) => event.stopPropagation()}>
-                    <RowMenu items={[{ label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } }, { label: 'Change service', onClick: () => setChangeServiceEntry(entry) }, { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present }, { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present }, { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true }]} />
+                    <RowMenu items={[
+                      { label: 'Reassign', onClick: () => { setSuggestedReassignStaffId(null); setReassignEntry(entry); } },
+                      { label: 'Change service', onClick: () => setChangeServiceEntry(entry) },
+                      /* Offered once they are actually past the estimate — before that
+                         there is nothing to forgive, and the option would just be noise. */
+                      { label: 'Mark late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: true }), hidden: !!entry.lateArrival || !late },
+                      { label: 'Clear late arrival', onClick: () => setLateArrival.mutate({ id: entry.id, lateArrival: false }), hidden: !entry.lateArrival },
+                      { label: 'Mark no-show', onClick: () => noShow.mutate(entry.id), hidden: entry.present },
+                      { label: 'Mark abandoned', onClick: () => abandon.mutate(entry.id), hidden: !entry.present },
+                      { label: 'Cancel', onClick: () => cancel.mutate(entry.id), destructive: true },
+                    ]} />
                   </div>
                 </div>
               );

@@ -361,6 +361,8 @@ export interface QueueEntriesTable {
   present_projected_at: TimestampTz | null;
   /** null = automatic matching, true = manually ready, false = explicitly kept waiting. */
   ready_override: Generated<boolean | null>;
+  /** Held out of the wait-time estimate after arriving past their estimate — see 0050_late_arrival.sql. */
+  late_arrival: Generated<boolean>;
   abandoned: Generated<boolean>;
   waiting_order: number | null;
   original_waiting_order: number | null;
