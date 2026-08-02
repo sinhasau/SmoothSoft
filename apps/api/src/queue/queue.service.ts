@@ -3,7 +3,6 @@ import { db } from '../common/request-context';
 import { appendEvent } from './event-log';
 import { estimateWaitTimes } from './wait-time';
 import { poolMediansByService, rollingServiceAverages } from './service-performance';
-import { clientPaceFactors, paceMultiplier } from './client-pace';
 import { chooseBestMatch } from './best-match';
 import { reorderForAppointmentSla } from './appointment-sla';
 import { projectInProgressJob } from './overrun';
@@ -219,12 +218,9 @@ export class QueueService {
     const poolMedians = poolMediansByService(performance.filter((item) => item.sampleCount >= 3), onFloorStaffIds);
 
     /**
-     * The one definition of "expected minutes", used BOTH as the divisor when
-     * measuring a client's pace ratio and as the base that ratio is applied
-     * to. They have to be the same function: a ratio measured against barber
-     * medians but applied to a catalog duration is a unit mismatch, and would
-     * systematically under-predict wherever the floor runs slower than the
-     * catalog says.
+     * The one definition of "expected minutes": this barber's own median where
+     * we know who it will be, otherwise the pool median for the floor, and
+     * only then the static catalog duration.
      */
     const expectedMinutesFor = (staffId: string | null | undefined, serviceId: string, catalogMinutes: number | null | undefined) =>
       (staffId ? performanceByPair.get(`${staffId}:${serviceId}`)?.averageMinutes : undefined)
@@ -232,19 +228,9 @@ export class QueueService {
         ?? catalogMinutes
         ?? 20;
 
-    const clientPaces = clientPaceFactors(completedTimings
-      .filter((row) => row.clientId)
-      .map((row) => ({
-        clientId: row.clientId!,
-        actualMinutes: (row.serviceCompletedAt!.getTime() - row.serviceStartedAt!.getTime()) / 60_000,
-        expectedMinutes: expectedMinutesFor(row.staffId, row.serviceId!, row.catalogMinutes),
-        catalogMinutes: row.catalogMinutes,
-      })));
-    const paceFor = (clientId: string | null | undefined) => paceMultiplier(clientId ? clientPaces.get(clientId) : undefined);
-
     const durationByEntry = new Map(waitingWithServices.map((w) => [w.id, Math.round(w.services.reduce((total, service) => total + (
       expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes)
-    ), 0) * paceFor(w.clientId)) || 20]));
+    ), 0)) || 20]));
 
     // Appointment SLA soft-bump — see appointment-sla.ts. Only reorders the
     // estimate math and which entries get first pick of an available staff
@@ -289,7 +275,7 @@ export class QueueService {
     const predictedFor = (entry: (typeof nowServingWithServices)[number]) =>
       entry.services.reduce((total, service) => total + (
         expectedMinutesFor(entry.assignedStaffId ?? entry.requestedStaffId, service.id, service.durationMinutes)
-      ), 0) * paceFor(entry.clientId) || 20;
+      ), 0) || 20;
     const inProgressProjections = nowServingWithServices
       .filter((entry) => entry.assignedStaffId && entry.serviceStartedAt)
       .map((entry) => projectInProgressJob({
@@ -338,9 +324,8 @@ export class QueueService {
       priorityOrder: sla.order,
       waiting: waitingWithServices.map((w) => {
         const predictions = w.services.map((service) => performanceByPair.get(`${w.assignedStaffId ?? w.requestedStaffId}:${service.id}`));
-        const clientPace = w.clientId ? clientPaces.get(w.clientId) : undefined;
         const predictedDurationMinutes = Math.round(
-          w.services.reduce((total, service) => total + expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes), 0) * paceFor(w.clientId),
+          w.services.reduce((total, service) => total + expectedMinutesFor(w.assignedStaffId ?? w.requestedStaffId, service.id, service.durationMinutes), 0),
         ) || 20;
         const historical = predictions.filter((prediction) => !!prediction);
         const recommendation = recommendationByEntry.get(w.id);
@@ -354,8 +339,6 @@ export class QueueService {
           recommendedStaffName: recommendation?.staffName ?? null,
           matchReason: recommendation?.reason ?? null,
           continuityVisitCount: recommendation?.clientVisitCount ?? 0,
-          clientPaceFactor: paceMultiplier(clientPace) === 1 ? null : clientPace?.factor ?? null,
-          clientPaceSampleCount: clientPace?.sampleCount ?? 0,
           apptSlaProtected: sla.protected.has(w.id),
           apptSlaDeadline: w.isAppt && w.apptAt ? new Date(new Date(w.apptAt).getTime() + appointmentMaxWaitMinutes * 60_000) : null,
         };

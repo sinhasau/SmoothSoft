@@ -1,6 +1,4 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { clientPaceFactors, paceMultiplier, MIN_CLIENT_VISITS } from '../queue/client-pace';
-import { rollingServiceAverages } from '../queue/service-performance';
 import { db } from '../common/request-context';
 import { normalizePhone } from '../common/phone';
 import { dateInTimezone } from '../common/time';
@@ -73,64 +71,6 @@ export class ClientsService {
     const upcomingNames = new Map<string, string[]>();
     for (const line of upcomingServiceLines) { const names = upcomingNames.get(line.appointmentId) ?? []; names.push(line.serviceName); upcomingNames.set(line.appointmentId, names); }
     const upcomingAppointmentsWithServices = upcomingAppointments.map((appointment) => ({ ...appointment, serviceName: upcomingNames.get(appointment.id)?.join(' + ') ?? appointment.serviceName }));
-    // How this client's own visits run against what the algorithm predicts for
-    // them — the same medians the queue uses (client-pace.ts), surfaced here so
-    // staff can see why someone is quoted longer than the service default.
-    const timedVisits = await trx.selectFrom('queue_entries as qe')
-      .leftJoin('services as s', 's.id', 'qe.service_id')
-      .select([
-        'qe.service_started_at as startedAt', 'qe.service_completed_at as completedAt',
-        'qe.assigned_location_staff_id as staffId', 'qe.service_id as serviceId', 's.duration_minutes as catalogMinutes',
-      ])
-      .where('qe.client_id', '=', clientId).where('qe.status', '=', 'completed')
-      .where('qe.service_started_at', 'is not', null).where('qe.service_completed_at', 'is not', null)
-      .orderBy('qe.service_completed_at', 'desc').limit(20).execute();
-
-    // The ratio has to be taken against the SAME expectation the queue divides
-    // by (queue.service.ts), which is the barber's own median where known.
-    // Dividing by the catalog duration instead would fold the barber's pace
-    // into the client's factor: a client who only ever sees a barber running
-    // 26 min on a 20-min cut would read as "30% longer" when they are in fact
-    // perfectly average, and the queue would then apply that on top of the
-    // barber median it already uses — counting the same slowness twice.
-    const staffIds = [...new Set(timedVisits.map((row) => row.staffId).filter((id): id is string => !!id))];
-    const serviceIds = [...new Set(timedVisits.map((row) => row.serviceId).filter((id): id is string => !!id))];
-    const peerCompletions = staffIds.length && serviceIds.length
-      ? await trx.selectFrom('queue_entries as qe')
-        .leftJoin('services as s', 's.id', 'qe.service_id')
-        .select([
-          'qe.assigned_location_staff_id as staffId', 'qe.service_id as serviceId',
-          'qe.service_started_at as startedAt', 'qe.service_completed_at as completedAt', 's.duration_minutes as catalogMinutes',
-        ])
-        .where('qe.status', '=', 'completed')
-        .where('qe.assigned_location_staff_id', 'in', staffIds)
-        .where('qe.service_id', 'in', serviceIds)
-        .where('qe.service_started_at', 'is not', null).where('qe.service_completed_at', 'is not', null)
-        .orderBy('qe.service_completed_at', 'desc').limit(1000).execute()
-      : [];
-    const barberMedians = new Map(
-      rollingServiceAverages(peerCompletions.map((row) => ({
-        staffId: row.staffId!, serviceId: row.serviceId!,
-        serviceStartedAt: row.startedAt!, serviceCompletedAt: row.completedAt!, catalogMinutes: row.catalogMinutes,
-      })))
-        .filter((item) => item.sampleCount >= 3)
-        .map((item) => [`${item.staffId}:${item.serviceId}`, item.averageMinutes]),
-    );
-
-    const pace = clientPaceFactors(timedVisits.map((row) => ({
-      clientId,
-      actualMinutes: (row.completedAt!.getTime() - row.startedAt!.getTime()) / 60_000,
-      expectedMinutes: barberMedians.get(`${row.staffId}:${row.serviceId}`) ?? row.catalogMinutes ?? 20,
-      catalogMinutes: row.catalogMinutes,
-    }))).get(clientId);
-    const servicePace = {
-      medianMinutes: pace?.medianMinutes ?? null,
-      timedVisitCount: pace?.sampleCount ?? 0,
-      /** Null until there is enough history to apply — matches what the queue does. */
-      factor: paceMultiplier(pace) === 1 ? null : pace?.factor ?? null,
-      minimumVisitsForFactor: MIN_CLIENT_VISITS,
-    };
-
     const consents = await trx.selectFrom('client_consents').select(['id', 'consent_type as consentType', 'version', 'accepted', 'captured_at as capturedAt', 'notes']).where('client_id', '=', clientId).orderBy('captured_at', 'desc').execute();
 
     return {
@@ -139,7 +79,6 @@ export class ClientsService {
       recordedSpend,
       recordedSpendCaveat: 'Recorded spend only covers transactions captured in this system — visits from before the system was in use are not included.',
       serviceHistory,
-      servicePace,
       upcomingAppointments: upcomingAppointmentsWithServices,
       consents,
     };
