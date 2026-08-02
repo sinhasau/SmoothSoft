@@ -19,9 +19,26 @@ npm run db:grant-app-role    # creates salon_app and grants it table access — 
 
 `db:migrate` tracks what it has applied in `schema_migrations` and runs each
 file in its own transaction, so it is safe to run repeatedly and from any
-state. `db:migrate:dry-run` lists what would run. For a database that was
-migrated by hand before tracking existed, run `db:migrate:baseline` once — it
-records every file as applied without executing any of it.
+state. `db:migrate:dry-run` lists what would run and changes nothing at all —
+it will not even create the tracking table.
+
+For a database that was migrated by hand before tracking existed, run
+`db:migrate:baseline` once. It records files as applied **without executing any
+of them**, so it must be told where the database actually got to:
+
+```bash
+# the database really does have every migration in db/migrations
+npm run db:migrate:baseline
+
+# the database was hand-migrated only as far as 0049
+node scripts/migrate.mjs --baseline --through 0049_service_default.sql
+npm run db:migrate      # applies 0050 onwards properly
+```
+
+Baselining past where the database actually is, is the one unrecoverable
+mistake here: those files are marked applied, `db:migrate` reports "up to
+date" forever, and the schema silently never gets them. When unsure, check the
+schema for something the last migration added rather than guessing.
 
 **Every new migration must be safe to re-run** (`create table if not exists`,
 `add column if not exists`, `drop policy if exists` before `create policy`, and

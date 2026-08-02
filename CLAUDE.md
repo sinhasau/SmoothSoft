@@ -127,10 +127,18 @@ Migrations 0001–0050 predate this rule and are grandfathered. Do not lower
 `schema_migrations` table, one transaction per file. It is safe to run
 repeatedly and from any state.
 
-- `npm run db:migrate:dry-run` — list what would run, change nothing
+- `npm run db:migrate:dry-run` — list what would run. Changes nothing, not even
+  creating the tracking table.
 - `npm run db:migrate:baseline` — one-time adoption for a database that was
-  migrated by hand before tracking existed. Records every file as applied
-  **without executing any of it**. Refuses to run if anything is already tracked.
+  migrated by hand before tracking existed. Records files as applied **without
+  executing any of them**. Refuses to run if anything is already tracked.
+  - Add `--through <file>` when the database is behind: everything up to and
+    including `<file>` is marked applied, everything after stays outstanding
+    and gets applied properly by the next `db:migrate`.
+  - Baselining past where the database actually is, is unrecoverable in
+    practice — those migrations are marked applied, `db:migrate` says "up to
+    date" forever, and the schema silently never gets them. Verify against the
+    schema (does the column the last migration adds exist?) before baselining.
 
 `DATABASE_MIGRATE_URL` must point at the **table-owning** role, never the app
 role — the app connects as `salon_app`, which RLS policies apply to. See
