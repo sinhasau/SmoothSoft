@@ -83,3 +83,14 @@ jobs:
           onDisk=$(ls db/migrations/*.sql | wc -l)
           echo "tracked=$tracked onDisk=$onDisk"
           [ "$tracked" -eq "$onDisk" ] || { echo "::error::schema_migrations has $tracked rows but there are $onDisk migration files."; exit 1; }
+      # Tenant isolation is a database behaviour, so it can only be tested
+      # against a real database — which is why this lives here and not in
+      # `verify`. It runs last because it needs the schema migrated AND the
+      # app role granted. Without these two env vars the suite skips itself,
+      # so the `verify` job (no Postgres) stays green.
+      - name: Row-Level Security tenant isolation
+        env:
+          RLS_TEST_OWNER_URL: postgres://salon:salon_dev_password@localhost:5432/salon_platform
+          RLS_TEST_APP_URL: postgres://salon_app:salon_app_dev_password@localhost:5432/salon_platform
+        run: npx vitest run src/db/rls-isolation.test.ts
+        working-directory: apps/api

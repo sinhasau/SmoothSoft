@@ -158,6 +158,25 @@ API build that depends on them starts serving.
   inline and untested. `nav-sections.ts`, `lateness.ts`, and `visit-notes.ts`
   exist for exactly this reason.
 
+### Tenant isolation
+
+`apps/api/src/db/rls-isolation.test.ts` is the one suite that needs a real
+Postgres — RLS is database behaviour, and mocking it would prove nothing. It
+skips unless `RLS_TEST_OWNER_URL` and `RLS_TEST_APP_URL` are set, and runs in
+the CI `migrations` job, which already builds a migrated database with
+`salon_app` granted.
+
+**Any new table with a `location_id` or `organization_id` column must enable
+row level security and carry a policy.** The suite enumerates tables from the
+Postgres catalog rather than a hand-kept list, so it fails the moment an
+unprotected one appears and names it. Do not add it to `NOT_TENANT_SCOPED` to
+make the failure go away — that list is only for tables genuinely outside the
+tenancy model, and each entry says why.
+
+Remember `create policy` needs a preceding `drop policy if exists` to stay
+re-runnable; the migration-safety gate checks that the drop names the same
+policy *and* the same table, and comes first.
+
 ## Time and timezones
 
 Anything involving a shop's calendar day, weekday, or opening hours must go

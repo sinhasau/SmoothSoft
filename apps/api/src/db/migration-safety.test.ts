@@ -28,6 +28,47 @@ interface Rule {
   /** Matches a statement that is NOT safe to re-run. */
   pattern: RegExp;
   fix: string;
+  /**
+   * Some statements have no `if not exists` form, so the safe version is a
+   * preceding `drop ... if exists`. For those, `pattern` only finds candidates
+   * and this decides whether each one is actually guarded.
+   *
+   * Without it the rule would reject the very pattern CLAUDE.md prescribes —
+   * which is exactly what happened when 0052 became the first guarded
+   * migration to create a policy.
+   */
+  isGuarded?: (sql: string, upToMatch: string, match: RegExpExecArray) => boolean;
+}
+
+/**
+ * Builds an `isGuarded` for the drop-then-create shape: `create <kind> <name>
+ * on <table>` is safe only if a matching `drop <kind> if exists <name> on
+ * <table>` appears earlier in the same file. Order matters — dropping it
+ * afterwards would delete what was just created.
+ */
+function guardedByPrecedingDrop(kind: 'policy' | 'trigger') {
+  return (_sql: string, upToMatch: string, match: RegExpExecArray): boolean => {
+    const [, name, table] = match;
+    if (!name || !table) return false;
+    const drop = new RegExp(
+      `\\bdrop\\s+${kind}\\s+if\\s+exists\\s+${name}\\s+on\\s+${table}\\b`,
+      'i',
+    );
+    return drop.test(upToMatch);
+  };
+}
+
+/** All the places a rule's pattern fires, with the text preceding each one. */
+function violationsOf(rule: Rule, sql: string): boolean {
+  const global = new RegExp(rule.pattern.source, rule.pattern.flags.includes('g')
+    ? rule.pattern.flags
+    : `${rule.pattern.flags}g`);
+  let match: RegExpExecArray | null;
+  while ((match = global.exec(sql)) !== null) {
+    if (!rule.isGuarded) return true;
+    if (!rule.isGuarded(sql, sql.slice(0, match.index), match)) return true;
+  }
+  return false;
 }
 
 const RULES: Rule[] = [
@@ -58,8 +99,9 @@ const RULES: Rule[] = [
   },
   {
     name: 'create policy',
-    pattern: /\bcreate\s+policy\s+/i,
+    pattern: /\bcreate\s+policy\s+(\w+)\s+on\s+([\w.]+)/i,
     fix: 'Postgres has no `create policy if not exists` — precede it with `drop policy if exists <name> on <table>;`',
+    isGuarded: guardedByPrecedingDrop('policy'),
   },
   {
     name: 'create function',
@@ -73,8 +115,9 @@ const RULES: Rule[] = [
   },
   {
     name: 'create trigger',
-    pattern: /\bcreate\s+trigger\s+/i,
+    pattern: /\bcreate\s+trigger\s+(\w+)[\s\S]*?\bon\s+([\w.]+)/i,
     fix: 'Postgres has no `create trigger if not exists` — precede it with `drop trigger if exists <name> on <table>;`',
+    isGuarded: guardedByPrecedingDrop('trigger'),
   },
 ];
 
@@ -112,7 +155,7 @@ describe('migration safety', () => {
       if (!filename.endsWith('.sql')) return;
       const sql = stripNoise(readFileSync(join(MIGRATIONS_DIR, filename), 'utf8'));
       const violations = RULES
-        .filter((rule) => rule.pattern.test(sql))
+        .filter((rule) => violationsOf(rule, sql))
         .map((rule) => `  • ${rule.name} — ${rule.fix}`);
       expect(violations.join('\n'), `${filename} has statements that would fail on a second run:\n${violations.join('\n')}`).toBe('');
     },
@@ -120,7 +163,8 @@ describe('migration safety', () => {
 });
 
 describe('the rules themselves', () => {
-  const violates = (name: string, sql: string) => RULES.find((r) => r.name === name)!.pattern.test(stripNoise(sql));
+  const violates = (name: string, sql: string) =>
+    violationsOf(RULES.find((r) => r.name === name)!, stripNoise(sql));
 
   it('flags an unguarded create table but accepts the guarded form', () => {
     expect(violates('create table', 'create table foo (id uuid);')).toBe(true);
@@ -139,8 +183,33 @@ describe('the rules themselves', () => {
     expect(violates('add column', 'alter table t add column if not exists c boolean;')).toBe(false);
   });
 
-  it('flags create policy, which has no if-not-exists form at all', () => {
+  it('flags a bare create policy but accepts one guarded by a preceding drop', () => {
     expect(violates('create policy', 'create policy p on t using (true);')).toBe(true);
+    expect(violates('create policy',
+      'drop policy if exists p on t;\ncreate policy p on t using (true);')).toBe(false);
+  });
+
+  it('does not accept a drop that names a different policy or table', () => {
+    expect(violates('create policy',
+      'drop policy if exists other on t;\ncreate policy p on t using (true);')).toBe(true);
+    expect(violates('create policy',
+      'drop policy if exists p on other_table;\ncreate policy p on t using (true);')).toBe(true);
+  });
+
+  it('rejects a drop that comes after the create — order is what makes it safe', () => {
+    expect(violates('create policy',
+      'create policy p on t using (true);\ndrop policy if exists p on t;')).toBe(true);
+  });
+
+  it('checks every policy in a file, not just the first', () => {
+    expect(violates('create policy',
+      'drop policy if exists a on t;\ncreate policy a on t using (true);\ncreate policy b on t using (true);')).toBe(true);
+  });
+
+  it('flags a bare create trigger but accepts one guarded by a preceding drop', () => {
+    expect(violates('create trigger', 'create trigger tg before insert on t execute function f();')).toBe(true);
+    expect(violates('create trigger',
+      'drop trigger if exists tg on t;\ncreate trigger tg before insert on t execute function f();')).toBe(false);
   });
 
   it('flags create function but accepts create or replace', () => {
