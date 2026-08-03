@@ -127,10 +127,18 @@ Migrations 0001–0050 predate this rule and are grandfathered. Do not lower
 `schema_migrations` table, one transaction per file. It is safe to run
 repeatedly and from any state.
 
-- `npm run db:migrate:dry-run` — list what would run, change nothing
+- `npm run db:migrate:dry-run` — list what would run. Changes nothing, not even
+  creating the tracking table.
 - `npm run db:migrate:baseline` — one-time adoption for a database that was
-  migrated by hand before tracking existed. Records every file as applied
-  **without executing any of it**. Refuses to run if anything is already tracked.
+  migrated by hand before tracking existed. Records files as applied **without
+  executing any of them**. Refuses to run if anything is already tracked.
+  - Add `--through <file>` when the database is behind: everything up to and
+    including `<file>` is marked applied, everything after stays outstanding
+    and gets applied properly by the next `db:migrate`.
+  - Baselining past where the database actually is, is unrecoverable in
+    practice — those migrations are marked applied, `db:migrate` says "up to
+    date" forever, and the schema silently never gets them. Verify against the
+    schema (does the column the last migration adds exist?) before baselining.
 
 `DATABASE_MIGRATE_URL` must point at the **table-owning** role, never the app
 role — the app connects as `salon_app`, which RLS policies apply to. See
@@ -149,6 +157,25 @@ API build that depends on them starts serving.
 - Prefer extracting logic into a pure module and testing that, over leaving it
   inline and untested. `nav-sections.ts`, `lateness.ts`, and `visit-notes.ts`
   exist for exactly this reason.
+
+### Tenant isolation
+
+`apps/api/src/db/rls-isolation.test.ts` is the one suite that needs a real
+Postgres — RLS is database behaviour, and mocking it would prove nothing. It
+skips unless `RLS_TEST_OWNER_URL` and `RLS_TEST_APP_URL` are set, and runs in
+the CI `migrations` job, which already builds a migrated database with
+`salon_app` granted.
+
+**Any new table with a `location_id` or `organization_id` column must enable
+row level security and carry a policy.** The suite enumerates tables from the
+Postgres catalog rather than a hand-kept list, so it fails the moment an
+unprotected one appears and names it. Do not add it to `NOT_TENANT_SCOPED` to
+make the failure go away — that list is only for tables genuinely outside the
+tenancy model, and each entry says why.
+
+Remember `create policy` needs a preceding `drop policy if exists` to stay
+re-runnable; the migration-safety gate checks that the drop names the same
+policy *and* the same table, and comes first.
 
 ## Time and timezones
 

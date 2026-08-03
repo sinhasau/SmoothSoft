@@ -111,6 +111,38 @@ The `transactions` table (with `transaction_items` for the line-item breakdown e
 
 **Payment data:** never store raw card numbers. Tokenize through the payment processor (Stripe/Square) and store only the token, last 4 digits, and card brand. This is what keeps the PCI-DSS obligation (flagged in the Legal & Risk module) mostly on the processor's shoulders rather than the platform's.
 
+### 1.5b How the isolation model is verified
+
+The RLS design above was, until recently, asserted but never tested. That is a
+tolerable gap with one owner on the platform and an unacceptable one with many:
+a policy bug is invisible in the first case and a breach in the second.
+
+`apps/api/src/db/rls-isolation.test.ts` now pins it against a real Postgres, in
+the CI `migrations` job. It covers four things:
+
+1. **Policy coverage** — every table carrying `location_id` or
+   `organization_id` has RLS enabled and at least one policy. Tables are
+   enumerated from the Postgres catalog, not a maintained list, so a new
+   unprotected table fails CI the moment it exists. This immediately found one:
+   `location_sequence_counters`, unprotected since 0005, fixed in migration
+   0052.
+2. **Enforcement preconditions** — the app role is not superuser, does not hold
+   `BYPASSRLS`, and owns none of the tenant tables. `pool.ts` guards the
+   connection *string*; this guards the role's actual attributes, which is the
+   failure mode where every policy still looks correct in the schema.
+3. **Behaviour** — org A cannot read, insert into, update, or delete org B's
+   rows, including bumping B's event sequence counter.
+4. **Fail-closed** — a query with no scope set errors rather than returning
+   everything, and the scope does not survive its transaction. That second one
+   guards the worst bug available here: a session-level `SET` instead of
+   `set_config(..., true)` would carry one tenant's scope into the next
+   tenant's request on a pooled connection.
+
+**Still open** (unchanged from 0008's closing note): tables reached only via a
+parent FK inherit isolation through the join rather than a policy of their own.
+The coverage test does not flag them because they carry no tenant column. That
+remains correct only while they are never queried standalone.
+
 ### 1.6 Concrete storage recommendations
 
 | Concern | Recommendation |
