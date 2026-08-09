@@ -267,9 +267,16 @@ export function ClockInDropdown({ offStaff, onClockIn, rosterCount }: {
         device, so on the phone this button previously sat there disabled and
         explained nothing.
       */}
-      {empty && (
+      {/*
+        Only the empty-roster case gets a note. "Everyone is already clocked in"
+        was noise at best and a contradiction at worst — the strip beside this
+        button already lists who is on the floor, so a disabled control there
+        explains itself. An empty roster does not: the fix is on another screen,
+        so that one still says where to go.
+      */}
+      {empty && rosterEmpty && (
         <p className="mt-1 text-right text-[11px] leading-4 text-[#77736b]">
-          {rosterEmpty ? 'No barbers on this location yet — add them in Staff.' : 'Everyone is already clocked in.'}
+          No barbers on this location yet — add them in Staff.
         </p>
       )}
       {open && !empty && (

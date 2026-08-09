@@ -40,6 +40,23 @@ mistake here: those files are marked applied, `db:migrate` reports "up to
 date" forever, and the schema silently never gets them. When unsure, check the
 schema for something the last migration added rather than guessing.
 
+### Starting over with fresh data
+
+`npm run db:reset -- --confirm <database-name>` drops every table, re-applies
+all migrations, and reseeds a complete demo shop in one command. A database
+built from empty is correct by construction, which is why this is the preferred
+route over adopting an existing one with `--baseline`.
+
+It **destroys all data in the target database**, so the confirm argument must
+match the database named in `DATABASE_MIGRATE_URL` — you have to type the name
+of the thing you are about to destroy. `transactions` is the financial system
+of record (3-7 year retention); never point this at a database holding real
+sales.
+
+Seeds that need extra environment (tax identities needs
+`STAFF_PII_ENCRYPTION_KEY`) are skipped with a warning rather than failing the
+run — the shop does not need them.
+
 **Every new migration must be safe to re-run** (`create table if not exists`,
 `add column if not exists`, `drop policy if exists` before `create policy`, and
 so on). `apps/api/src/db/migration-safety.test.ts` fails CI otherwise. See

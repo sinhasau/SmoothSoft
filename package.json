@@ -10,7 +10,8 @@
     "db:migrate": "node scripts/migrate.mjs",
     "db:grant-app-role": "psql \"$DATABASE_MIGRATE_URL\" -v ON_ERROR_STOP=1 -f db/grant-app-role.sql",
     "db:migrate:dry-run": "node scripts/migrate.mjs --dry-run",
-    "db:migrate:baseline": "node scripts/migrate.mjs --baseline"
+    "db:migrate:baseline": "node scripts/migrate.mjs --baseline",
+    "db:reset": "node scripts/reset-and-seed.mjs"
   },
   "devDependencies": {
     "pg": "^8.13.0"

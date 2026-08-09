@@ -52,7 +52,12 @@ const DOWNTOWN_ROSTER: StaffSeed[] = [
     fullName: 'Alex',
     role: 'staff',
     classification: 'w2',
-    employmentStatus: 'inactive',
+    // Deliberately active. Seeding an inactive barber at the PRIMARY location
+    // set a trap: inactive staff are excluded from the login roster and led to
+    // an unclockable floor, so the shop everyone opens first demoed as broken.
+    // seed-more-staff.ts still seeds one inactive (Olivia Marsh) and one
+    // resigned (Tasha Freeman) at other locations, so those states stay
+    // exercised where they cannot block the main demo.
     commissionPct: 55,
     schedule: [0, 3, 4, 5, 6].map((day) => ({ day, start: '09:00', end: '17:00' })),
   },
