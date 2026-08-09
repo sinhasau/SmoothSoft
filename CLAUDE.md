@@ -158,6 +158,45 @@ API build that depends on them starts serving.
   inline and untested. `nav-sections.ts`, `lateness.ts`, and `visit-notes.ts`
   exist for exactly this reason.
 
+### Run the app. Every change. No exceptions.
+
+**Passing tests are not evidence that a change works.** They are evidence that
+the code agrees with the assumptions of whoever wrote the tests. When those
+assumptions are the bug, the suite goes green and ships it.
+
+That is not hypothetical. The clock-in menu was changed to lead with staff
+scheduled today. Eleven tests passed, typecheck was clean, the build was green,
+CI was green — and it was broken on arrival, because every fixture defaulted to
+`scheduledToday: true` and no test asked what happens when **nobody** is
+scheduled. It shipped on a Sunday, when nobody is. The seed roster
+(`[1,2,4,5,6]`) and the day of the week were both plainly visible the whole
+time. Nothing caught it except the owner opening his shop and finding he could
+not put a barber on the floor.
+
+So, before saying any change is done:
+
+1. **Start it and use it.** Migrate and seed a local database, run the API and
+   the web app, open the screen the change touches, and perform the action a
+   real person would perform. Chromium and Playwright are installed
+   (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`); never run
+   `playwright install`.
+2. **Check the phone, not just the desktop.** Drive it at a phone viewport
+   (390×844). Most of the bugs in this repo's history are mobile-only: a submit
+   button under the home indicator, a nav section that exists only on desktop, a
+   `title` attribute explaining a disabled control that touch devices never
+   show.
+3. **Exercise the empty and degenerate states deliberately.** Zero staff on the
+   roster, nobody clocked in, nobody scheduled, an empty queue, a closed shop.
+   These are where the real reports come from, and they are exactly the states a
+   happy-path fixture never reaches.
+4. **Say what was actually verified.** "231 tests pass and it builds" is a true
+   statement about the tests. It is not "I checked it works", and reporting it
+   as though it were is how a broken build gets a green summary.
+
+If running it genuinely is not possible for a change, say so in that sentence —
+plainly, up front — rather than letting a green test summary imply more than it
+earned.
+
 ### Tenant isolation
 
 `apps/api/src/db/rls-isolation.test.ts` is the one suite that needs a real
