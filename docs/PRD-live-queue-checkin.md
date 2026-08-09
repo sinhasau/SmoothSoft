@@ -53,9 +53,13 @@ This module solves #1 (partially, see algorithm spec §0) and #2. It lays the gr
   the API — the shop runs on live clock state, and covering on a day off is
   routine — so this is about which case leads, not about restricting the other.
   Staff whose employment status is not `active` are not offered.
-  The control stays visible and disabled ("Everyone on the roster is already
-  clocked in") rather than disappearing when there is nobody to clock in; a
-  control that vanishes reads as a missing feature to whoever is looking for it.
+  The control stays visible and disabled rather than disappearing when there is
+  nobody to clock in; a control that vanishes reads as a missing feature to
+  whoever is looking for it. It says which of the two reasons applies — either
+  *Everyone is already clocked in* or *No barbers on this location yet*, since
+  those have opposite fixes — as **rendered text, not a `title` attribute**,
+  because a title never appears on a touch device and the control is used on a
+  phone at the counter.
   Covering a shift at a **different** location is not supported yet — that needs
   the multi-location staff assignment described in
   `ARCHITECTURE-data-and-perspectives.md`.
