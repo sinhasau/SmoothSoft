@@ -53,15 +53,67 @@ describe('ClockInDropdown — scheduled staff first', () => {
     expect(onClockIn).toHaveBeenCalledWith('rayf');
   });
 
-  it('says so plainly when everyone scheduled is already on the floor', async () => {
+  it('does not split the list when nobody is scheduled today', async () => {
+    // The regression this pins: on a Sunday — or at any shop that does not
+    // keep weekly schedules current — nobody is scheduled, and splitting
+    // unconditionally opened the menu onto an empty list with every real
+    // barber buried behind "Not scheduled". A clock-in menu with no people in
+    // it reads as broken.
     const user = userEvent.setup();
     render(
-      <ClockInDropdown offStaff={[staff('Ray F.', { scheduledToday: false })]} onClockIn={vi.fn()} />,
+      <ClockInDropdown
+        offStaff={[
+          staff('Marcus J.', { scheduledToday: false }),
+          staff('Ray F.', { scheduledToday: false }),
+        ]}
+        onClockIn={vi.fn()}
+      />,
     );
     await open(user);
-    expect(screen.getByText(/nobody scheduled today is off the floor/i)).toBeInTheDocument();
-    // The fill-in path is still one tap away — that is the whole point.
+    expect(screen.getByRole('button', { name: 'Marcus J.' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ray F.' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /not scheduled/i })).not.toBeInTheDocument();
+  });
+
+  it('still clocks someone in from that unsplit list', async () => {
+    const user = userEvent.setup();
+    const onClockIn = vi.fn();
+    render(
+      <ClockInDropdown
+        offStaff={[staff('Marcus J.', { scheduledToday: false })]}
+        onClockIn={onClockIn}
+      />,
+    );
+    await open(user);
+    await user.click(screen.getByRole('button', { name: 'Marcus J.' }));
+    expect(onClockIn).toHaveBeenCalledWith('marcusj');
+  });
+
+  it('splits only once there is a scheduled name to lead with', async () => {
+    const user = userEvent.setup();
+    render(
+      <ClockInDropdown
+        offStaff={[staff('Dee W.'), staff('Ray F.', { scheduledToday: false })]}
+        onClockIn={vi.fn()}
+      />,
+    );
+    await open(user);
+    expect(screen.getByRole('button', { name: 'Dee W.' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Not scheduled (1)' })).toBeInTheDocument();
+  });
+
+  it('never opens onto an empty menu', async () => {
+    // Whatever the schedule says, if the button is enabled there is at least
+    // one person to tap.
+    const user = userEvent.setup();
+    for (const scheduledToday of [true, false, undefined]) {
+      const { unmount } = render(
+        <ClockInDropdown offStaff={[staff('Solo B.', { scheduledToday })]} onClockIn={vi.fn()} />,
+      );
+      await open(user);
+      expect(screen.getByRole('button', { name: 'Solo B.' })).toBeInTheDocument();
+      unmount();
+    }
   });
 });
 

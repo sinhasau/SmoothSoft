@@ -202,8 +202,21 @@ export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCand
   // nothing is known to be scheduled, so everyone belongs in the main list
   // rather than hidden behind a button that looks broken.
   const scheduleKnown = selectable.some((s) => s.scheduledToday !== undefined);
-  const scheduled = scheduleKnown ? selectable.filter((s) => s.scheduledToday) : selectable;
-  const unscheduled = scheduleKnown ? selectable.filter((s) => !s.scheduledToday) : [];
+  const scheduledToday = scheduleKnown ? selectable.filter((s) => s.scheduledToday) : [];
+  // Only split the list when there is actually a scheduled group to lead with.
+  //
+  // Splitting unconditionally made the common case worse: on a Sunday, or at a
+  // shop that does not keep weekly schedules current, nobody is scheduled — so
+  // the menu opened onto "Nobody scheduled today is off the floor" with every
+  // real barber buried one tap down. Opening a clock-in menu and seeing no
+  // people in it reads as broken, and it may as well be.
+  //
+  // The schedule is a hint about which name to reach for first, not a gate. A
+  // hint that would empty the list has nothing to offer, so it gets out of the
+  // way and everyone goes in the main list.
+  const split = scheduledToday.length > 0;
+  const scheduled = split ? scheduledToday : selectable;
+  const unscheduled = split ? selectable.filter((s) => !s.scheduledToday) : [];
   const empty = selectable.length === 0;
 
   const pick = (id: string) => {
@@ -243,10 +256,7 @@ export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCand
       </button>
       {open && !empty && (
         <div className="absolute right-0 top-full z-20 mt-1 max-h-[60dvh] w-56 overflow-y-auto rounded-lg border border-black/10 bg-white py-1 shadow-lg">
-          {scheduled.length > 0 && scheduled.map(row)}
-          {scheduled.length === 0 && !showUnscheduled && (
-            <p className="px-3 py-2 text-xs text-gray-500">Nobody scheduled today is off the floor.</p>
-          )}
+          {scheduled.map(row)}
           {unscheduled.length > 0 && (showUnscheduled ? (
             <>
               <p className="mt-1 border-t border-black/10 px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77736b]">
