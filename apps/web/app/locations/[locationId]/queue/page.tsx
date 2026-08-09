@@ -30,6 +30,14 @@ interface TeamMember {
   fullName: string;
   status: 'available' | 'busy' | 'break' | 'off';
   role: string;
+  /**
+   * Both optional on purpose: during a deploy the old API and the new web
+   * build are live at the same time, so these must be absent-tolerant rather
+   * than required. ClockInDropdown degrades to its previous behaviour when
+   * they are missing.
+   */
+  scheduledToday?: boolean;
+  employmentStatus?: 'active' | 'inactive' | 'resigned';
 }
 
 interface QueueEntry {

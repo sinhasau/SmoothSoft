@@ -12,6 +12,7 @@ import { exceedsClosingGrace } from './closing-guard';
 import { localDayOfWeek, resolveTodayHours } from './store-hours';
 import { dateInTimezone, dayOfWeekForDate, minutesOfDayInTimezone } from '../common/time';
 import { resolveDefaultServiceIds } from './default-service';
+import { scheduledTodayStaffIds } from './scheduled-today';
 import { initialServiceNotes } from './visit-notes';
 import { disambiguateProfiles } from './profile-disambiguation';
 import { normalizePhone } from '../common/phone';
@@ -78,13 +79,53 @@ export class QueueService {
     const trx = db();
     const location = await trx.selectFrom('locations').select('timezone').where('id', '=', locationId).executeTakeFirstOrThrow();
 
-    const team = await trx
+    const roster = await trx
       .selectFrom('location_staff as ls')
       .innerJoin('users as u', 'u.id', 'ls.user_id')
-      .select(['ls.id as locationStaffId', 'u.full_name as fullName', 'ls.status as status', 'ls.role as role'])
+      .select([
+        'ls.id as locationStaffId',
+        'u.full_name as fullName',
+        'ls.status as status',
+        'ls.role as role',
+        'ls.employment_status as employmentStatus',
+      ])
       .where('ls.location_id', '=', locationId)
       .orderBy('u.full_name')
       .execute();
+
+    // Who the shop actually expects today. This does NOT gate clocking in —
+    // clockIn() still accepts anyone on the roster, because covering a shift on
+    // your day off is a normal Saturday. It only decides who the "+ clock in"
+    // list shows first, with everyone else behind a "Not scheduled" tap.
+    //
+    // Shift rows are keyed to the shop's local calendar day, so the date and
+    // weekday must be read in the LOCATION's timezone — reading them off the
+    // server clock lands on the wrong day for any shop west of UTC.
+    const todayStr = dateInTimezone(location.timezone, new Date());
+    const todayDow = dayOfWeekForDate(todayStr);
+    const rosterIds = roster.map((member) => member.locationStaffId);
+    const [scheduleExceptions, weeklyShifts] = rosterIds.length
+      ? await Promise.all([
+          trx.selectFrom('schedule_exceptions')
+            .select(['location_staff_id', 'is_working'])
+            .where('location_staff_id', 'in', rosterIds)
+            .where('work_date', '=', todayStr)
+            .execute(),
+          trx.selectFrom('staff_schedule_days')
+            .select(['location_staff_id'])
+            .where('location_staff_id', 'in', rosterIds)
+            .where('day_of_week', '=', todayDow)
+            .execute(),
+        ])
+      : [[], []];
+    const scheduledIds = scheduledTodayStaffIds(scheduleExceptions, weeklyShifts);
+
+    // `scheduledToday` and `employmentStatus` are additive: an older web build
+    // ignores them and behaves exactly as before.
+    const team = roster.map((member) => ({
+      ...member,
+      scheduledToday: scheduledIds.has(member.locationStaffId),
+    }));
 
     const backlogRows = await trx
       .selectFrom('queue_entries as qe')

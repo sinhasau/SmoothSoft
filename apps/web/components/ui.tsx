@@ -159,32 +159,108 @@ export function RowMenu({ items }: { items: MenuItem[] }) {
   );
 }
 
-/** Right-aligned "+ clock in" dropdown listing off-shift staff, instead of a button per off-duty chip. */
-export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: { locationStaffId: string; fullName: string }[]; onClockIn: (id: string) => void }) {
+export interface ClockInCandidate {
+  locationStaffId: string;
+  fullName: string;
+  /** On today's schedule at this location. Absent on responses from an older API build. */
+  scheduledToday?: boolean;
+  /** Absent on responses from an older API build; treated as active. */
+  employmentStatus?: 'active' | 'inactive' | 'resigned';
+}
+
+/**
+ * "+ clock in" — the control for putting a barber on the floor.
+ *
+ * Two things it deliberately does not do:
+ *
+ * 1. **It never hides itself.** It used to `return null` when nobody was off
+ *    shift, so anyone looking for it while the shop was fully staffed found
+ *    nothing at all and concluded the feature was missing. A control that
+ *    vanishes cannot be found; a disabled one explains itself.
+ * 2. **It never blocks a fill-in.** Clocking in someone who is not on today's
+ *    schedule has always been allowed by the API and stays one tap away — the
+ *    shop runs on live clock state, and covering on a day off is a normal
+ *    Saturday. Scheduled staff simply come first, because that is the common
+ *    case; "Not scheduled" reveals the rest without becoming part of the flow.
+ *
+ * Rows are `min-h-11` (44px) because this gets used on a phone, at the counter,
+ * often one-handed.
+ */
+export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCandidate[]; onClockIn: (id: string) => void }) {
   const [open, setOpen] = useState(false);
-  const ref = useOutsideClick(() => setOpen(false));
-  if (offStaff.length === 0) return null;
+  const [showUnscheduled, setShowUnscheduled] = useState(false);
+  const ref = useOutsideClick(() => {
+    setOpen(false);
+    setShowUnscheduled(false);
+  });
+
+  // Someone who has left should not be one tap from being put back on the
+  // floor. An older API build omits the field entirely — treat that as active
+  // so this degrades to the previous behaviour rather than emptying the list.
+  const selectable = offStaff.filter((s) => (s.employmentStatus ?? 'active') === 'active');
+  // Same reasoning for scheduledToday: if the API has not been deployed yet,
+  // nothing is known to be scheduled, so everyone belongs in the main list
+  // rather than hidden behind a button that looks broken.
+  const scheduleKnown = selectable.some((s) => s.scheduledToday !== undefined);
+  const scheduled = scheduleKnown ? selectable.filter((s) => s.scheduledToday) : selectable;
+  const unscheduled = scheduleKnown ? selectable.filter((s) => !s.scheduledToday) : [];
+  const empty = selectable.length === 0;
+
+  const pick = (id: string) => {
+    onClockIn(id);
+    setOpen(false);
+    setShowUnscheduled(false);
+  };
+
+  const row = (s: ClockInCandidate) => (
+    <button
+      key={s.locationStaffId}
+      onClick={() => pick(s.locationStaffId)}
+      className="flex min-h-11 w-full items-center px-3 py-2 text-left text-sm hover:bg-black/5"
+    >
+      {s.fullName}
+    </button>
+  );
 
   return (
     <div className="relative" ref={ref}>
-      <button type="button" onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 text-sm text-gray-600 hover:text-black">
+      <button
+        type="button"
+        onClick={() => !empty && setOpen((v) => !v)}
+        disabled={empty}
+        aria-expanded={open}
+        title={empty ? "Everyone on the roster is already clocked in" : undefined}
+        className={`flex min-h-11 items-center gap-1 rounded-lg border border-[#dedbd2] bg-white px-3 text-sm font-medium ${
+          empty ? 'cursor-default text-gray-400' : 'text-[#383d3a] hover:border-[#315f52]/40 hover:text-black'
+        }`}
+      >
         + clock in
-        <svg width="10" height="6" viewBox="0 0 10 6" className="text-gray-400">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        {!empty && (
+          <svg width="10" height="6" viewBox="0 0 10 6" className="text-gray-400">
+            <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
       </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 w-40 rounded-lg border border-black/10 bg-white shadow-lg py-1">
-          {offStaff.map((s) => (
+      {open && !empty && (
+        <div className="absolute right-0 top-full z-20 mt-1 max-h-[60dvh] w-56 overflow-y-auto rounded-lg border border-black/10 bg-white py-1 shadow-lg">
+          {scheduled.length > 0 && scheduled.map(row)}
+          {scheduled.length === 0 && !showUnscheduled && (
+            <p className="px-3 py-2 text-xs text-gray-500">Nobody scheduled today is off the floor.</p>
+          )}
+          {unscheduled.length > 0 && (showUnscheduled ? (
+            <>
+              <p className="mt-1 border-t border-black/10 px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77736b]">
+                Not scheduled today
+              </p>
+              {unscheduled.map(row)}
+            </>
+          ) : (
             <button
-              key={s.locationStaffId}
-              onClick={() => {
-                onClockIn(s.locationStaffId);
-                setOpen(false);
-              }}
-              className="block w-full text-left px-3 py-1.5 text-sm hover:bg-black/5"
+              type="button"
+              onClick={() => setShowUnscheduled(true)}
+              className="mt-1 flex min-h-11 w-full items-center border-t border-black/10 px-3 py-2 text-left text-sm text-gray-600 hover:bg-black/5 hover:text-black"
             >
-              {s.fullName}
+              Not scheduled ({unscheduled.length})
             </button>
           ))}
         </div>

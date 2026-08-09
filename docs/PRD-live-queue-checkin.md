@@ -44,7 +44,18 @@ This module solves #1 (partially, see algorithm spec §0) and #2. It lays the gr
 
 ### 5.1 Team status (staff section, visually separated from queue)
 - Roster of barbers with live status: `available`, `busy` (system-derived only — set by Start, cleared by Complete, never manually selectable), `break`, `off`.
-- "+ clock in" control for off-shift barbers.
+- "+ clock in" control for off-shift barbers. It lists staff **scheduled today**
+  first; everyone else on the roster sits behind a "Not scheduled (n)" button in
+  the same menu. Clocking in an unscheduled barber has always been permitted by
+  the API — the shop runs on live clock state, and covering on a day off is
+  routine — so this is about which case leads, not about restricting the other.
+  Staff whose employment status is not `active` are not offered.
+  The control stays visible and disabled ("Everyone on the roster is already
+  clocked in") rather than disappearing when there is nobody to clock in; a
+  control that vanishes reads as a missing feature to whoever is looking for it.
+  Covering a shift at a **different** location is not supported yet — that needs
+  the multi-location staff assignment described in
+  `ARCHITECTURE-data-and-perspectives.md`.
 - Changing status to `break`/`off` while a barber has an active client triggers a **conflict resolution prompt** (check the client out, or reassign to another barber) before the status change applies — prevents silently orphaning an in-progress service.
 
 ### 5.2 Now serving
