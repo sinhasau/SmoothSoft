@@ -53,19 +53,71 @@ describe('ClockInDropdown — scheduled staff first', () => {
     expect(onClockIn).toHaveBeenCalledWith('rayf');
   });
 
-  it('says so plainly when everyone scheduled is already on the floor', async () => {
+  it('does not split the list when nobody is scheduled today', async () => {
+    // The regression this pins: on a Sunday — or at any shop that does not
+    // keep weekly schedules current — nobody is scheduled, and splitting
+    // unconditionally opened the menu onto an empty list with every real
+    // barber buried behind "Not scheduled". A clock-in menu with no people in
+    // it reads as broken.
     const user = userEvent.setup();
     render(
-      <ClockInDropdown offStaff={[staff('Ray F.', { scheduledToday: false })]} onClockIn={vi.fn()} />,
+      <ClockInDropdown
+        offStaff={[
+          staff('Marcus J.', { scheduledToday: false }),
+          staff('Ray F.', { scheduledToday: false }),
+        ]}
+        onClockIn={vi.fn()}
+      />,
     );
     await open(user);
-    expect(screen.getByText(/nobody scheduled today is off the floor/i)).toBeInTheDocument();
-    // The fill-in path is still one tap away — that is the whole point.
+    expect(screen.getByRole('button', { name: 'Marcus J.' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ray F.' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /not scheduled/i })).not.toBeInTheDocument();
+  });
+
+  it('still clocks someone in from that unsplit list', async () => {
+    const user = userEvent.setup();
+    const onClockIn = vi.fn();
+    render(
+      <ClockInDropdown
+        offStaff={[staff('Marcus J.', { scheduledToday: false })]}
+        onClockIn={onClockIn}
+      />,
+    );
+    await open(user);
+    await user.click(screen.getByRole('button', { name: 'Marcus J.' }));
+    expect(onClockIn).toHaveBeenCalledWith('marcusj');
+  });
+
+  it('splits only once there is a scheduled name to lead with', async () => {
+    const user = userEvent.setup();
+    render(
+      <ClockInDropdown
+        offStaff={[staff('Dee W.'), staff('Ray F.', { scheduledToday: false })]}
+        onClockIn={vi.fn()}
+      />,
+    );
+    await open(user);
+    expect(screen.getByRole('button', { name: 'Dee W.' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Not scheduled (1)' })).toBeInTheDocument();
+  });
+
+  it('never opens onto an empty menu', async () => {
+    // Whatever the schedule says, if the button is enabled there is at least
+    // one person to tap.
+    const user = userEvent.setup();
+    for (const scheduledToday of [true, false, undefined]) {
+      const { unmount } = render(
+        <ClockInDropdown offStaff={[staff('Solo B.', { scheduledToday })]} onClockIn={vi.fn()} />,
+      );
+      await open(user);
+      expect(screen.getByRole('button', { name: 'Solo B.' })).toBeInTheDocument();
+      unmount();
+    }
   });
 });
 
-describe('ClockInDropdown — never disappears', () => {
+describe('ClockInDropdown — never disappears, and says why it is disabled', () => {
   it('stays visible but disabled when nobody is off the floor', () => {
     // It used to return null here, so someone hunting for the control while
     // the shop was fully staffed found nothing and assumed it did not exist.
@@ -73,6 +125,32 @@ describe('ClockInDropdown — never disappears', () => {
     const trigger = screen.getByRole('button', { name: /clock in/i });
     expect(trigger).toBeInTheDocument();
     expect(trigger).toBeDisabled();
+  });
+
+  it('says the roster is empty when the location has no staff at all', () => {
+    // The real report this comes from: a store opened with no barbers
+    // assigned. The control was disabled and claimed "Everyone on the roster
+    // is already clocked in" — the exact opposite of the truth — which sent
+    // someone hunting for a clock-in bug that did not exist.
+    render(<ClockInDropdown offStaff={[]} rosterCount={0} onClockIn={vi.fn()} />);
+    expect(screen.getByText(/no barbers on this location yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/already clocked in/i)).not.toBeInTheDocument();
+  });
+
+  it('says everyone is clocked in when the roster is populated but all on the floor', () => {
+    render(<ClockInDropdown offStaff={[]} rosterCount={4} onClockIn={vi.fn()} />);
+    expect(screen.getByText(/everyone is already clocked in/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no barbers on this location/i)).not.toBeInTheDocument();
+  });
+
+  it('explains itself in rendered text, not a title — titles never show on touch', () => {
+    render(<ClockInDropdown offStaff={[]} rosterCount={0} onClockIn={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /clock in/i })).not.toHaveAttribute('title');
+  });
+
+  it('stays quiet when it is usable', () => {
+    render(<ClockInDropdown offStaff={[staff('Marcus J.')]} rosterCount={3} onClockIn={vi.fn()} />);
+    expect(screen.queryByText(/already clocked in|no barbers on this location/i)).not.toBeInTheDocument();
   });
 
   it('does not open when there is nobody to pick', async () => {

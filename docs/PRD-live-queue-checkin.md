@@ -46,16 +46,35 @@ This module solves #1 (partially, see algorithm spec §0) and #2. It lays the gr
 - Roster of barbers with live status: `available`, `busy` (system-derived only — set by Start, cleared by Complete, never manually selectable), `break`, `off`.
 - "+ clock in" control for off-shift barbers. It lists staff **scheduled today**
   first; everyone else on the roster sits behind a "Not scheduled (n)" button in
-  the same menu. Clocking in an unscheduled barber has always been permitted by
+  the same menu. The split only applies when somebody **is** scheduled and off
+  the floor — on a Sunday, or at a shop that does not keep weekly schedules
+  current, the menu is one plain list of everyone. A clock-in menu that opens
+  onto no names reads as broken, so the schedule never empties it. Clocking in an unscheduled barber has always been permitted by
   the API — the shop runs on live clock state, and covering on a day off is
   routine — so this is about which case leads, not about restricting the other.
   Staff whose employment status is not `active` are not offered.
-  The control stays visible and disabled ("Everyone on the roster is already
-  clocked in") rather than disappearing when there is nobody to clock in; a
-  control that vanishes reads as a missing feature to whoever is looking for it.
+  The control stays visible and disabled rather than disappearing when there is
+  nobody to clock in; a control that vanishes reads as a missing feature to
+  whoever is looking for it. It says which of the two reasons applies — either
+  *Everyone is already clocked in* or *No barbers on this location yet*, since
+  those have opposite fixes — as **rendered text, not a `title` attribute**,
+  because a title never appears on a touch device and the control is used on a
+  phone at the counter.
   Covering a shift at a **different** location is not supported yet — that needs
   the multi-location staff assignment described in
   `ARCHITECTURE-data-and-perspectives.md`.
+- **Opening the store surfaces staffing problems**, because opening is the moment
+  the shop starts accepting walk-ins and an unseatable queue costs a real
+  customer their afternoon. The Open store dialog shows:
+  - *No barbers are assigned to this location* — the location has an empty
+    roster, so nobody can ever be clocked in until staff are added under Staff.
+    This previously surfaced only as a greyed-out "+ clock in" button, several
+    taps away and after the store was already open.
+  - *Nobody is clocked in yet* — the roster is fine, the floor is just empty.
+    Routine when opening ahead of the first arrival, so it is a nudge.
+
+  Both **warn and never block**. Opening twenty minutes before the first barber
+  arrives is normal, and refusing to open would be worse than the problem.
 - Changing status to `break`/`off` while a barber has an active client triggers a **conflict resolution prompt** (check the client out, or reassign to another barber) before the status change applies — prevents silently orphaning an in-progress service.
 
 ### 5.2 Now serving

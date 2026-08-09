@@ -14,6 +14,7 @@ import { useRequireAuth } from '../../../../lib/auth';
 import { StaffOutlook, type StaffTimeline, type UnassignedEntry } from './staff-outlook';
 import { isLate as isLateEntry, latenessLabel } from './lateness';
 import { Modal } from '../../../../components/modal';
+import { openingStaffingWarning } from './opening-staffing';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
 function useClock() {
@@ -412,7 +413,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
             </div>
           );
         })}
-        <div className="ml-auto"><ClockInDropdown offStaff={offShiftTeam} onClockIn={(id) => clockIn.mutate(id)} /></div>
+        <div className="ml-auto"><ClockInDropdown offStaff={offShiftTeam} rosterCount={board.data?.team.length} onClockIn={(id) => clockIn.mutate(id)} /></div>
       </div>
 
       <div className="grid items-start gap-3 xl:min-h-0 xl:flex-1 xl:grid-cols-[1.12fr_.82fr_1.12fr] xl:items-stretch">
@@ -687,7 +688,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
       )}
 
       {showCloseShop && <CloseShopPanel onClose={() => setShowCloseShop(false)} onDone={invalidate} />}
-      {showOpenShop && <OpenShopPanel onClose={() => setShowOpenShop(false)} onDone={invalidate} />}
+      {showOpenShop && <OpenShopPanel rosterCount={board.data?.team.length ?? 0} onFloorCount={onShiftTeam.length} onClose={() => setShowOpenShop(false)} onDone={invalidate} />}
     </div>
   );
 }
@@ -1663,7 +1664,12 @@ interface CloseShopSummary {
 
 interface OpenShopSummary { tasks: string[]; defaultStartingFloat: number }
 
-function OpenShopPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+function OpenShopPanel({ onClose, onDone, rosterCount, onFloorCount }: {
+  onClose: () => void;
+  onDone: () => void;
+  rosterCount: number;
+  onFloorCount: number;
+}) {
   const [checkedTasks, setCheckedTasks] = useState<Set<string>>(new Set());
   const [actualStartingFloat, setActualStartingFloat] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
@@ -1673,7 +1679,8 @@ function OpenShopPanel({ onClose, onDone }: { onClose: () => void; onDone: () =>
   if (!summary.data) return null;
   const canComplete = summary.data.tasks.every((task) => checkedTasks.has(task)) && typeof actualStartingFloat === 'number';
   const variance = typeof actualStartingFloat === 'number' ? actualStartingFloat - summary.data.defaultStartingFloat : 0;
-  return <Modal onClose={onClose}><h3 className="mb-1 font-semibold">Open store</h3><p className="mb-4 text-sm text-gray-500">Complete each opening task, then confirm the cash actually in the drawer.</p><div className="mb-4 space-y-2">{summary.data.tasks.map((task) => <label key={task} className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={checkedTasks.has(task)} onChange={() => setCheckedTasks((previous) => { const next = new Set(previous); if (next.has(task)) next.delete(task); else next.add(task); return next; })} /><span className={checkedTasks.has(task) ? 'text-gray-400 line-through' : ''}>{task}</span></label>)}</div><div className="mb-4 border-t border-black/10 pt-3"><h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Opening cash drawer</h4><label className="text-xs font-medium text-gray-500">Actual cash in drawer<input aria-label="Actual opening cash in drawer" type="number" min="0" step="0.01" className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black" value={actualStartingFloat} onChange={(event) => setActualStartingFloat(event.target.value === '' ? '' : Number(event.target.value))} /></label><p className="mt-2 text-xs text-gray-500">Your default is ${summary.data.defaultStartingFloat.toFixed(2)}. Change it to match the cash you count.</p>{variance !== 0 && <p className={`mt-1 text-sm font-medium ${variance > 0 ? 'text-green-700' : 'text-amber-700'}`}>{variance > 0 ? `$${variance.toFixed(2)} above default` : `$${Math.abs(variance).toFixed(2)} below default`}</p>}</div>{error && <p className="mb-3 text-sm text-red-600">{error}</p>}<div className="flex justify-end gap-2"><Button onClick={onClose}>Cancel</Button><Button variant="solid" disabled={!canComplete || complete.isPending} onClick={() => complete.mutate()}>{complete.isPending ? 'Recording…' : 'Complete opening'}</Button></div></Modal>;
+  const staffing = openingStaffingWarning({ rosterCount, onFloorCount });
+  return <Modal onClose={onClose}><h3 className="mb-1 font-semibold">Open store</h3><p className="mb-4 text-sm text-gray-500">Complete each opening task, then confirm the cash actually in the drawer.</p>{staffing && <div className={`mb-4 rounded-xl px-3 py-2.5 ${staffing.tone === 'blocking' ? 'bg-[#fdf0ec] text-[#8a3a22]' : 'bg-[#fbf4e4] text-[#7a6224]'}`}><p className="text-sm font-semibold">{staffing.headline}</p><p className="mt-0.5 text-xs leading-5">{staffing.detail}</p></div>}<div className="mb-4 space-y-2">{summary.data.tasks.map((task) => <label key={task} className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={checkedTasks.has(task)} onChange={() => setCheckedTasks((previous) => { const next = new Set(previous); if (next.has(task)) next.delete(task); else next.add(task); return next; })} /><span className={checkedTasks.has(task) ? 'text-gray-400 line-through' : ''}>{task}</span></label>)}</div><div className="mb-4 border-t border-black/10 pt-3"><h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Opening cash drawer</h4><label className="text-xs font-medium text-gray-500">Actual cash in drawer<input aria-label="Actual opening cash in drawer" type="number" min="0" step="0.01" className="mt-1 w-full rounded-lg border border-black/15 px-3 py-2 text-sm text-black" value={actualStartingFloat} onChange={(event) => setActualStartingFloat(event.target.value === '' ? '' : Number(event.target.value))} /></label><p className="mt-2 text-xs text-gray-500">Your default is ${summary.data.defaultStartingFloat.toFixed(2)}. Change it to match the cash you count.</p>{variance !== 0 && <p className={`mt-1 text-sm font-medium ${variance > 0 ? 'text-green-700' : 'text-amber-700'}`}>{variance > 0 ? `$${variance.toFixed(2)} above default` : `$${Math.abs(variance).toFixed(2)} below default`}</p>}</div>{error && <p className="mb-3 text-sm text-red-600">{error}</p>}<div className="flex justify-end gap-2"><Button onClick={onClose}>Cancel</Button><Button variant="solid" disabled={!canComplete || complete.isPending} onClick={() => complete.mutate()}>{complete.isPending ? 'Recording…' : 'Complete opening'}</Button></div></Modal>;
 }
 
 function CloseShopPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
