@@ -161,21 +161,15 @@ describe('ClockInDropdown — never disappears, and says why it is disabled', ()
   });
 });
 
-describe('ClockInDropdown — who is offered', () => {
-  it('leaves out staff who have left the shop', async () => {
-    const user = userEvent.setup();
-    render(
-      <ClockInDropdown
-        offStaff={[staff('Marcus J.'), staff('Gone G.', { employmentStatus: 'resigned' })]}
-        onClockIn={vi.fn()}
-      />,
-    );
-    await open(user);
-    expect(screen.queryByRole('button', { name: 'Gone G.' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Marcus J.' })).toBeInTheDocument();
-  });
+describe('ClockInDropdown — nobody is ever silently dropped', () => {
+  // The report this comes from: every barber at a location was marked
+  // inactive, so a filter emptied the list, the button disabled itself, and
+  // the message read "Everyone is already clocked in" directly beside a strip
+  // saying "No staff clocked in yet". The owner could not put anyone on the
+  // floor and had no way to find out why. Groupings are labelled reveals now,
+  // never filters.
 
-  it('leaves out inactive / pre-hire staff too', async () => {
+  it('keeps inactive staff reachable behind a labelled reveal', async () => {
     const user = userEvent.setup();
     render(
       <ClockInDropdown
@@ -185,6 +179,99 @@ describe('ClockInDropdown — who is offered', () => {
     );
     await open(user);
     expect(screen.queryByRole('button', { name: 'Not Yet' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Not active (1)' }));
+    expect(screen.getByRole('button', { name: 'Not Yet' })).toBeInTheDocument();
+  });
+
+  it('groups someone who has left the shop the same way', async () => {
+    const user = userEvent.setup();
+    render(
+      <ClockInDropdown
+        offStaff={[staff('Marcus J.'), staff('Gone G.', { employmentStatus: 'resigned' })]}
+        onClockIn={vi.fn()}
+      />,
+    );
+    await open(user);
+    await user.click(screen.getByRole('button', { name: 'Not active (1)' }));
+    expect(screen.getByRole('button', { name: 'Gone G.' })).toBeInTheDocument();
+  });
+
+  it('stays usable when EVERY barber is inactive — the lockout case', async () => {
+    const user = userEvent.setup();
+    const onClockIn = vi.fn();
+    render(
+      <ClockInDropdown
+        rosterCount={2}
+        offStaff={[
+          staff('Marcus J.', { employmentStatus: 'inactive' }),
+          staff('Kim', { employmentStatus: 'inactive' }),
+        ]}
+        onClockIn={onClockIn}
+      />,
+    );
+    const trigger = screen.getByRole('button', { name: /clock in/i });
+    expect(trigger).toBeEnabled();
+    expect(screen.queryByText(/already clocked in/i)).not.toBeInTheDocument();
+    await user.click(trigger);
+    await user.click(screen.getByRole('button', { name: 'Not active (2)' }));
+    await user.click(screen.getByRole('button', { name: 'Kim' }));
+    expect(onClockIn).toHaveBeenCalledWith('kim');
+  });
+
+  it('offers both reveals when the roster needs both', async () => {
+    const user = userEvent.setup();
+    render(
+      <ClockInDropdown
+        offStaff={[
+          staff('Dee W.'),
+          staff('Ray F.', { scheduledToday: false }),
+          staff('Old Hand', { employmentStatus: 'resigned' }),
+        ]}
+        onClockIn={vi.fn()}
+      />,
+    );
+    await open(user);
+    expect(screen.getByRole('button', { name: 'Dee W.' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Not scheduled (1)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Not active (1)' })).toBeInTheDocument();
+  });
+
+  it('is disabled ONLY when the roster genuinely has nobody off the floor', () => {
+    // Every other reason for an empty-looking menu is a grouping decision, and
+    // grouping must never disable the control.
+    const cases: ClockInCandidate[][] = [
+      [staff('A', { employmentStatus: 'inactive' })],
+      [staff('B', { employmentStatus: 'resigned' })],
+      [staff('C', { scheduledToday: false })],
+    ];
+    for (const offStaff of cases) {
+      const { unmount } = render(<ClockInDropdown offStaff={offStaff} rosterCount={1} onClockIn={vi.fn()} />);
+      expect(screen.getByRole('button', { name: /clock in/i })).toBeEnabled();
+      unmount();
+    }
+    render(<ClockInDropdown offStaff={[]} rosterCount={1} onClockIn={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /clock in/i })).toBeDisabled();
+  });
+
+  it('every person handed in is reachable, whatever their flags', async () => {
+    // The invariant, stated once: grouping changes how many taps a name takes,
+    // never whether it exists.
+    const user = userEvent.setup();
+    const people = [
+      staff('Sched', { scheduledToday: true }),
+      staff('Unsched', { scheduledToday: false }),
+      staff('Inactive', { employmentStatus: 'inactive' }),
+      staff('Resigned', { employmentStatus: 'resigned' }),
+    ];
+    render(<ClockInDropdown offStaff={people} rosterCount={4} onClockIn={vi.fn()} />);
+    await open(user);
+    for (const reveal of ['Not scheduled (1)', 'Not active (2)']) {
+      const btn = screen.queryByRole('button', { name: reveal });
+      if (btn) await user.click(btn);
+    }
+    for (const p of people) {
+      expect(screen.getByRole('button', { name: p.fullName })).toBeInTheDocument();
+    }
   });
 });
 

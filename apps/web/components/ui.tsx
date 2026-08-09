@@ -171,73 +171,68 @@ export interface ClockInCandidate {
 /**
  * "+ clock in" — the control for putting a barber on the floor.
  *
- * Two things it deliberately does not do:
+ * Three rules, each of which was learned by breaking it:
  *
  * 1. **It never hides itself.** It used to `return null` when nobody was off
  *    shift, so anyone looking for it while the shop was fully staffed found
- *    nothing at all and concluded the feature was missing. A control that
- *    vanishes cannot be found; a disabled one explains itself.
- * 2. **It never blocks a fill-in.** Clocking in someone who is not on today's
- *    schedule has always been allowed by the API and stays one tap away — the
- *    shop runs on live clock state, and covering on a day off is a normal
- *    Saturday. Scheduled staff simply come first, because that is the common
- *    case; "Not scheduled" reveals the rest without becoming part of the flow.
+ *    nothing and concluded the feature was missing.
+ * 2. **It never silently drops a person.** Both groupings below — not
+ *    scheduled, not active — are *labelled reveals*, never filters. A version
+ *    that quietly filtered out non-active staff locked an owner out of his own
+ *    shop: every barber at that location was marked inactive, so the list came
+ *    back empty, the button disabled, and the message claimed "Everyone is
+ *    already clocked in" while the strip beside it said "No staff clocked in
+ *    yet". Whoever is on the roster is reachable from here, always.
+ * 3. **It never blocks a fill-in.** Clocking in someone off-schedule has always
+ *    been allowed by the API — the shop runs on live clock state, and covering
+ *    on a day off is a normal Saturday. Grouping decides what leads, not what
+ *    is possible.
  *
  * Rows are `min-h-11` (44px) because this gets used on a phone, at the counter,
  * often one-handed.
  */
 export function ClockInDropdown({ offStaff, onClockIn, rosterCount }: {
+  /** Everyone on this location's roster who is not currently on the floor. */
   offStaff: ClockInCandidate[];
   onClockIn: (id: string) => void;
   /**
    * How many staff this location has at all. Without it the control cannot
    * tell "everyone is already on the floor" from "this location has nobody on
-   * its roster" — two very different problems that looked identical, and the
-   * message shown for the wrong one sent a real user hunting for a clock-in
-   * bug that did not exist.
+   * its roster" — two very different problems that looked identical.
    */
   rosterCount?: number;
 }) {
   const [open, setOpen] = useState(false);
-  const [showUnscheduled, setShowUnscheduled] = useState(false);
-  const ref = useOutsideClick(() => {
-    setOpen(false);
-    setShowUnscheduled(false);
-  });
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const close = () => { setOpen(false); setRevealed(new Set()); };
+  const ref = useOutsideClick(close);
 
-  // Someone who has left should not be one tap from being put back on the
-  // floor. An older API build omits the field entirely — treat that as active
-  // so this degrades to the previous behaviour rather than emptying the list.
-  const selectable = offStaff.filter((s) => (s.employmentStatus ?? 'active') === 'active');
-  // Same reasoning for scheduledToday: if the API has not been deployed yet,
-  // nothing is known to be scheduled, so everyone belongs in the main list
-  // rather than hidden behind a button that looks broken.
-  const scheduleKnown = selectable.some((s) => s.scheduledToday !== undefined);
-  const scheduledToday = scheduleKnown ? selectable.filter((s) => s.scheduledToday) : [];
-  // Only split the list when there is actually a scheduled group to lead with.
-  //
-  // Splitting unconditionally made the common case worse: on a Sunday, or at a
-  // shop that does not keep weekly schedules current, nobody is scheduled — so
-  // the menu opened onto "Nobody scheduled today is off the floor" with every
-  // real barber buried one tap down. Opening a clock-in menu and seeing no
-  // people in it reads as broken, and it may as well be.
-  //
-  // The schedule is a hint about which name to reach for first, not a gate. A
-  // hint that would empty the list has nothing to offer, so it gets out of the
-  // way and everyone goes in the main list.
+  const isActive = (s: ClockInCandidate) => (s.employmentStatus ?? 'active') === 'active';
+  const active = offStaff.filter(isActive);
+  const inactive = offStaff.filter((s) => !isActive(s));
+
+  // An older API build omits scheduledToday entirely. Nothing is then known to
+  // be scheduled, so everyone belongs in the lead group rather than behind a
+  // reveal that looks broken.
+  const scheduleKnown = active.some((s) => s.scheduledToday !== undefined);
+  const scheduledToday = scheduleKnown ? active.filter((s) => s.scheduledToday) : [];
+  // Only lead with the scheduled group when there IS one. On a Sunday, or at a
+  // shop that does not keep weekly schedules current, nobody is scheduled — and
+  // a menu that opens onto no names reads as broken.
   const split = scheduledToday.length > 0;
-  const scheduled = split ? scheduledToday : selectable;
-  const unscheduled = split ? selectable.filter((s) => !s.scheduledToday) : [];
-  const empty = selectable.length === 0;
-  // rosterCount is optional, so fall back to what can be inferred: if nobody is
-  // off shift AND the caller told us nothing, assume the roster is fine.
+
+  const lead = split ? scheduledToday : active;
+  const groups = [
+    split && { key: 'unscheduled', label: 'Not scheduled', heading: 'Not scheduled today', people: active.filter((s) => !s.scheduledToday) },
+    { key: 'inactive', label: 'Not active', heading: 'Not marked active', people: inactive },
+  ].filter(Boolean) as { key: string; label: string; heading: string; people: ClockInCandidate[] }[];
+
+  // Disabled only when there is genuinely nobody to put on the floor — never
+  // because a grouping rule ate the whole list.
+  const empty = offStaff.length === 0;
   const rosterEmpty = rosterCount !== undefined ? rosterCount === 0 : false;
 
-  const pick = (id: string) => {
-    onClockIn(id);
-    setOpen(false);
-    setShowUnscheduled(false);
-  };
+  const pick = (id: string) => { onClockIn(id); close(); };
 
   const row = (s: ClockInCandidate) => (
     <button
@@ -270,8 +265,7 @@ export function ClockInDropdown({ offStaff, onClockIn, rosterCount }: {
       {/*
         Rendered text, not a title attribute. A title never appears on a touch
         device, so on the phone this button previously sat there disabled and
-        explained nothing — which is exactly how an empty roster got mistaken
-        for a broken clock-in.
+        explained nothing.
       */}
       {empty && (
         <p className="mt-1 text-right text-[11px] leading-4 text-[#77736b]">
@@ -280,21 +274,22 @@ export function ClockInDropdown({ offStaff, onClockIn, rosterCount }: {
       )}
       {open && !empty && (
         <div className="absolute right-0 top-full z-20 mt-1 max-h-[60dvh] w-56 overflow-y-auto rounded-lg border border-black/10 bg-white py-1 shadow-lg">
-          {scheduled.map(row)}
-          {unscheduled.length > 0 && (showUnscheduled ? (
-            <>
+          {lead.map(row)}
+          {groups.filter((g) => g.people.length > 0).map((g) => revealed.has(g.key) ? (
+            <div key={g.key}>
               <p className="mt-1 border-t border-black/10 px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#77736b]">
-                Not scheduled today
+                {g.heading}
               </p>
-              {unscheduled.map(row)}
-            </>
+              {g.people.map(row)}
+            </div>
           ) : (
             <button
+              key={g.key}
               type="button"
-              onClick={() => setShowUnscheduled(true)}
+              onClick={() => setRevealed((prev) => new Set(prev).add(g.key))}
               className="mt-1 flex min-h-11 w-full items-center border-t border-black/10 px-3 py-2 text-left text-sm text-gray-600 hover:bg-black/5 hover:text-black"
             >
-              Not scheduled ({unscheduled.length})
+              {g.label} ({g.people.length})
             </button>
           ))}
         </div>
