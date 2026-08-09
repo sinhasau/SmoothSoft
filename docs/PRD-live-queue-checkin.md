@@ -59,6 +59,18 @@ This module solves #1 (partially, see algorithm spec §0) and #2. It lays the gr
   Covering a shift at a **different** location is not supported yet — that needs
   the multi-location staff assignment described in
   `ARCHITECTURE-data-and-perspectives.md`.
+- **Opening the store surfaces staffing problems**, because opening is the moment
+  the shop starts accepting walk-ins and an unseatable queue costs a real
+  customer their afternoon. The Open store dialog shows:
+  - *No barbers are assigned to this location* — the location has an empty
+    roster, so nobody can ever be clocked in until staff are added under Staff.
+    This previously surfaced only as a greyed-out "+ clock in" button, several
+    taps away and after the store was already open.
+  - *Nobody is clocked in yet* — the roster is fine, the floor is just empty.
+    Routine when opening ahead of the first arrival, so it is a nudge.
+
+  Both **warn and never block**. Opening twenty minutes before the first barber
+  arrives is normal, and refusing to open would be worse than the problem.
 - Changing status to `break`/`off` while a barber has an active client triggers a **conflict resolution prompt** (check the client out, or reassign to another barber) before the status change applies — prevents silently orphaning an in-progress service.
 
 ### 5.2 Now serving
