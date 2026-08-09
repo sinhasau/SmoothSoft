@@ -186,9 +186,15 @@ So, before saying any change is done:
    `title` attribute explaining a disabled control that touch devices never
    show.
 3. **Exercise the empty and degenerate states deliberately.** Zero staff on the
-   roster, nobody clocked in, nobody scheduled, an empty queue, a closed shop.
-   These are where the real reports come from, and they are exactly the states a
-   happy-path fixture never reaches.
+   roster, nobody clocked in, nobody scheduled, everyone inactive, an empty
+   queue, a closed shop. These are where the real reports come from, and they
+   are exactly the states a happy-path fixture never reaches.
+
+   For any condition the change branches on, run the **all** case, not just the
+   **some** case. Both clock-in regressions were "some staff are X" logic that
+   broke when *every* staff member was X — nobody scheduled on a Sunday, every
+   barber marked inactive at one location. A mixed fixture passes both times
+   and proves nothing about either.
 4. **Say what was actually verified.** "231 tests pass and it builds" is a true
    statement about the tests. It is not "I checked it works", and reporting it
    as though it were is how a broken build gets a green summary.
@@ -252,6 +258,37 @@ drift silently.
 - Controls must stay usable with a thumb: a real 44px minimum touch target,
   and disabled-with-a-reason rather than removed from the DOM. A control that
   disappears when it does not apply cannot be found by someone looking for it.
+
+### Never silently drop rows from a list a person acts on
+
+The rule above applies to the **contents** of a control, not just the control.
+A filter that hides people or options is a lockout waiting to happen, because
+the filter's own edge case — *everything matches it* — leaves an empty list and
+no explanation.
+
+This has now happened twice on one control, the "+ clock in" menu:
+
+- Staff not on today's schedule were tucked behind a reveal. On a Sunday
+  **nobody** is scheduled, so the menu opened onto no names.
+- Staff not marked `active` were filtered out entirely. At a location where
+  **every** barber was inactive, the list came back empty, the button disabled
+  itself, and the message read "Everyone is already clocked in" beside a strip
+  that said "No staff clocked in yet". The owner could not put anyone on the
+  floor and the screen actively misinformed him.
+
+So:
+
+1. **Group, do not filter.** Anything less relevant goes behind a labelled
+   reveal that states what it is and how many (`Not scheduled (2)`,
+   `Not active (3)`) — never removed. Grouping may change how many taps a name
+   takes; it must never change whether the name exists.
+2. **Only real emptiness disables a control.** Disable on "there is genuinely
+   nothing to act on", never on "our grouping rule consumed everything".
+3. **Derive the empty-state message from the actual reason**, and check it
+   against what the rest of the screen is saying. Two statements that
+   contradict each other on the same card are worse than no message.
+4. **Pin the invariant with a test** — "every item handed in is reachable" —
+   and one test per grouping rule for the case where *all* rows match it.
 - The location nav comes from `buildNavSections()`. Desktop sidebar and mobile
   bottom nav must both derive from it, so a section cannot exist on one and not
   the other.
