@@ -259,6 +259,25 @@ drift silently.
   and disabled-with-a-reason rather than removed from the DOM. A control that
   disappears when it does not apply cannot be found by someone looking for it.
 
+### An empty state must never stand in for a failed request
+
+`?? []` on query data turns a total failure into a calm, plausible screen. The
+queue board did exactly this: `GET /queue/board` returned 500 on every load in
+production — `queue_entries.late_arrival` was missing because a migration had
+never been applied — and the page rendered "No staff clocked in yet", "No one
+is waiting", and a disabled "+ clock in". It looked like a quiet shop. It was a
+total outage, and it survived days of looking straight at it.
+
+- **Check `isError` before rendering anything derived from the data.** Render
+  `components/data-unavailable.tsx`, which says the load failed, shows the
+  error, and offers a retry.
+- **An empty state means "we asked and there is nothing".** It must never mean
+  "we could not ask". If those two look identical on screen, the screen is
+  lying.
+- When a UI bug resists explanation, **check whether the request behind it is
+  actually succeeding** before changing the component again. Three rounds of
+  clock-in fixes were aimed at a control that was never broken.
+
 ### Never silently drop rows from a list a person acts on
 
 The rule above applies to the **contents** of a control, not just the control.
