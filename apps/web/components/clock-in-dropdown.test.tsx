@@ -137,9 +137,13 @@ describe('ClockInDropdown — never disappears, and says why it is disabled', ()
     expect(screen.queryByText(/already clocked in/i)).not.toBeInTheDocument();
   });
 
-  it('says everyone is clocked in when the roster is populated but all on the floor', () => {
+  it('says nothing when everyone is simply already on the floor', () => {
+    // The strip beside this button already lists who is on the floor, so a
+    // disabled control there explains itself. The old note said "Everyone is
+    // already clocked in" — noise at best, and it appeared beside "No staff
+    // clocked in yet" when the roster was hidden by a filter.
     render(<ClockInDropdown offStaff={[]} rosterCount={4} onClockIn={vi.fn()} />);
-    expect(screen.getByText(/everyone is already clocked in/i)).toBeInTheDocument();
+    expect(screen.queryByText(/already clocked in/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/no barbers on this location/i)).not.toBeInTheDocument();
   });
 
@@ -150,7 +154,7 @@ describe('ClockInDropdown — never disappears, and says why it is disabled', ()
 
   it('stays quiet when it is usable', () => {
     render(<ClockInDropdown offStaff={[staff('Marcus J.')]} rosterCount={3} onClockIn={vi.fn()} />);
-    expect(screen.queryByText(/already clocked in|no barbers on this location/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no barbers on this location/i)).not.toBeInTheDocument();
   });
 
   it('does not open when there is nobody to pick', async () => {
