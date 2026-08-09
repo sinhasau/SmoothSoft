@@ -350,7 +350,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     // strip and Activity stay put while each board column scrolls internally,
     // so reception never scrolls the whole page to see the queue. Below xl it
     // falls back to natural page flow (stacked columns, normal scroll).
-    <div className="mx-auto flex max-w-[1560px] flex-col gap-5 xl:h-[calc(100vh-5.75rem)]">
+    <div className="mx-auto flex max-w-[1560px] flex-col gap-5 xl:h-[calc(100dvh-5.75rem)]">
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[#dfd9cd] pb-4">
         <div>
           <p className="text-sm font-medium text-[#605f5a]">{now.toLocaleDateString([], { timeZone: board.data?.timezone, weekday: 'long', month: 'long', day: 'numeric' })}</p>
@@ -841,23 +841,27 @@ function CheckoutShell({ children, busy, onClose }: { children: React.ReactNode;
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, []);
-  // Centered and sized to the viewport (not anchored to the clicked button):
-  // the two-column layout below keeps it short enough to fit most screens
-  // without scrolling, and the max-height + internal scroll (with the sticky
-  // footer) is the fallback on short viewports.
+  // Sized to the viewport (not anchored to the clicked button): the two-column
+  // layout below keeps it short enough to fit most screens without scrolling,
+  // and the max-height + internal scroll (with the sticky footer) is the
+  // fallback on short viewports.
+  //
+  // This used to be a hand-rolled overlay, which is how it ended up without
+  // `overflow-y-auto`/`overscroll-contain` on the backdrop or any safe-area
+  // bottom padding — so on an iPhone the final action sat under the home
+  // indicator with nothing left to scroll. Modal owns all of that now.
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]" onClick={busy ? undefined : onClose}>
-      <div
-        ref={scrollRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Complete service"
-        className="max-h-[calc(100dvh-2rem)] w-[min(960px,100%)] overflow-y-auto rounded-2xl bg-[#fffefa] p-5 shadow-[0_24px_70px_rgba(27,32,29,0.24)] ring-1 ring-black/10"
-        onClick={(event) => event.stopPropagation()}
-      >
-        {children}
-      </div>
-    </div>
+    <Modal
+      onClose={onClose}
+      dismissible={!busy}
+      size="board"
+      label="Complete service"
+      padded={false}
+      panelRef={scrollRef}
+      panelClassName="p-5 bg-[#fffefa]"
+    >
+      {children}
+    </Modal>
   );
 }
 

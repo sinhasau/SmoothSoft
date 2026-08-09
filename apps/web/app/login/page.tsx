@@ -44,7 +44,7 @@ export default function LoginPage() {
   const customerLocations = Array.from(new Map((roster ?? []).map((entry) => [entry.locationId, entry])).values());
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4 py-10">
+    <main className="flex min-h-[100dvh] items-center justify-center px-4 py-10">
       <div className="w-full max-w-md rounded-[2rem] border border-black/[0.06] bg-white/80 p-7 shadow-[0_24px_70px_rgba(55,45,30,0.10)] backdrop-blur-sm">
         <div className="mb-5 grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br from-[#315c4f] to-[#1f4037] text-lg font-bold text-[#fffaf0] shadow-md">S</div>
         <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Welcome back</p>

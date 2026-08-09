@@ -39,8 +39,8 @@ function toneStyle(tone: string) {
 export default function OwnerMockup() {
   const [tab, setTab] = useState('Home');
   return (
-    <div style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', padding: '16px', background: '#efece4' }}>
-      <div style={{ width: '100%', maxWidth: 402, height: 844, maxHeight: '96vh', background: CREAM, borderRadius: 34, overflow: 'hidden', boxShadow: '0 30px 70px rgba(31,64,55,.22), 0 4px 12px rgba(31,64,55,.12)', border: '1px solid rgba(31,64,55,.10)', display: 'flex', flexDirection: 'column', position: 'relative' }}>
+    <div style={{ display: 'grid', placeItems: 'center', minHeight: '100dvh', padding: '16px', background: '#efece4' }}>
+      <div style={{ width: '100%', maxWidth: 402, height: 844, maxHeight: '96dvh', background: CREAM, borderRadius: 34, overflow: 'hidden', boxShadow: '0 30px 70px rgba(31,64,55,.22), 0 4px 12px rgba(31,64,55,.12)', border: '1px solid rgba(31,64,55,.10)', display: 'flex', flexDirection: 'column', position: 'relative' }}>
 
         {/* Status bar */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 22px 2px', fontSize: 12, fontWeight: 600, color: INK }}>
