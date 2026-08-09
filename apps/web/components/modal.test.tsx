@@ -79,3 +79,46 @@ describe('Modal — behavior', () => {
     expect(screen.getByTestId('modal-panel').className).toContain('max-w-2xl');
   });
 });
+
+describe('Modal — the props that replaced the hand-rolled copies', () => {
+  // Each of these existed because a caller reached for a bespoke overlay
+  // rather than extend this one, and each bespoke copy then dropped a
+  // different mobile fix. Covered here so the shell stays worth using.
+
+  it('offers every width the former copies hand-rolled', () => {
+    const widths = { md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-2xl', board: 'max-w-[60rem]' } as const;
+    for (const [size, expected] of Object.entries(widths)) {
+      const { unmount } = render(
+        <Modal onClose={vi.fn()} size={size as keyof typeof widths}>body</Modal>,
+      );
+      expect(screen.getByTestId('modal-panel').className).toContain(expected);
+      unmount();
+    }
+  });
+
+  it('drops its own padding on request, for content with full-bleed bands', () => {
+    const { rerender } = render(<Modal onClose={vi.fn()}>body</Modal>);
+    expect(screen.getByTestId('modal-panel').className).toContain('p-6');
+    rerender(<Modal onClose={vi.fn()} padded={false}>body</Modal>);
+    expect(screen.getByTestId('modal-panel').className).not.toContain('p-6');
+  });
+
+  it('keeps the safe-area padding even when unpadded — that one is not decorative', () => {
+    render(<Modal onClose={vi.fn()} padded={false}>body</Modal>);
+    expect(screen.getByTestId('modal-panel').className).toContain('env(safe-area-inset-bottom)');
+  });
+
+  it('ignores a backdrop tap while a submit is in flight', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<Modal onClose={onClose} dismissible={false}>body</Modal>);
+    await user.click(screen.getByTestId('modal-backdrop'));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('raises the whole backdrop when stacked, not just the panel', () => {
+    // Raising only the panel leaves the second dialog behind the first's scrim.
+    render(<Modal onClose={vi.fn()} elevated>body</Modal>);
+    expect(screen.getByTestId('modal-backdrop').className).toContain('z-[60]');
+  });
+});

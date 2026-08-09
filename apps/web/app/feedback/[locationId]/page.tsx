@@ -30,7 +30,7 @@ export default function FeedbackPage({ params }: { params: { locationId: string 
 
   const locationName = catalog.data?.location.name ?? '';
 
-  return <main className="mx-auto min-h-screen max-w-md px-4 py-6 sm:py-10">
+  return <main className="mx-auto min-h-[100dvh] max-w-md px-4 py-6 sm:py-10">
     <div className="mb-5 rounded-3xl border border-amber-200/50 bg-gradient-to-br from-[#fffdf7] via-white to-[#edf5f1] px-5 py-5 shadow-[0_12px_36px_rgba(55,45,30,0.07)]">
       <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">{locationName}</div>
       <h1 className="mt-1.5 text-2xl font-semibold tracking-tight text-[#20342d]">{submit.isSuccess ? 'Thank you' : 'Tell us what went wrong'}</h1>

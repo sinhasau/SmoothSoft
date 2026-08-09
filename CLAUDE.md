@@ -197,9 +197,22 @@ drift silently.
 
 - One shared `Modal` in `apps/web/components/modal.tsx`. Do not hand-roll
   another — a duplicated copy is how the same "can't scroll to the submit
-  button on mobile" bug shipped twice.
-- Sizing that must respect a phone viewport uses `dvh`, never `vh`; `vh` is
-  measured with the browser chrome hidden.
+  button on mobile" bug shipped three times. `Modal` carries props for every
+  reason someone previously reached for a bespoke overlay (`size`, `padded`,
+  `dismissible`, `elevated`, `panelClassName`, `panelRef`); extend it rather
+  than copy it. `modal-is-the-only-overlay.test.ts` fails on any `fixed
+  inset-0` outside that file.
+- Sizing that must respect a phone viewport uses `dvh`, never `vh` or
+  `min-h-screen` (Tailwind's alias for `100vh`); `vh` is measured with the
+  browser chrome hidden. Same test enforces this.
+- `app/layout.tsx` must keep `viewportFit: 'cover'`. Without it every
+  `env(safe-area-inset-*)` silently resolves to `0` on iOS, which made the
+  modal's home-indicator padding a no-op on the one device it was written for
+  — nothing looked wrong in the CSS, so it survived a round of "fix the modal
+  on mobile".
+- Controls must stay usable with a thumb: a real 44px minimum touch target,
+  and disabled-with-a-reason rather than removed from the DOM. A control that
+  disappears when it does not apply cannot be found by someone looking for it.
 - The location nav comes from `buildNavSections()`. Desktop sidebar and mobile
   bottom nav must both derive from it, so a section cannot exist on one and not
   the other.

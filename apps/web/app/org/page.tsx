@@ -75,7 +75,7 @@ export default function OrgDashboardPage() {
   if (!auth || auth.role !== 'org_owner' || !data) return <p className="text-gray-500 px-6 py-6">Loading…</p>;
 
   return (
-    <div className="min-h-screen px-6 py-6 max-w-5xl mx-auto space-y-6">
+    <div className="min-h-[100dvh] px-6 py-6 max-w-5xl mx-auto space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#dfd9cd] pb-4">
         <div>
           <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Across your business</p>
