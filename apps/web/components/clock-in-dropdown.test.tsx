@@ -117,7 +117,7 @@ describe('ClockInDropdown — scheduled staff first', () => {
   });
 });
 
-describe('ClockInDropdown — never disappears', () => {
+describe('ClockInDropdown — never disappears, and says why it is disabled', () => {
   it('stays visible but disabled when nobody is off the floor', () => {
     // It used to return null here, so someone hunting for the control while
     // the shop was fully staffed found nothing and assumed it did not exist.
@@ -125,6 +125,32 @@ describe('ClockInDropdown — never disappears', () => {
     const trigger = screen.getByRole('button', { name: /clock in/i });
     expect(trigger).toBeInTheDocument();
     expect(trigger).toBeDisabled();
+  });
+
+  it('says the roster is empty when the location has no staff at all', () => {
+    // The real report this comes from: a store opened with no barbers
+    // assigned. The control was disabled and claimed "Everyone on the roster
+    // is already clocked in" — the exact opposite of the truth — which sent
+    // someone hunting for a clock-in bug that did not exist.
+    render(<ClockInDropdown offStaff={[]} rosterCount={0} onClockIn={vi.fn()} />);
+    expect(screen.getByText(/no barbers on this location yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/already clocked in/i)).not.toBeInTheDocument();
+  });
+
+  it('says everyone is clocked in when the roster is populated but all on the floor', () => {
+    render(<ClockInDropdown offStaff={[]} rosterCount={4} onClockIn={vi.fn()} />);
+    expect(screen.getByText(/everyone is already clocked in/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no barbers on this location/i)).not.toBeInTheDocument();
+  });
+
+  it('explains itself in rendered text, not a title — titles never show on touch', () => {
+    render(<ClockInDropdown offStaff={[]} rosterCount={0} onClockIn={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /clock in/i })).not.toHaveAttribute('title');
+  });
+
+  it('stays quiet when it is usable', () => {
+    render(<ClockInDropdown offStaff={[staff('Marcus J.')]} rosterCount={3} onClockIn={vi.fn()} />);
+    expect(screen.queryByText(/already clocked in|no barbers on this location/i)).not.toBeInTheDocument();
   });
 
   it('does not open when there is nobody to pick', async () => {

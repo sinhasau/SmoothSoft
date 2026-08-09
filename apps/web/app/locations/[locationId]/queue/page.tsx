@@ -412,7 +412,7 @@ export default function QueuePage({ params }: { params: { locationId: string } }
             </div>
           );
         })}
-        <div className="ml-auto"><ClockInDropdown offStaff={offShiftTeam} onClockIn={(id) => clockIn.mutate(id)} /></div>
+        <div className="ml-auto"><ClockInDropdown offStaff={offShiftTeam} rosterCount={board.data?.team.length} onClockIn={(id) => clockIn.mutate(id)} /></div>
       </div>
 
       <div className="grid items-start gap-3 xl:min-h-0 xl:flex-1 xl:grid-cols-[1.12fr_.82fr_1.12fr] xl:items-stretch">

@@ -186,7 +186,18 @@ export interface ClockInCandidate {
  * Rows are `min-h-11` (44px) because this gets used on a phone, at the counter,
  * often one-handed.
  */
-export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCandidate[]; onClockIn: (id: string) => void }) {
+export function ClockInDropdown({ offStaff, onClockIn, rosterCount }: {
+  offStaff: ClockInCandidate[];
+  onClockIn: (id: string) => void;
+  /**
+   * How many staff this location has at all. Without it the control cannot
+   * tell "everyone is already on the floor" from "this location has nobody on
+   * its roster" — two very different problems that looked identical, and the
+   * message shown for the wrong one sent a real user hunting for a clock-in
+   * bug that did not exist.
+   */
+  rosterCount?: number;
+}) {
   const [open, setOpen] = useState(false);
   const [showUnscheduled, setShowUnscheduled] = useState(false);
   const ref = useOutsideClick(() => {
@@ -218,6 +229,9 @@ export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCand
   const scheduled = split ? scheduledToday : selectable;
   const unscheduled = split ? selectable.filter((s) => !s.scheduledToday) : [];
   const empty = selectable.length === 0;
+  // rosterCount is optional, so fall back to what can be inferred: if nobody is
+  // off shift AND the caller told us nothing, assume the roster is fine.
+  const rosterEmpty = rosterCount !== undefined ? rosterCount === 0 : false;
 
   const pick = (id: string) => {
     onClockIn(id);
@@ -242,7 +256,6 @@ export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCand
         onClick={() => !empty && setOpen((v) => !v)}
         disabled={empty}
         aria-expanded={open}
-        title={empty ? "Everyone on the roster is already clocked in" : undefined}
         className={`flex min-h-11 items-center gap-1 rounded-lg border border-[#dedbd2] bg-white px-3 text-sm font-medium ${
           empty ? 'cursor-default text-gray-400' : 'text-[#383d3a] hover:border-[#315f52]/40 hover:text-black'
         }`}
@@ -254,6 +267,17 @@ export function ClockInDropdown({ offStaff, onClockIn }: { offStaff: ClockInCand
           </svg>
         )}
       </button>
+      {/*
+        Rendered text, not a title attribute. A title never appears on a touch
+        device, so on the phone this button previously sat there disabled and
+        explained nothing — which is exactly how an empty roster got mistaken
+        for a broken clock-in.
+      */}
+      {empty && (
+        <p className="mt-1 text-right text-[11px] leading-4 text-[#77736b]">
+          {rosterEmpty ? 'No barbers on this location yet — add them in Staff.' : 'Everyone is already clocked in.'}
+        </p>
+      )}
       {open && !empty && (
         <div className="absolute right-0 top-full z-20 mt-1 max-h-[60dvh] w-56 overflow-y-auto rounded-lg border border-black/10 bg-white py-1 shadow-lg">
           {scheduled.map(row)}
