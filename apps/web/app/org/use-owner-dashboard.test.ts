@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeOwnerDashboard } from './use-owner-dashboard';
+import type { OwnerDashboard, OwnerLocation } from './org-types';
 
 /**
  * The deploy window these pin: Vercel ships the web app before Render ships
@@ -8,16 +9,22 @@ import { normalizeOwnerDashboard } from './use-owner-dashboard';
  * all landed together, and a response without them blanked the workspace.
  */
 describe('normalizeOwnerDashboard', () => {
+  // A location as an older API sent it: everything except pendingScheduleRequests,
+  // which arrived with the owner workspace. Typed as the real thing minus that
+  // field, so this fixture cannot silently drift from OwnerLocation.
+  const oldLocation: Omit<OwnerLocation, 'pendingScheduleRequests'> = {
+    locationId: 'loc-1', locationName: 'Novi', clientsServed: 2, revenue: 100,
+    staffOnShift: 1, staffTotal: 3, complianceStatus: 'compliant', complianceAlerts: 0,
+    w2Count: 2, contractorCount: 1, serviceRevenue: 80, retailRevenue: 20,
+    discount: 0, tax: 5, tips: 10,
+  };
+
+  // The cast is the point of the test: this shape is NOT a valid OwnerDashboard,
+  // and the normalizer's job is to make it one.
   const oldResponse = {
-    locations: [{
-      locationId: 'loc-1', locationName: 'Novi', clientsServed: 2, revenue: 100,
-      staffOnShift: 1, staffTotal: 3, complianceStatus: 'compliant' as const, complianceAlerts: 0,
-      w2Count: 2, contractorCount: 1, serviceRevenue: 80, retailRevenue: 20,
-      discount: 0, tax: 5, tips: 10,
-      // no pendingScheduleRequests — added later
-    }],
+    locations: [oldLocation],
     totals: { revenueToday: 100, clientsServed: 2 },
-  } as never;
+  } as unknown as Partial<OwnerDashboard>;
 
   it('supplies team and actionItems as arrays, never undefined', () => {
     // The literal crash: data.actionItems.length on undefined.
@@ -48,8 +55,8 @@ describe('normalizeOwnerDashboard', () => {
   });
 
   it('survives a completely empty or missing response', () => {
-    for (const input of [undefined, null, {}]) {
-      const d = normalizeOwnerDashboard(input as never);
+    for (const input of [undefined, null, {}] as const) {
+      const d = normalizeOwnerDashboard(input);
       expect(d.locations).toEqual([]);
       expect(d.team).toEqual([]);
       expect(d.actionItems).toEqual([]);
@@ -58,13 +65,13 @@ describe('normalizeOwnerDashboard', () => {
   });
 
   it('passes a current full response through unchanged', () => {
-    const current = {
+    const current: OwnerDashboard = {
       organization: { id: 'o1', name: "JJ's Barbers" },
-      locations: [{ ...oldResponse.locations[0], pendingScheduleRequests: 4 }],
+      locations: [{ ...oldLocation, pendingScheduleRequests: 4 }],
       totals: { revenueToday: 1, clientsServed: 1, staffOnShift: 1, staffTotal: 1, complianceAlerts: 1, w2Count: 1, contractorCount: 1, serviceRevenue: 1, retailRevenue: 1, discount: 1, salesTax: 1, tips: 1 },
       team: [{ userId: 'u1', fullName: 'Joel', role: 'org_owner', classification: 'w2', employmentStatus: 'active', assignments: [] }],
       actionItems: [{ id: 'a1', tone: 'red', title: 'x', href: '/y' }],
-    } as never;
+    };
     const d = normalizeOwnerDashboard(current);
     expect(d.organization?.name).toBe("JJ's Barbers");
     expect(d.locations[0].pendingScheduleRequests).toBe(4);
