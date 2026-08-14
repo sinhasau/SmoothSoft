@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { filterRoster, findLastUsedEntry, groupByLocation, readLastStaffId, rememberLastStaffId, type RosterEntry } from './roster-helpers';
+import { filterRoster, findLastUsedEntry, groupByLocation, landingPathAfterLogin, readLastStaffId, rememberLastStaffId, splitOwners, type RosterEntry } from './roster-helpers';
 
 const roster: RosterEntry[] = [
   { locationStaffId: 's1', fullName: 'Alex Rivera', role: 'org_owner', classification: 'w2', organizationName: "JJ's Barbers", locationId: 'loc1', locationName: 'Downtown' },
@@ -62,5 +62,57 @@ describe('rememberLastStaffId / readLastStaffId', () => {
 
   it('returns null when nothing has been remembered', () => {
     expect(readLastStaffId()).toBeNull();
+  });
+});
+
+describe('landingPathAfterLogin', () => {
+  it('sends an org owner to the owner workspace, not one shop’s queue', () => {
+    // Login used to route everyone to /locations/<id>/queue, so the owner
+    // landed inside a single shop and had to find their way out.
+    expect(landingPathAfterLogin({ role: 'org_owner', locationId: 'loc1' })).toBe('/org');
+  });
+
+  it.each(['location_manager', 'front_desk', 'staff'])('sends %s to their location queue', (role) => {
+    expect(landingPathAfterLogin({ role, locationId: 'loc1' })).toBe('/locations/loc1/queue');
+  });
+
+  it('treats an unknown role as location staff rather than as an owner', () => {
+    // Failing closed matters: guessing "owner" for a role we do not recognise
+    // would drop someone into the cross-location workspace.
+    expect(landingPathAfterLogin({ role: 'something_new', locationId: 'loc1' })).toBe('/locations/loc1/queue');
+  });
+});
+
+describe('splitOwners', () => {
+  it('lifts org owners out of the per-location grouping', () => {
+    const { owners, staff } = splitOwners(roster);
+    expect(owners.map((e) => e.fullName)).toEqual(['Alex Rivera']);
+    expect(staff.map((e) => e.fullName)).toEqual(['Sam Chen', 'Jordan Lee']);
+  });
+
+  it('loses nobody — every entry lands in exactly one group', () => {
+    // The grouping rule this repo keeps relearning: group, never filter.
+    const { owners, staff } = splitOwners(roster);
+    expect(owners.length + staff.length).toBe(roster.length);
+    const seen = [...owners, ...staff].map((e) => e.locationStaffId).sort();
+    expect(seen).toEqual(roster.map((e) => e.locationStaffId).sort());
+  });
+
+  it('handles a roster with no owner at all', () => {
+    const { owners, staff } = splitOwners(roster.filter((e) => e.role !== 'org_owner'));
+    expect(owners).toEqual([]);
+    expect(staff).toHaveLength(2);
+  });
+
+  it('handles a roster that is entirely owners', () => {
+    // The "all" case, not just the "some" case.
+    const allOwners = roster.map((e) => ({ ...e, role: 'org_owner' }));
+    const { owners, staff } = splitOwners(allOwners);
+    expect(owners).toHaveLength(3);
+    expect(staff).toEqual([]);
+  });
+
+  it('handles an empty roster', () => {
+    expect(splitOwners([])).toEqual({ owners: [], staff: [] });
   });
 });

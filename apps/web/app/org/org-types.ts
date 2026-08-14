@@ -45,7 +45,20 @@ export interface OwnerLocation {
 }
 
 export interface OwnerDashboard {
-  organization: { id: string; name: string };
+  /**
+   * Optional on purpose, even though the current API always sends it.
+   *
+   * The web app and the API deploy independently (Vercel and Render), so a
+   * newer web build routinely runs against an older API for a few minutes.
+   * `organization` was added after `locations` and `totals`, and reading
+   * `data.organization.name` on a response that predates it threw
+   * "Cannot read properties of undefined" inside the shared org layout —
+   * blanking the entire owner workspace, not just one page.
+   *
+   * Marking it optional makes TypeScript refuse any access that would repeat
+   * that. Same reasoning applies to anything else added later.
+   */
+  organization?: { id: string; name: string };
   locations: OwnerLocation[];
   totals: {
     revenueToday: number;

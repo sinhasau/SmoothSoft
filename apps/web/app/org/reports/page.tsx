@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Card } from '../../../components/ui';
 import { useOwnerDashboard } from '../use-owner-dashboard';
+import { OwnerFallback } from '../owner-fallback';
 
 const REPORT_GROUPS = [
   { title: 'Sales & revenue', description: 'Revenue trend, payment mix, discounts, services and products.', report: 'revenue_trend' },
@@ -12,8 +13,9 @@ const REPORT_GROUPS = [
 ];
 
 export default function OwnerReportsPage() {
-  const { data } = useOwnerDashboard();
-  if (!data) return <p className="px-6 py-8 text-sm text-gray-500">Loading reports…</p>;
+  const dashboard = useOwnerDashboard();
+  const { data } = dashboard;
+  if (!data) return <OwnerFallback query={dashboard} what="your reports" />;
 
   return (
     <div className="mx-auto max-w-6xl space-y-7 px-5 py-6 lg:px-8">

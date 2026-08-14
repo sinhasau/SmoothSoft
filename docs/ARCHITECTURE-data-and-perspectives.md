@@ -280,9 +280,50 @@ The stakes are categorically different for the cross-org identity: a reassigned 
 
 ## Part 4 — Remaining open questions
 
-Resolved this round: multi-location staff (built as an org-level toggle), manager permission tiers (built as configurable overrides, not fixed roles). What's still open:
+Resolved this round: multi-location staff (built as an org-level toggle), manager permission tiers (built as configurable overrides, not fixed roles), and org-level settings — see below. What's still open:
 
 1. **Staleness threshold default.** 6 months was proposed as a starting point for the local-profile re-confirmation prompt — is that right for typical visit cadence in this business, or should it be shorter/longer? This is a policy call, not something the architecture can decide alone.
 2. **Notification on unbind.** If a phone binding is superseded because staff caught a mismatch, should the *old* profile's owner (if reachable another way — email on file, etc.) be notified their number changed hands? Not required, but worth a decision either way.
 3. **Cross-org account scope, revisited.** Given the two-tier model above, does the platform actually want to offer a client-facing cross-org account at launch (adds real complexity: OTP infra, re-verification policy, a client-facing auth surface), or is that a Phase 2 feature once single-org local profiles are solid? Worth deciding before Module 3 (online booking) is built, since a client-facing login is naturally where this would live.
 4. **Retention for orphaned local profiles.** When a phone binding is superseded, the old profile's history sticks around under its opaque `client_id` with no live match key. Does that need its own retention/cleanup policy, or does it just sit there indefinitely as historical record (consistent with the 3–7 year audit-retention requirement already established for financial data)?
+
+## Part 5 — Org-level settings (built)
+
+Part 2 lists "org-level settings" among the Owner's primary screens, but every
+settings table in the schema is keyed by `location_id`, so an owner with three
+shops opened three settings pages and kept them in sync by hand. This is what
+was built, and the reasoning, since the propagation semantics were left open.
+
+**Defaults with an explicit push, not inheritance.** `organization_settings`
+(migration 0053) holds one nullable row per organization. A new location is
+created from it; existing locations are only changed when the owner explicitly
+chooses to push. Every read path is unchanged — a location still reads its own
+row — which keeps the blast radius to the write path.
+
+The rejected alternative was true inheritance (`COALESCE(location.value,
+org.value)` at read time). It is conceptually cleaner and copies nothing, but it
+changes what "a shop's setting" means, touches every read site across ten
+tables, and makes a shop that never customised silently follow the org. That may
+still be the right end state; it was not the right first step.
+
+**Every save names one field.** The API takes `{ key, value, scope }` and writes
+exactly one column, on both the org row and — when `scope` is `all` — each
+location's row. A whole-row save would carry along every other value the form
+was holding and quietly overwrite per-shop customisations the owner never
+touched. `null` in the org row means "no default set", so a shop created while a
+field is null keeps that column's own default.
+
+**Push updates, never inserts.** If a shop has no row in a settings table yet it
+is running on column defaults; creating a half-populated row during a push would
+freeze that table's other values at today's defaults — a silent override of
+settings nobody changed.
+
+**Scope is operating policy only.** Features, scheduling policy, request
+pricing, client messaging and sanitation. Sales tax is jurisdictional, store
+hours differ per shop, chair count is physical, and payment processor config is
+per-location payouts — propagating any of those across an organization would be
+wrong, so they are absent by decision rather than by omission. The test
+`org-settings-fields.test.ts` asserts they stay absent.
+
+Owner-only, enforced by `requireOwner()`: a location manager is scoped to the
+locations they manage (Part 2), and these defaults reach past that boundary.

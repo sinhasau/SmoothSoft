@@ -36,10 +36,15 @@ on:
         type: boolean
         default: false
 
-# Two concurrent runs would race for the same advisory-free migration table.
+# Shared with the seed workflows on purpose: every job that writes to the
+# production database serializes against the same group. Migrating while a seed
+# is mid-flight is the bad case — the seed would be inserting against a schema
+# that is changing underneath it. A group per workflow would not prevent that,
+# because concurrency only ever serializes runs within one group.
+#
 # Never cancel one in flight — that would kill it mid-transaction.
 concurrency:
-  group: migrate-production
+  group: production-database-maintenance
   cancel-in-progress: false
 
 jobs:

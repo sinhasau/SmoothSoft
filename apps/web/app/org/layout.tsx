@@ -14,6 +14,7 @@ const NAV = [
   { href: '/org/team', label: 'Team', icon: '♧' },
   { href: '/org/payroll', label: 'Payroll', icon: '$' },
   { href: '/org/reports', label: 'Reports', icon: '↗' },
+  { href: '/org/settings', label: 'Settings', icon: '⚙' },
 ];
 
 export default function OwnerLayout({ children }: { children: React.ReactNode }) {
@@ -38,7 +39,10 @@ export default function OwnerLayout({ children }: { children: React.ReactNode })
 
   if (!auth || auth.role !== 'org_owner') return null;
   const isActive = (item: (typeof NAV)[number]) => item.exact ? pathname === item.href : pathname.startsWith(item.href);
-  const organizationName = dashboard.data?.organization.name ?? 'Your business';
+  // Both links in this chain are load-bearing. `?.organization` alone still
+  // threw on a response from an API predating the field, and because this is
+  // the shared layout it blanked every page in the workspace, not just one.
+  const organizationName = dashboard.data?.organization?.name ?? 'Your business';
 
   return (
     <div className="app-shell">
@@ -50,7 +54,10 @@ export default function OwnerLayout({ children }: { children: React.ReactNode })
           <span className="nav-section-label">Quick access</span>
           <Link href={`/locations/${auth.locationId}/clients`} className="app-nav-link"><span aria-hidden="true">♙</span>Clients</Link>
           <Link href={`/locations/${auth.locationId}/communications`} className="app-nav-link"><span aria-hidden="true">✉</span>Messages</Link>
-          <Link href={`/locations/${auth.locationId}/settings`} className="app-nav-link"><span aria-hidden="true">⚙</span>Administration</Link>
+          {/* Deliberately labelled as one shop's settings. "Administration" used
+              to point here from the organization sidebar, which read as central
+              administration but silently opened a single location's page. */}
+          <Link href={`/locations/${auth.locationId}/settings`} className="app-nav-link"><span aria-hidden="true">🏠</span>This shop&rsquo;s settings</Link>
         </nav>
         <div className="sidebar-user">
           <span className="avatar">{auth.fullName.split(/\s+/).map((part) => part[0]).slice(0, 2).join('')}</span>
@@ -66,8 +73,11 @@ export default function OwnerLayout({ children }: { children: React.ReactNode })
         <div className="app-content">{children}</div>
       </div>
       <nav className="mobile-bottom-nav" aria-label="Owner mobile navigation">
-        {NAV.slice(0, 4).map((item) => <Link key={item.href} href={item.href} className={isActive(item) ? 'active' : ''}><span>{item.icon}</span>{item.label}</Link>)}
-        <Link href="/org/reports" className={pathname.startsWith('/org/reports') ? 'active' : ''}><span>↗</span>Reports</Link>
+        {/* Derived from the same NAV as the sidebar, never a hand-kept slice.
+            This was `NAV.slice(0, 4)` plus a hardcoded Reports link, which
+            happened to equal the whole list — so adding Settings would have
+            made it a desktop-only section. */}
+        {NAV.map((item) => <Link key={item.href} href={item.href} className={isActive(item) ? 'active' : ''}><span>{item.icon}</span>{item.label}</Link>)}
       </nav>
     </div>
   );
