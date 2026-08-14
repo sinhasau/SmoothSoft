@@ -38,7 +38,10 @@ export default function OwnerLayout({ children }: { children: React.ReactNode })
 
   if (!auth || auth.role !== 'org_owner') return null;
   const isActive = (item: (typeof NAV)[number]) => item.exact ? pathname === item.href : pathname.startsWith(item.href);
-  const organizationName = dashboard.data?.organization.name ?? 'Your business';
+  // Both links in this chain are load-bearing. `?.organization` alone still
+  // threw on a response from an API predating the field, and because this is
+  // the shared layout it blanked every page in the workspace, not just one.
+  const organizationName = dashboard.data?.organization?.name ?? 'Your business';
 
   return (
     <div className="app-shell">

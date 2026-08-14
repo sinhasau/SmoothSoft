@@ -3,19 +3,22 @@
 import Link from 'next/link';
 import { Card, Pill, StatCard } from '../../components/ui';
 import { useOwnerDashboard } from './use-owner-dashboard';
+import { OwnerFallback } from './owner-fallback';
+import { ShopLink } from './shop-link';
 
 const COMPLIANCE_TONE = { compliant: 'green', needs_attention: 'amber', overdue: 'red' } as const;
 const COMPLIANCE_LABEL = { compliant: 'Compliant', needs_attention: 'Needs attention', overdue: 'Overdue' };
 
 export default function OwnerHomePage() {
-  const { data, isLoading, error } = useOwnerDashboard();
-  if (isLoading || !data) return <OwnerPageState message={error ? 'Unable to load the owner workspace.' : 'Loading your business…'} />;
+  const dashboard = useOwnerDashboard();
+  const { data } = dashboard;
+  if (!data) return <OwnerFallback query={dashboard} what="the owner workspace" />;
 
   return (
     <div className="mx-auto max-w-6xl space-y-7 px-5 py-6 lg:px-8">
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[#dfd9cd] pb-5">
-        <div><p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Owner workspace</p><h1 className="font-serif text-4xl font-medium tracking-tight">Good overview, {data.organization.name}</h1><p className="mt-1 text-sm text-gray-500">Everything requiring an owner decision, across {data.locations.length} locations.</p></div>
-        <Link href={`/locations/${data.locations[0]?.locationId}`} className="rounded-lg bg-black px-4 py-2.5 text-sm font-medium text-white">Open a shop</Link>
+        <div><p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Owner workspace</p><h1 className="font-serif text-4xl font-medium tracking-tight">Good overview, {data.organization?.name ?? 'your business'}</h1><p className="mt-1 text-sm text-gray-500">Everything requiring an owner decision, across {data.locations.length} locations.</p></div>
+        <ShopLink locationId={data.locations[0]?.locationId} className="rounded-lg bg-black px-4 py-2.5 text-sm font-medium text-white" emptyReason="no locations yet">Open a shop</ShopLink>
       </header>
 
       <section>
@@ -49,5 +52,3 @@ export default function OwnerHomePage() {
 function OwnerShortcut({ href, title, body, action }: { href: string; title: string; body: string; action: string }) {
   return <Link href={href}><Card className="h-full p-5 transition hover:-translate-y-0.5 hover:shadow-sm"><h2 className="font-serif text-xl">{title}</h2><p className="mt-2 min-h-10 text-sm text-gray-500">{body}</p><div className="mt-5 text-sm font-semibold">{action} →</div></Card></Link>;
 }
-
-function OwnerPageState({ message }: { message: string }) { return <div className="px-6 py-8 text-sm text-gray-500">{message}</div>; }
