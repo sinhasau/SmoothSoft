@@ -102,6 +102,28 @@ export interface LocationFeatureSettingsTable {
   updated_at: TimestampTzWithDefault;
 }
 
+/**
+ * Org-wide defaults (migration 0053). Every settings column is nullable and
+ * null means "no org default set" — a location created while a field is null
+ * keeps that field's own column default.
+ */
+export interface OrganizationSettingsTable {
+  organization_id: string;
+  retail_products_enabled: boolean | null;
+  discount_codes_enabled: boolean | null;
+  self_serve_default: boolean | null;
+  base_hourly_labor_cost: ColumnType<string | null, string | number | null, string | number | null>;
+  payroll_burden_pct: ColumnType<string | null, string | number | null, string | number | null>;
+  barber_request_mode: string | null;
+  flat_surcharge_amount: ColumnType<string | null, string | number | null, string | number | null>;
+  communications_enabled: boolean | null;
+  booking_confirmations: boolean | null;
+  appointment_reminders: boolean | null;
+  sanitation_enabled: boolean | null;
+  sanitation_interval_hours: number | null;
+  updated_at: TimestampTzWithDefault;
+}
+
 export interface LocationCommunicationSettingsTable {
   location_id: string;
   enabled: Generated<boolean>;
@@ -714,6 +736,7 @@ export interface DB {
   payment_processor_config: PaymentProcessorConfigTable;
   discount_codes: DiscountCodesTable;
   location_scheduling_policy: LocationSchedulingPolicyTable;
+  organization_settings: OrganizationSettingsTable;
   location_feature_settings: LocationFeatureSettingsTable;
   location_communication_settings: LocationCommunicationSettingsTable;
   location_sanitation_settings: LocationSanitationSettingsTable;

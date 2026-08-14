@@ -162,7 +162,13 @@ const MANAGER_ONLY: { file: string; method: string; pathIncludes: string }[] = [
 describe('crown-jewel operations stay manager-only', () => {
   for (const rule of MANAGER_ONLY) {
     it(`${rule.file} ${rule.method} …${rule.pathIncludes}… requires manager`, () => {
-      const file = controllerFiles.find((f) => f.endsWith(rule.file));
+      // Match the file NAME exactly, not a path suffix. `endsWith` silently
+      // matched `org-settings.controller.ts` for the rule targeting
+      // `settings.controller.ts` — the rules then looked for routes in the
+      // wrong file and failed, while the real crown-jewel routes went
+      // unchecked. Any future `<prefix>-settings.controller.ts` would do the
+      // same.
+      const file = controllerFiles.find((f) => f.split('/').pop() === rule.file);
       expect(file, `${rule.file} not found`).toBeTruthy();
       const handler = handlersOf(readFileSync(file!, 'utf8')).find((h) => h.method === rule.method && h.path.includes(rule.pathIncludes));
       expect(handler, `no ${rule.method} route matching '${rule.pathIncludes}' in ${rule.file}`).toBeTruthy();
