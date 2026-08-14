@@ -22,10 +22,20 @@ GRANT USAGE ON SCHEMA public TO salon_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO salon_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO salon_app;
 
--- Covers tables created by future migrations without needing to re-run
--- this grant list manually every time, as long as they're created by the
--- same owning role that ran the migrations.
-ALTER DEFAULT PRIVILEGES FOR ROLE salon IN SCHEMA public
+-- Covers tables created by future migrations without needing to re-run this
+-- grant list manually every time.
+--
+-- `FOR ROLE` is deliberately omitted, which makes these apply to whoever is
+-- running this file. Naming a role here instead hardcodes the local dev owner
+-- (`salon`) and fails outright on a managed database, where the owner is
+-- something else — Neon calls it `neondb_owner`. That failure aborted a
+-- production reset partway through, after the schema was rebuilt but before
+-- any data was seeded.
+--
+-- Omitting it is also the correct behaviour, not merely the portable one:
+-- default privileges attach to the role that CREATES the object, and the role
+-- running this file is the same one that runs the migrations.
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO salon_app;
-ALTER DEFAULT PRIVILEGES FOR ROLE salon IN SCHEMA public
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO salon_app;

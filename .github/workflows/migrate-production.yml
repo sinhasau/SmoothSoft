@@ -1,0 +1,113 @@
+# Applies outstanding migrations to a real database, on demand.
+#
+# This exists because migrations were being applied by hand from a laptop, and
+# that is where the queue-board outage came from: 0051 added
+# queue_entries.late_arrival, nobody ran it against production, and every
+# GET /queue/board returned 500 for days while the page rendered a calm empty
+# shop. The fix for "someone forgot" is not "remember harder".
+#
+# It is deliberately NOT automatic. `render.yaml` has no pre-deploy hook
+# (Render's preDeployCommand needs a paid instance type and the API is on the
+# free plan), and auto-applying schema changes on every push to main would
+# migrate a database before the build that depends on it is serving — the
+# ordering CLAUDE.md warns about. So this is a button a person presses, in the
+# window they choose, before the dependent API build goes live.
+#
+# It CANNOT destroy data: it runs `db:migrate`, which applies only what
+# `schema_migrations` says is missing, one transaction per file. It does not
+# reset, drop, or seed. `scripts/reset-and-seed.mjs` is not reachable from here
+# on purpose — that one drops every table and belongs nowhere near a button.
+#
+# Setup, once:
+#   1. Repo → Settings → Secrets and variables → Actions → New repository secret
+#        name:  PRODUCTION_DATABASE_MIGRATE_URL
+#        value: the Neon connection string for the TABLE-OWNING role
+#               (neondb_owner — NOT salon_app, which RLS applies to)
+#   2. Optional but recommended: Settings → Environments → New environment
+#      named `production`, with yourself as a required reviewer. Every run then
+#      waits for an explicit approval before it touches anything.
+name: Migrate production database
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Actually apply. Leave unchecked to only list what is outstanding.'
+        type: boolean
+        default: false
+
+# Two concurrent runs would race for the same advisory-free migration table.
+# Never cancel one in flight — that would kill it mid-transaction.
+concurrency:
+  group: migrate-production
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    # Gate for the approval rule described above. Harmless if the environment
+    # does not exist yet — GitHub creates it implicitly, ungated.
+    environment: production
+    env:
+      # The owner role. Referenced only as an env var so it is never an
+      # argument in a log line; GitHub masks registered secrets in output, but
+      # not passing it around is the actual protection.
+      DATABASE_MIGRATE_URL: ${{ secrets.PRODUCTION_DATABASE_MIGRATE_URL }}
+    steps:
+      - name: Check the secret is set
+        # Fails with a readable message rather than a confusing libpq error
+        # about connecting to a Unix socket, which is what an empty connection
+        # string actually produces.
+        run: |
+          if [ -z "$DATABASE_MIGRATE_URL" ]; then
+            echo "::error::PRODUCTION_DATABASE_MIGRATE_URL is not set. See the setup notes at the top of this workflow file."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # scripts/migrate.mjs imports `pg`, so dependencies are required.
+      - run: npm ci
+
+      # Always runs, including on an apply. Two reasons: the log then records
+      # what this run was about to do, and --dry-run has no side effects at all
+      # (it reads information_schema rather than creating the tracking table,
+      # so it cannot accidentally adopt an untracked database).
+      - name: What is outstanding
+        run: npm run db:migrate:dry-run
+
+      - name: Apply migrations
+        if: ${{ inputs.apply }}
+        run: npm run db:migrate
+
+      # New tables arrive owned by the migrating role with no grants, so the
+      # app role cannot see them until this runs. Idempotent, and cheap.
+      - name: Grant app-role table access
+        if: ${{ inputs.apply }}
+        run: npm run db:grant-app-role
+
+      # Post-condition, not decoration. The failure this guards is a database
+      # that was baselined past where it really was: db:migrate then reports
+      # "Up to date" forever while the schema silently never gets those files.
+      # Comparing tracked rows against files on disk catches exactly that.
+      - name: Verify every migration is recorded as applied
+        if: ${{ inputs.apply }}
+        run: |
+          tracked=$(psql "$DATABASE_MIGRATE_URL" -tAc "select count(*) from schema_migrations")
+          onDisk=$(ls db/migrations/*.sql | wc -l)
+          echo "tracked=$tracked onDisk=$onDisk"
+          [ "$tracked" -eq "$onDisk" ] || { echo "::error::schema_migrations has $tracked rows but there are $onDisk migration files. The database is NOT fully migrated."; exit 1; }
+
+      - name: Summary
+        run: |
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            echo "### Migrations applied" >> "$GITHUB_STEP_SUMMARY"
+            echo "The database is up to date and the app role has been granted access." >> "$GITHUB_STEP_SUMMARY"
+            echo "Redeploy the API if this run added anything the new build depends on." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Dry run only — nothing was changed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Re-run with **apply** checked to apply the migrations listed in the log." >> "$GITHUB_STEP_SUMMARY"
+          fi

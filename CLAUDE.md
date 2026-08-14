@@ -144,9 +144,25 @@ repeatedly and from any state.
 role — the app connects as `salon_app`, which RLS policies apply to. See
 `.env.example` and `db/grant-app-role.sql`.
 
-**Deploying a schema change:** there is no pre-deploy migration hook in
-`render.yaml`. Migrations are applied manually, and must land **before** the
-API build that depends on them starts serving.
+**Deploying a schema change:** there is still no pre-deploy hook in
+`render.yaml` — Render's `preDeployCommand` needs a paid instance type and the
+API is on `plan: free`. Migrations are applied by running the **Migrate
+production database** workflow (`.github/workflows/migrate-production.yml`)
+from the Actions tab, and must land **before** the API build that depends on
+them starts serving.
+
+Run it once with `apply` unchecked to see what is outstanding — that is a true
+dry run, it does not even create the tracking table — then again with `apply`
+checked. It runs `db:migrate` and `db:grant-app-role` only; it cannot reset,
+drop or seed. Afterwards it fails the run if `schema_migrations` and the files
+on disk disagree, which is the one way a database can end up silently behind
+while `db:migrate` reports "Up to date".
+
+The connection string lives in the `PRODUCTION_DATABASE_MIGRATE_URL` repository
+secret. Do not paste a production connection string into a terminal, a commit,
+or a chat — it is the table-owning role, it bypasses RLS, and it can drop every
+table. If one is ever exposed, rotate it in Neon and update both `DATABASE_URL`
+and `DATABASE_MIGRATE_URL` in Render before doing anything else.
 
 ## Testing
 
@@ -258,6 +274,25 @@ drift silently.
 - Controls must stay usable with a thumb: a real 44px minimum touch target,
   and disabled-with-a-reason rather than removed from the DOM. A control that
   disappears when it does not apply cannot be found by someone looking for it.
+
+### An empty state must never stand in for a failed request
+
+`?? []` on query data turns a total failure into a calm, plausible screen. The
+queue board did exactly this: `GET /queue/board` returned 500 on every load in
+production — `queue_entries.late_arrival` was missing because a migration had
+never been applied — and the page rendered "No staff clocked in yet", "No one
+is waiting", and a disabled "+ clock in". It looked like a quiet shop. It was a
+total outage, and it survived days of looking straight at it.
+
+- **Check `isError` before rendering anything derived from the data.** Render
+  `components/data-unavailable.tsx`, which says the load failed, shows the
+  error, and offers a retry.
+- **An empty state means "we asked and there is nothing".** It must never mean
+  "we could not ask". If those two look identical on screen, the screen is
+  lying.
+- When a UI bug resists explanation, **check whether the request behind it is
+  actually succeeding** before changing the component again. Three rounds of
+  clock-in fixes were aimed at a control that was never broken.
 
 ### Never silently drop rows from a list a person acts on
 

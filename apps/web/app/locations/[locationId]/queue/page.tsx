@@ -15,6 +15,7 @@ import { StaffOutlook, type StaffTimeline, type UnassignedEntry } from './staff-
 import { isLate as isLateEntry, latenessLabel } from './lateness';
 import { Modal } from '../../../../components/modal';
 import { openingStaffingWarning } from './opening-staffing';
+import { DataUnavailable } from '../../../../components/data-unavailable';
 
 /** Ticks every 30s so elapsed/ETA/late computations stay live without a full board refetch. */
 function useClock() {
@@ -352,6 +353,24 @@ export default function QueuePage({ params }: { params: { locationId: string } }
     }
     setDragId(null);
     setDragOverZone(null);
+  }
+
+  // A failed board request must never render as an empty shop. Every list on
+  // this page falls back to `?? []`, so without this the screen shows "No staff
+  // clocked in yet", "No one is waiting" and a disabled "+ clock in" — a
+  // convincing, calm lie. That is exactly what a missing migration produced in
+  // production: the board 500ed on every load for days and looked fine.
+  if (board.isError) {
+    return (
+      <div className="mx-auto max-w-[1560px] py-6">
+        <DataUnavailable
+          what="the floor"
+          error={board.error}
+          onRetry={() => void board.refetch()}
+          retrying={board.isFetching}
+        />
+      </div>
+    );
   }
 
   return (

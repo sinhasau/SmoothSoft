@@ -87,16 +87,39 @@ const runOptional = (label, cmd, args, opts = {}) => {
 const client = new pg.Client({ connectionString });
 await client.connect();
 try {
-  // Drop the schema rather than the database: the connection is already open,
-  // the app role's grants live at schema level and are reissued by
-  // db:grant-app-role below, and this works on hosted Postgres (Neon, RDS)
-  // where dropping the database out from under yourself is not possible.
+  // Drop the tables one by one rather than dropping the schema.
+  //
+  // `drop schema public cascade` needs OWNERSHIP OF THE SCHEMA, which managed
+  // Postgres does not hand out: on Neon the public schema belongs to
+  // pg_database_owner, so neondb_owner — the role that owns every table in it
+  // — still gets "must be owner of schema public". Dropping the tables needs
+  // only table ownership, which that role does have, and it leaves the schema
+  // and its grants intact so db:grant-app-role has less to rebuild.
+  //
+  // Types are dropped too: migrations create enums, and a leftover type would
+  // make the re-run fail on `create type`.
   process.stdout.write(`\n── dropping every table in "${dbName}"\n`);
-  await client.query('drop schema public cascade');
-  await client.query('create schema public');
-  // The owner must keep control of the new schema; grants to the app role are
-  // reapplied by db:grant-app-role after the tables exist.
-  await client.query('grant all on schema public to current_user');
+
+  const { rows: tables } = await client.query(
+    `select tablename from pg_tables where schemaname = 'public'`,
+  );
+  if (tables.length) {
+    const list = tables.map((r) => `public."${r.tablename}"`).join(', ');
+    // One statement so foreign keys between them cannot block the order.
+    await client.query(`drop table if exists ${list} cascade`);
+  }
+  console.log(`   dropped ${tables.length} table(s)`);
+
+  const { rows: types } = await client.query(
+    `select t.typname
+       from pg_type t
+       join pg_namespace n on n.oid = t.typnamespace
+      where n.nspname = 'public' and t.typtype = 'e'`,
+  );
+  for (const { typname } of types) {
+    await client.query(`drop type if exists public."${typname}" cascade`);
+  }
+  if (types.length) console.log(`   dropped ${types.length} type(s)`);
 } finally {
   await client.end();
 }
