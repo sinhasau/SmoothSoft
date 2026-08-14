@@ -196,11 +196,31 @@ So, before saying any change is done:
    real person would perform. Chromium and Playwright are installed
    (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`); never run
    `playwright install`.
-2. **Check the phone, not just the desktop.** Drive it at a phone viewport
-   (390×844). Most of the bugs in this repo's history are mobile-only: a submit
-   button under the home indicator, a nav section that exists only on desktop, a
-   `title` attribute explaining a disabled control that touch devices never
-   show.
+2. **Desktop is the main flow, and it has to be perfect. Then the phone.**
+
+   Every change is verified at **both**, desktop first, and neither one is
+   optional. They are not equal in standard:
+
+   | | Viewport | Standard |
+   |---|---|---|
+   | **Desktop** — the main flow | 1440×900 | **Perfect.** No defect ships. |
+   | **Mobile** — secondary, still critical | 390×844 | Fully usable. No blocker, no lockout, no unreachable control. |
+
+   Desktop is where the work actually happens: the owner reviewing pay periods,
+   the manager building next week's schedule, the front desk running the floor
+   for eight hours. It is the surface people live in, so "good enough" is not a
+   passing grade there — layout, alignment, focus order, keyboard access,
+   hover and disabled states, and every number on the screen have to be right.
+
+   Mobile being second in priority never means second in correctness. It is the
+   barber holding clippers and the owner checking in from the car, and this
+   repo's history is full of mobile-only breakage: a submit button under the
+   home indicator, a nav section that exists only on desktop, a `title`
+   attribute explaining a disabled control that touch devices never show. A
+   mobile blocker is still a blocker.
+
+   Checking one and inferring the other is not verification. State both
+   viewports explicitly when reporting, and if only one was driven, say which.
 3. **Exercise the empty and degenerate states deliberately.** Zero staff on the
    roster, nobody clocked in, nobody scheduled, everyone inactive, an empty
    queue, a closed shop. These are where the real reports come from, and they
