@@ -1,6 +1,6 @@
-import { Controller, ForbiddenException, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { requireAuth, requireFrontDeskOrManager } from '../common/request-context';
+import { requireAuth, requireFrontDeskOrManager, requireOwner } from '../common/request-context';
 import { DashboardService } from './dashboard.service';
 
 @Controller('dashboard')
@@ -22,12 +22,7 @@ export class DashboardController {
 
   @Get('org')
   org() {
-    const auth = requireAuth();
-    // The org-wide dashboard spans every location's revenue, staff, and
-    // compliance data — only the owner should see across locations at all.
-    if (auth.role !== 'org_owner') {
-      throw new ForbiddenException('Only the org owner can view the owner dashboard.');
-    }
+    const auth = requireOwner();
     return this.dashboard.orgDashboard(auth.organizationId);
   }
 }

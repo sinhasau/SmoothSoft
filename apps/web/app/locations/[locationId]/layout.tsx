@@ -85,6 +85,7 @@ export default function LocationLayout({ children, params }: { children: React.R
       <aside className="app-sidebar">
         <div className="app-brand"><span className="brand-mark">S</span><div><strong>SmoothSoft</strong><span>JJ&apos;s Barbers</span></div></div>
         <nav aria-label="Primary navigation">
+          {auth.role === 'org_owner' && <><span className="nav-section-label">Owner workspace</span><Link href="/org" className="app-nav-link"><span aria-hidden="true">←</span>Back to organization</Link><span className="nav-section-label">This location</span></>}
           <span className="nav-section-label">Operate</span>
           {primary.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}
           {management.length > 0 && <><span className="nav-section-label">{isManager ? 'Manage' : 'Front desk'}</span>{management.map((item) => <Link key={item.href} href={item.href} className={`app-nav-link ${isActive(item) ? 'active' : ''}`}><span aria-hidden="true">{item.icon}</span>{item.label}</Link>)}</>}
@@ -104,7 +105,6 @@ export default function LocationLayout({ children, params }: { children: React.R
         <div className="sidebar-user">
           <span className="avatar">{auth.fullName.split(/\s+/).map((part) => part[0]).slice(0, 2).join('')}</span>
           <div><strong>{auth.fullName}</strong><span>{auth.role.replace('_', ' ')}</span></div>
-          {auth.role === 'org_owner' && <Link href="/org" aria-label="Open owner dashboard">↗</Link>}
           <button
             type="button"
             onClick={() => logout.mutate()}
@@ -121,6 +121,7 @@ export default function LocationLayout({ children, params }: { children: React.R
         <header className="mobile-app-header">
           <div className="app-brand"><span className="brand-mark">S</span><div><strong>SmoothSoft</strong><span>JJ&apos;s Barbers</span></div></div>
           <div className="mobile-header-actions">
+            {auth.role === 'org_owner' && <Link href="/org" className="rounded-lg border border-black/10 bg-white px-2.5 py-2 text-xs font-medium">Organization</Link>}
             <span className="avatar">{auth.fullName[0]}</span>
             <button
               type="button"

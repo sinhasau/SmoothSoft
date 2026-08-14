@@ -4,7 +4,7 @@ import { ForbiddenException } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import type { StaffRole } from '../db/kysely.types';
 import type { AuthClaims } from '../auth/auth.types';
-import { requestContextStorage, requireAuth, requireFrontDeskOrManager, requireManager } from '../common/request-context';
+import { requestContextStorage, requireAuth, requireFrontDeskOrManager, requireManager, requireOwner } from '../common/request-context';
 
 /**
  * Closes launch-readiness gap #3 (endpoint authorization matrix + automated
@@ -49,6 +49,17 @@ describe('role-guard primitives (negative matrix)', () => {
       }
     }
     expect(() => runAs(null, requireManager)).toThrow();
+  });
+
+  it('requireOwner admits only the organization owner', () => {
+    for (const role of ALL_ROLES) {
+      if (role === 'org_owner') {
+        expect(runAs(makeAuth(role), requireOwner).role).toBe(role);
+      } else {
+        expect(() => runAs(makeAuth(role), requireOwner)).toThrow(ForbiddenException);
+      }
+    }
+    expect(() => runAs(null, requireOwner)).toThrow();
   });
 
   it('requireFrontDeskOrManager admits owner/manager/front_desk but not staff (barber)', () => {
@@ -99,7 +110,7 @@ function handlersOf(src: string): Handler[] {
 }
 
 const controllerFiles = listControllerFiles(SRC_ROOT);
-const REQUIRE_GUARD = /require(Auth|Manager|FrontDeskOrManager)\s*\(/;
+const REQUIRE_GUARD = /require(Auth|Manager|Owner|FrontDeskOrManager)\s*\(/;
 
 describe('controller authorization coverage', () => {
   it('discovers every controller in the source tree', () => {

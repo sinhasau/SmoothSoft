@@ -1,148 +1,53 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { api } from '../../lib/api';
-import { useRequireAuth } from '../../lib/auth';
 import { Card, Pill, StatCard } from '../../components/ui';
+import { useOwnerDashboard } from './use-owner-dashboard';
 
-interface OrgLocation {
-  locationId: string;
-  locationName: string;
-  clientsServed: number;
-  revenue: number;
-  staffOnShift: number;
-  staffTotal: number;
-  complianceStatus: 'compliant' | 'needs_attention' | 'overdue';
-  complianceAlerts: number;
-  w2Count: number;
-  contractorCount: number;
-  serviceRevenue: number;
-  retailRevenue: number;
-  discount: number;
-  tax: number;
-  tips: number;
-}
+const COMPLIANCE_TONE = { compliant: 'green', needs_attention: 'amber', overdue: 'red' } as const;
+const COMPLIANCE_LABEL = { compliant: 'Compliant', needs_attention: 'Needs attention', overdue: 'Overdue' };
 
-interface OrgDashboard {
-  locations: OrgLocation[];
-  totals: {
-    revenueToday: number;
-    clientsServed: number;
-    staffOnShift: number;
-    staffTotal: number;
-    complianceAlerts: number;
-    w2Count: number;
-    contractorCount: number;
-    serviceRevenue: number;
-    retailRevenue: number;
-    discount: number;
-    salesTax: number;
-    tips: number;
-  };
-}
-
-const COMPLIANCE_TONE: Record<string, 'green' | 'amber' | 'red'> = {
-  compliant: 'green',
-  needs_attention: 'amber',
-  overdue: 'red',
-};
-
-const COMPLIANCE_LABEL: Record<string, string> = {
-  compliant: 'Compliant',
-  needs_attention: 'Needs attention',
-  overdue: 'Overdue',
-};
-
-export default function OrgDashboardPage() {
-  const auth = useRequireAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (auth && auth.role !== 'org_owner') {
-      router.replace(`/locations/${auth.locationId}`);
-    }
-  }, [auth, router]);
-
-  const { data } = useQuery({
-    queryKey: ['dashboard', 'org'],
-    queryFn: () => api.get<OrgDashboard>('/dashboard/org'),
-    enabled: !!auth && auth.role === 'org_owner',
-  });
-
-  if (!auth || auth.role !== 'org_owner' || !data) return <p className="text-gray-500 px-6 py-6">Loading…</p>;
+export default function OwnerHomePage() {
+  const { data, isLoading, error } = useOwnerDashboard();
+  if (isLoading || !data) return <OwnerPageState message={error ? 'Unable to load the owner workspace.' : 'Loading your business…'} />;
 
   return (
-    <div className="min-h-[100dvh] px-6 py-6 max-w-5xl mx-auto space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#dfd9cd] pb-4">
-        <div>
-          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Across your business</p>
-          <h1 className="font-serif text-4xl font-medium tracking-tight">JJ's Barbers</h1>
-          <p className="text-sm text-gray-500">{data.locations.length} locations · today</p>
-        </div>
-        <Link
-          href={`/locations/${auth.locationId}`}
-          className="flex items-center gap-1.5 rounded-lg border border-black/10 bg-white px-3 py-2 text-sm font-medium text-ink hover:border-black/30"
-        >
-          <span aria-hidden="true">←</span> Back to dashboard
-        </Link>
-      </div>
+    <div className="mx-auto max-w-6xl space-y-7 px-5 py-6 lg:px-8">
+      <header className="flex flex-wrap items-end justify-between gap-4 border-b border-[#dfd9cd] pb-5">
+        <div><p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#8b6f47]">Owner workspace</p><h1 className="font-serif text-4xl font-medium tracking-tight">Good overview, {data.organization.name}</h1><p className="mt-1 text-sm text-gray-500">Everything requiring an owner decision, across {data.locations.length} locations.</p></div>
+        <Link href={`/locations/${data.locations[0]?.locationId}`} className="rounded-lg bg-black px-4 py-2.5 text-sm font-medium text-white">Open a shop</Link>
+      </header>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <section>
+        <div className="mb-2 flex items-center justify-between"><h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Action center</h2><span className="text-xs text-gray-400">{data.actionItems.length} open</span></div>
+        <Card>
+          {data.actionItems.length === 0 ? <div className="flex items-center gap-3 px-4 py-5"><span className="grid h-8 w-8 place-items-center rounded-full bg-green-100 text-green-700">✓</span><div><div className="font-medium">Nothing urgent</div><div className="text-sm text-gray-500">Payroll, schedules, and compliance have no open setup alerts.</div></div></div> : data.actionItems.map((item) => <Link key={item.id} href={item.href} className="flex items-center justify-between border-b border-black/5 px-4 py-4 last:border-0 hover:bg-black/[0.02]"><div className="flex items-center gap-3"><span className={`h-2.5 w-2.5 rounded-full ${item.tone === 'red' ? 'bg-red-500' : 'bg-amber-500'}`} /><span className="font-medium">{item.title}</span></div><span aria-hidden="true">→</span></Link>)}
+        </Card>
+      </section>
+
+      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Revenue today" value={`$${data.totals.revenueToday.toFixed(0)}`} />
         <StatCard label="Clients served" value={data.totals.clientsServed} />
         <StatCard label="Staff on shift" value={`${data.totals.staffOnShift} / ${data.totals.staffTotal}`} />
-        <StatCard label="Compliance alerts" value={data.totals.complianceAlerts} />
-      </div>
+        <StatCard label="Owner alerts" value={data.actionItems.length} />
+      </section>
 
-      <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Locations</h2>
-        <Card>
-          {data.locations.map((loc) => (
-            <Link
-              key={loc.locationId}
-              href={`/locations/${loc.locationId}`}
-              className="flex items-center justify-between border-b border-black/5 last:border-0 px-4 py-4 hover:bg-black/[0.02]"
-            >
-              <div>
-                <div className="font-medium">{loc.locationName}</div>
-                <div className="text-sm text-gray-500">
-                  {loc.clientsServed} clients · {loc.staffOnShift}/{loc.staffTotal} staff on shift
-                </div>
-              </div>
-              <div className="text-right">
-                <div className="font-semibold">${loc.revenue.toFixed(0)}</div>
-                <div className="text-sm text-gray-500 mb-1">{loc.revenue > 0 && loc.staffOnShift > 0 ? `${Math.round((loc.clientsServed / loc.staffOnShift) * 20)}% util` : ''}</div>
-                <Pill tone={COMPLIANCE_TONE[loc.complianceStatus]}>{COMPLIANCE_LABEL[loc.complianceStatus]}</Pill>
-              </div>
-            </Link>
-          ))}
-        </Card>
-      </div>
+      <section>
+        <div className="mb-2 flex items-center justify-between"><h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Locations</h2><Link href="/org/locations" className="text-sm font-medium">View all →</Link></div>
+        <Card>{data.locations.map((location) => <Link key={location.locationId} href={`/locations/${location.locationId}`} className="grid grid-cols-[1fr_auto] gap-4 border-b border-black/5 px-4 py-4 last:border-0 hover:bg-black/[0.02] sm:grid-cols-[1fr_8rem_8rem_auto]"><div><div className="font-medium">{location.locationName}</div><div className="mt-0.5 text-sm text-gray-500">{location.clientsServed} clients · {location.staffOnShift}/{location.staffTotal} on shift</div></div><div className="hidden text-right sm:block"><div className="text-xs text-gray-500">Revenue</div><strong>${location.revenue.toFixed(0)}</strong></div><div className="hidden text-right sm:block"><div className="text-xs text-gray-500">Requests</div><strong>{location.pendingScheduleRequests}</strong></div><Pill tone={COMPLIANCE_TONE[location.complianceStatus]}>{COMPLIANCE_LABEL[location.complianceStatus]}</Pill></Link>)}</Card>
+      </section>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <StatCard label="W-2 employees" value={data.totals.w2Count} />
-        <StatCard label="1099 booth renters" value={data.totals.contractorCount} />
-      </div>
-
-      <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">Financial snapshot — today, org-wide</h2>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <StatCard label="Service revenue" value={`$${data.totals.serviceRevenue.toFixed(0)}`} />
-          <StatCard label="Product revenue" value={`$${data.totals.retailRevenue.toFixed(0)}`} />
-          <StatCard label="Sales tax collected" value={`$${data.totals.salesTax.toFixed(0)}`} />
-          <StatCard label="Tips" value={`$${data.totals.tips.toFixed(0)}`} />
-          <StatCard label="Revenue today" value={`$${data.totals.revenueToday.toFixed(0)}`} />
-        </div>
-        {data.totals.discount > 0 && (
-          <p className="text-sm text-gray-500 mt-2">
-            Revenue today = ${data.totals.serviceRevenue.toFixed(2)} services + ${data.totals.retailRevenue.toFixed(2)} products − $
-            {data.totals.discount.toFixed(2)} discounts = <span className="font-medium text-black">${data.totals.revenueToday.toFixed(2)}</span>
-          </p>
-        )}
-      </div>
+      <section className="grid gap-3 md:grid-cols-3">
+        <OwnerShortcut href="/org/team" title="Manage your team" body={`${data.team.length} people across ${data.locations.length} locations`} action="Open team" />
+        <OwnerShortcut href="/org/payroll" title="Prepare payroll" body="Review each location's current period and exceptions" action="Open payroll" />
+        <OwnerShortcut href="/org/reports" title="Understand performance" body="Run financial, client, labor, and compliance reports" action="Open reports" />
+      </section>
     </div>
   );
 }
+
+function OwnerShortcut({ href, title, body, action }: { href: string; title: string; body: string; action: string }) {
+  return <Link href={href}><Card className="h-full p-5 transition hover:-translate-y-0.5 hover:shadow-sm"><h2 className="font-serif text-xl">{title}</h2><p className="mt-2 min-h-10 text-sm text-gray-500">{body}</p><div className="mt-5 text-sm font-semibold">{action} →</div></Card></Link>;
+}
+
+function OwnerPageState({ message }: { message: string }) { return <div className="px-6 py-8 text-sm text-gray-500">{message}</div>; }

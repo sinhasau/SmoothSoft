@@ -51,6 +51,14 @@ export function requireManager(): AuthClaims {
   return auth;
 }
 
+export function requireOwner(): AuthClaims {
+  const auth = requireAuth();
+  if (auth.role !== 'org_owner') {
+    throw new ForbiddenException('Organization owner access is required for this action.');
+  }
+  return auth;
+}
+
 /** Read-only operational records used at reception, such as receipts. */
 export function requireFrontDeskOrManager(): AuthClaims {
   const auth = requireAuth();

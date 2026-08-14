@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../../../lib/api';
 import { Button, Card, ClickableName, Pill } from '../../../../components/ui';
@@ -248,6 +248,12 @@ export default function ReportsPage({ params }: { params: { locationId: string }
   const favoritesQuery = useQuery({ queryKey: ['reports', 'favorites'], queryFn: () => api.get<string[]>('/reports/favorites') });
   const payrollSettings = useQuery({ queryKey: ['settings', 'payroll-settings'], queryFn: () => api.get<{ scheduleName: string; frequency: string; currentPeriodStart: string; currentPeriodEnd: string; nextPayDate: string }>('/settings/payroll-settings') });
   const favorites = new Set(favoritesQuery.data ?? []);
+
+  useEffect(() => {
+    if (selected) return;
+    const requested = new URLSearchParams(window.location.search).get('report');
+    if (requested && REPORTS.some((report) => report.id === requested)) selectReport(requested as ReportId);
+  }, [payrollSettings.data, selected]);
 
   const def = selected ? REPORTS.find((r) => r.id === selected) : null;
   const rangeOptions = def?.rangeOptions ?? DEFAULT_RANGE_OPTIONS;

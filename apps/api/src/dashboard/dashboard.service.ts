@@ -262,14 +262,31 @@ export class DashboardService {
 
   async orgDashboard(organizationId: string) {
     const trx = db();
-    const locations = await trx.selectFrom('locations').selectAll().where('organization_id', '=', organizationId).execute();
+    const [organization, locations] = await Promise.all([
+      trx.selectFrom('organizations').select(['id', 'name']).where('id', '=', organizationId).executeTakeFirstOrThrow(),
+      trx.selectFrom('locations').selectAll().where('organization_id', '=', organizationId).orderBy('name').execute(),
+    ]);
 
     const perLocation = await Promise.all(
       locations.map(async (loc) => {
         const stats = await runInLocationScope(this.pool, organizationId, loc.id, async (scopedTrx) => {
           const since = startOfDayInTimezone(loc.timezone);
           const txns = await scopedTrx.selectFrom('transactions').selectAll().where('location_id', '=', loc.id).where('created_at', '>=', since).execute();
-          const staff = await scopedTrx.selectFrom('location_staff').selectAll().where('location_id', '=', loc.id).execute();
+          const staff = await scopedTrx
+            .selectFrom('location_staff as ls')
+            .innerJoin('users as u', 'u.id', 'ls.user_id')
+            .select([
+              'ls.id as locationStaffId',
+              'ls.user_id as userId',
+              'u.full_name as fullName',
+              'ls.role as role',
+              'ls.classification as classification',
+              'ls.employment_status as employmentStatus',
+              'ls.status as floorStatus',
+              'ls.is_primary as isPrimary',
+            ])
+            .where('ls.location_id', '=', loc.id)
+            .execute();
           const compliance = await scopedTrx
             .selectFrom('compliance_documents')
             .selectAll()
@@ -295,8 +312,44 @@ export class DashboardService {
             .where('ti.item_type', '=', 'retail')
             .executeTakeFirst();
 
+          const staffIds = staff.map((person) => person.locationStaffId);
+          const compensation = staffIds.length
+            ? await scopedTrx
+                .selectFrom('staff_compensation_history')
+                .select(['location_staff_id', 'commission_pct', 'booth_rent_weekly', 'hourly_rate', 'annual_salary', 'custom_pay_model_name', 'effective_from'])
+                .where('location_staff_id', 'in', staffIds)
+                .where('effective_to', 'is', null)
+                .orderBy('effective_from', 'desc')
+                .execute()
+            : [];
+          const compensationByStaff = new Map<string, (typeof compensation)[number]>();
+          for (const row of compensation) if (!compensationByStaff.has(row.location_staff_id)) compensationByStaff.set(row.location_staff_id, row);
+
+          const pendingScheduleRequests = await scopedTrx
+            .selectFrom('schedule_change_requests')
+            .select(({ fn }) => fn.countAll<number>().as('count'))
+            .where('location_id', '=', loc.id)
+            .where('status', '=', 'pending')
+            .executeTakeFirst();
+
+          const team = staff.map((person) => {
+            const pay = compensationByStaff.get(person.locationStaffId);
+            const compensationModel = pay?.custom_pay_model_name
+              ?? (pay?.annual_salary != null ? 'salary' : pay?.hourly_rate != null ? 'hourly' : pay?.booth_rent_weekly != null ? 'booth_rent' : pay?.commission_pct != null ? 'commission' : 'not_configured');
+            return {
+              ...person,
+              locationId: loc.id,
+              locationName: loc.name,
+              compensationModel,
+              commissionPct: pay?.commission_pct == null ? null : Number(pay.commission_pct),
+              boothRentWeekly: pay?.booth_rent_weekly == null ? null : Number(pay.booth_rent_weekly),
+              hourlyRate: pay?.hourly_rate == null ? null : Number(pay.hourly_rate),
+              annualSalary: pay?.annual_salary == null ? null : Number(pay.annual_salary),
+            };
+          });
+
           const revenue = txns.reduce((s, t) => s + Number(t.subtotal), 0);
-          const staffOnShift = staff.filter((s) => s.status !== 'off').length;
+          const staffOnShift = staff.filter((s) => s.floorStatus !== 'off').length;
           const worstCompliance = compliance.some((c) => c.status === 'overdue')
             ? 'overdue'
             : compliance.length > 0
@@ -319,6 +372,8 @@ export class DashboardService {
             discount: txns.reduce((s, t) => s + Number(t.discount_amount), 0),
             tax: txns.reduce((s, t) => s + Number(t.tax), 0),
             tips: txns.reduce((s, t) => s + Number(t.tip), 0),
+            pendingScheduleRequests: Number(pendingScheduleRequests?.count ?? 0),
+            team,
           };
         });
 
@@ -357,6 +412,46 @@ export class DashboardService {
       },
     );
 
-    return { locations: perLocation, totals };
+    const people = new Map<string, {
+      userId: string;
+      fullName: string;
+      role: StaffRole;
+      classification: 'w2' | '1099' | null;
+      employmentStatus: string;
+      assignments: Array<(typeof perLocation)[number]['team'][number]>;
+    }>();
+    for (const location of perLocation) {
+      for (const assignment of location.team) {
+        const existing = people.get(assignment.userId);
+        if (existing) {
+          existing.assignments.push(assignment);
+          if (assignment.role === 'org_owner') existing.role = assignment.role;
+          continue;
+        }
+        people.set(assignment.userId, {
+          userId: assignment.userId,
+          fullName: assignment.fullName,
+          role: assignment.role,
+          classification: assignment.classification,
+          employmentStatus: assignment.employmentStatus,
+          assignments: [assignment],
+        });
+      }
+    }
+
+    const team = Array.from(people.values()).sort((a, b) => a.fullName.localeCompare(b.fullName));
+    const actionItems = [
+      ...(totals.complianceAlerts > 0 ? [{ id: 'compliance', tone: 'red' as const, title: `${totals.complianceAlerts} compliance item${totals.complianceAlerts === 1 ? '' : 's'} need attention`, href: '/org/team' }] : []),
+      ...perLocation.filter((location) => location.pendingScheduleRequests > 0).map((location) => ({ id: `schedule-${location.locationId}`, tone: 'amber' as const, title: `${location.pendingScheduleRequests} schedule request${location.pendingScheduleRequests === 1 ? '' : 's'} at ${location.locationName}`, href: `/locations/${location.locationId}/schedule` })),
+      ...perLocation.filter((location) => location.team.some((person) => person.compensationModel === 'not_configured')).map((location) => ({ id: `pay-${location.locationId}`, tone: 'amber' as const, title: `Compensation setup is incomplete at ${location.locationName}`, href: `/locations/${location.locationId}/staff` })),
+    ];
+
+    return {
+      organization: { id: organization.id, name: organization.name },
+      locations: perLocation.map(({ team: _team, ...location }) => location),
+      totals,
+      team,
+      actionItems,
+    };
   }
 }
