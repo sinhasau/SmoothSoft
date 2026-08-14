@@ -2,8 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import Link from 'next/link';
 import { api } from '../../../../lib/api';
 import { Button, Card, ClickableName, Pill } from '../../../../components/ui';
+import { reportDrilldownHref } from './report-drilldown';
 
 type ReportId =
   | 'revenue_trend'
@@ -384,8 +386,8 @@ export default function ReportsPage({ params }: { params: { locationId: string }
             {reportQuery.data && (
               <>
               {selected === 'tax_documentation' && <><Card className="border-amber-200 bg-amber-50/60 p-4"><h3 className="text-sm font-semibold">W-2 filing requires payroll setup</h3><p className="mt-1 text-xs leading-5 text-gray-600">SmoothSoft can organize employee details, wages, sales, and tips for payroll. Calculating withholding, filing W-2/W-3 forms, and delivering employee copies require a connected payroll provider and completed employer tax profile.</p>{reportQuery.data.warnings?.map((warning) => <p key={warning} className="mt-2 text-xs text-amber-800">• {warning}</p>)}</Card><Card className="p-4"><div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-semibold">Tax-center setup</h3><p className="mt-1 text-xs text-gray-500">Finish these items before your first payroll or year-end filing.</p></div><a href={`/locations/${params.locationId}/settings#payroll`} className="rounded-lg border border-black/15 bg-white px-3 py-1.5 text-xs font-medium">Open payroll settings</a></div><div className="mt-3 divide-y divide-black/5">{reportQuery.data.setup?.map((item) => <div key={item.label} className="flex items-start gap-3 py-3"><span className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full text-xs ${item.complete ? 'bg-green-100 text-green-700' : 'bg-stone-100 text-gray-400'}`}>{item.complete ? '✓' : '○'}</span><div><div className="text-sm font-medium">{item.label}</div><div className="text-xs text-gray-500">{item.detail}</div></div></div>)}</div></Card></>}
-              {selected === 'revenue_by_staff' && reportQuery.data.totals && <div className="grid grid-cols-2 gap-3 md:grid-cols-5"><Card className="p-4"><div className="text-xs text-gray-500">Net staff revenue</div><div className="mt-1 text-xl font-bold">{money(reportQuery.data.totals.netRevenue)}</div></Card><Card className="p-4"><div className="text-xs text-gray-500">Tips tracked</div><div className="mt-1 text-xl font-bold">{money(reportQuery.data.totals.tips)}</div></Card><Card className="p-4"><div className="text-xs text-gray-500">Payable to staff</div><div className="mt-1 text-xl font-bold">{money(reportQuery.data.totals.payableToStaff)}</div></Card><Card className="p-4"><div className="text-xs text-gray-500">Booth rent due</div><div className="mt-1 text-xl font-bold">{money(reportQuery.data.totals.dueToShop)}</div></Card><Card className="p-4"><div className="text-xs text-gray-500">Scheduled hours</div><div className="mt-1 text-xl font-bold">{Number(reportQuery.data.totals.scheduledHours).toFixed(1)}</div></Card></div>}
-              {selected === 'top_services_products' ? <div className="grid gap-4 lg:grid-cols-2">{([['service', 'Top services'], ['retail', 'Top retail products']] as const).map(([type, title]) => <div key={type}><h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{title}</h3><ReportRowsTable rows={reportQuery.data.rows.filter((row) => row.itemType === type)} columns={def.columns} locationId={params.locationId} /></div>)}</div> : <Card className="overflow-x-auto">
+              {selected === 'revenue_by_staff' && reportQuery.data.totals && <div className="grid grid-cols-2 gap-3 md:grid-cols-5"><ReportTotal href={`/locations/${params.locationId}/sales`} label="Net staff revenue" value={money(reportQuery.data.totals.netRevenue)} /><ReportTotal href={`/locations/${params.locationId}/sales`} label="Tips tracked" value={money(reportQuery.data.totals.tips)} /><ReportTotal href={`/locations/${params.locationId}/staff`} label="Payable to staff" value={money(reportQuery.data.totals.payableToStaff)} /><ReportTotal href={`/locations/${params.locationId}/staff`} label="Booth rent due" value={money(reportQuery.data.totals.dueToShop)} /><ReportTotal href={`/locations/${params.locationId}/schedule`} label="Scheduled hours" value={Number(reportQuery.data.totals.scheduledHours).toFixed(1)} /></div>}
+              {selected === 'top_services_products' ? <div className="grid gap-4 lg:grid-cols-2">{([['service', 'Top services'], ['retail', 'Top retail products']] as const).map(([type, title]) => <div key={type}><h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{title}</h3><ReportRowsTable rows={reportQuery.data.rows.filter((row) => row.itemType === type)} columns={def.columns} locationId={params.locationId} reportId={selected} /></div>)}</div> : <Card className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-black/10 text-left text-gray-500">
@@ -401,7 +403,7 @@ export default function ReportsPage({ params }: { params: { locationId: string }
                       <tr key={i} className="border-b border-black/5 last:border-0">
                         {def.columns.map((c) => (
                           <td key={c.key} className={`px-4 py-3 ${c.align === 'right' ? 'text-right' : ''}`}>
-                            {c.format ? c.format(row, params.locationId) : (row[c.key] ?? '—')}
+                            <ReportCellValue reportId={def.id} row={row} column={c} locationId={params.locationId} />
                           </td>
                         ))}
                       </tr>
@@ -427,8 +429,21 @@ export default function ReportsPage({ params }: { params: { locationId: string }
   );
 }
 
-function ReportRowsTable({ rows, columns, locationId }: { rows: Record<string, any>[]; columns: ReportDef['columns']; locationId: string }) {
-  return <Card className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-black/10 text-left text-gray-500">{columns.map((column) => <th key={column.key} className={`px-4 py-3 font-medium ${column.align === 'right' ? 'text-right' : ''}`}>{column.label}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index} className="border-b border-black/5 last:border-0">{columns.map((column) => <td key={column.key} className={`px-4 py-3 ${column.align === 'right' ? 'text-right' : ''}`}>{column.format ? column.format(row, locationId) : (row[column.key] ?? '—')}</td>)}</tr>)}{rows.length === 0 && <tr><td colSpan={columns.length} className="px-4 py-8 text-center text-gray-400">No sales in this category for this range.</td></tr>}</tbody></table></Card>;
+function ReportRowsTable({ rows, columns, locationId, reportId }: { rows: Record<string, any>[]; columns: ReportDef['columns']; locationId: string; reportId: ReportId }) {
+  return <Card className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-black/10 text-left text-gray-500">{columns.map((column) => <th key={column.key} className={`px-4 py-3 font-medium ${column.align === 'right' ? 'text-right' : ''}`}>{column.label}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index} className="border-b border-black/5 last:border-0">{columns.map((column) => <td key={column.key} className={`px-4 py-3 ${column.align === 'right' ? 'text-right' : ''}`}><ReportCellValue reportId={reportId} row={row} column={column} locationId={locationId} /></td>)}</tr>)}{rows.length === 0 && <tr><td colSpan={columns.length} className="px-4 py-8 text-center text-gray-400">No sales in this category for this range.</td></tr>}</tbody></table></Card>;
+}
+
+function ReportTotal({ href, label, value }: { href: string; label: string; value: React.ReactNode }) {
+  return <Link href={href} className="block rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#315c4f]"><Card className="h-full p-4 transition hover:border-[#78988d] hover:bg-white"><div className="text-xs text-gray-500">{label}</div><div className="mt-1 text-xl font-bold underline decoration-black/10 underline-offset-4">{value}</div></Card></Link>;
+}
+
+function ReportCellValue({ reportId, row, column, locationId }: { reportId: ReportId; row: Record<string, any>; column: Column; locationId: string }) {
+  const content = column.format ? column.format(row, locationId) : (row[column.key] ?? '—');
+  // These formatters already render a meaningful anchor (staff/client profile or
+  // the official tax form). Wrapping them would create invalid nested links.
+  if (['fullName', 'clientName', 'staffName'].includes(column.key) || (reportId === 'tax_documentation' && column.key === 'form')) return <>{content}</>;
+  const href = reportDrilldownHref(reportId, row, locationId);
+  return <Link href={href} className="inline-block rounded-sm font-medium underline decoration-black/15 underline-offset-4 hover:decoration-black focus:outline-none focus:ring-2 focus:ring-[#315c4f]">{content}</Link>;
 }
 
 function PayPeriodReviewCard({ from, to, payDate, isCurrent, note, setNote, pending, logged, onLog, runs, onDownload, warnings }: { from: string; to: string; payDate?: string; isCurrent: boolean; note: string; setNote: (value: string) => void; pending: boolean; logged: boolean; onLog: () => void; runs: StaffPayRunHistory[]; onDownload: (run: StaffPayRunHistory, format: 'pdf' | 'xlsx') => Promise<void>; warnings: string[] }) {
