@@ -193,8 +193,16 @@ summary:focus-visible { outline: 3px solid rgb(72 120 103 / .20); outline-offset
   .mobile-header-actions { display: flex; align-items: center; gap: .55rem; }
   .mobile-switch-user { min-height: 2rem; border-radius: .5rem; padding: 0 .6rem; color: #5f5a52; font-size: .72rem; font-weight: 700; background: rgb(0 0 0 / .04); }
   .mobile-switch-user:disabled { opacity: .5; }
-  .mobile-bottom-nav { position: fixed; inset: auto 0 0; z-index: 50; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid rgb(0 0 0 / .09); background: rgb(255 255 255 / .96); padding: .35rem .35rem max(.35rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
-  .mobile-bottom-nav a, .mobile-bottom-nav button { display: flex; min-height: 2.8rem; flex-direction: column; align-items: center; justify-content: center; gap: .1rem; border-radius: .45rem; color: #78716c; font-size: .6rem; font-weight: 700; background: none; border: none; }
+  /* One row, however many items the nav has. This was `repeat(4, 1fr)`, so a
+     fifth or sixth section silently wrapped onto a second row and ate the
+     bottom of the screen — which is what happened the moment Settings was
+     added to the owner nav. Auto-flow columns keeps every section on one row
+     and divides the width evenly, so the nav cannot wrap again. */
+  .mobile-bottom-nav { position: fixed; inset: auto 0 0; z-index: 50; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border-top: 1px solid rgb(0 0 0 / .09); background: rgb(255 255 255 / .96); padding: .35rem .25rem max(.35rem, env(safe-area-inset-bottom)); backdrop-filter: blur(14px); }
+  /* min-width: 0 lets a grid item shrink below its label's intrinsic width;
+     without it a long label ("Locations") forces the column wider and pushes
+     the row into horizontal overflow. Labels ellipsize instead. */
+  .mobile-bottom-nav a, .mobile-bottom-nav button { display: flex; min-width: 0; min-height: 2.8rem; flex-direction: column; align-items: center; justify-content: center; gap: .1rem; border-radius: .45rem; color: #78716c; font-size: .6rem; font-weight: 700; background: none; border: none; padding-inline: .1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-bottom-nav a span, .mobile-bottom-nav button span { font-size: .9rem; }
   .mobile-bottom-nav a.active, .mobile-bottom-nav button.active { background: #eef3f1; color: #173e32; }
   .mobile-more-backdrop { position: fixed; inset: 0; z-index: 55; background: rgb(0 0 0 / .28); }
