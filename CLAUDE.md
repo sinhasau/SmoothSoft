@@ -144,9 +144,25 @@ repeatedly and from any state.
 role — the app connects as `salon_app`, which RLS policies apply to. See
 `.env.example` and `db/grant-app-role.sql`.
 
-**Deploying a schema change:** there is no pre-deploy migration hook in
-`render.yaml`. Migrations are applied manually, and must land **before** the
-API build that depends on them starts serving.
+**Deploying a schema change:** there is still no pre-deploy hook in
+`render.yaml` — Render's `preDeployCommand` needs a paid instance type and the
+API is on `plan: free`. Migrations are applied by running the **Migrate
+production database** workflow (`.github/workflows/migrate-production.yml`)
+from the Actions tab, and must land **before** the API build that depends on
+them starts serving.
+
+Run it once with `apply` unchecked to see what is outstanding — that is a true
+dry run, it does not even create the tracking table — then again with `apply`
+checked. It runs `db:migrate` and `db:grant-app-role` only; it cannot reset,
+drop or seed. Afterwards it fails the run if `schema_migrations` and the files
+on disk disagree, which is the one way a database can end up silently behind
+while `db:migrate` reports "Up to date".
+
+The connection string lives in the `PRODUCTION_DATABASE_MIGRATE_URL` repository
+secret. Do not paste a production connection string into a terminal, a commit,
+or a chat — it is the table-owning role, it bypasses RLS, and it can drop every
+table. If one is ever exposed, rotate it in Neon and update both `DATABASE_URL`
+and `DATABASE_MIGRATE_URL` in Render before doing anything else.
 
 ## Testing
 
