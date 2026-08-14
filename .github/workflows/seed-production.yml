@@ -1,0 +1,83 @@
+# Creates the initial demo tenant in an otherwise empty production database.
+#
+# This workflow is intentionally narrow:
+# - it can only be started manually;
+# - the operator must type the exact confirmation phrase;
+# - it applies additive migrations before seeding;
+# - it refuses to seed unless the database has zero organizations;
+# - it never calls db:reset or any script that drops data.
+name: Seed empty production database
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type SEED EMPTY PRODUCTION to continue'
+        required: true
+        type: string
+
+concurrency:
+  group: production-database-maintenance
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DATABASE_MIGRATE_URL: ${{ secrets.PRODUCTION_DATABASE_MIGRATE_URL }}
+    steps:
+      - name: Validate confirmation and secret
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "SEED EMPTY PRODUCTION" ]; then
+            echo "::error::Confirmation did not match; production was not changed."
+            exit 1
+          fi
+          if [ -z "$DATABASE_MIGRATE_URL" ]; then
+            echo "::error::PRODUCTION_DATABASE_MIGRATE_URL is not set."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - name: Apply outstanding additive migrations
+        run: |
+          npm run db:migrate
+          npm run db:grant-app-role
+
+      - name: Require a completely empty tenant database
+        run: |
+          organization_count=$(psql "$DATABASE_MIGRATE_URL" -v ON_ERROR_STOP=1 -tAc "select count(*) from organizations")
+          echo "organizations_before=$organization_count"
+          if [ "$organization_count" -ne 0 ]; then
+            echo "::error::Refusing to seed: production already contains $organization_count organization(s)."
+            exit 1
+          fi
+
+      - name: Seed the reference organization
+        run: npm --prefix apps/api run seed
+
+      - name: Verify seeded records
+        run: |
+          psql "$DATABASE_MIGRATE_URL" -v ON_ERROR_STOP=1 -tAc "
+            select 'organizations=' || count(*) from organizations;
+            select 'locations=' || count(*) from locations;
+            select 'users=' || count(*) from users;
+            select 'active_staff=' || count(*) from location_staff where employment_status = 'active';
+            select 'services=' || count(*) from services;
+          " | tee seed-counts.txt
+          grep -q '^organizations=1$' seed-counts.txt
+          grep -q '^locations=3$' seed-counts.txt
+
+      - name: Summary
+        run: |
+          echo "### Production demo data seeded" >> "$GITHUB_STEP_SUMMARY"
+          echo "Created the guarded JJ's Barbers reference organization, three locations, staff, services, schedules, and configuration." >> "$GITHUB_STEP_SUMMARY"
+          echo "This workflow will refuse to run again while any organization exists." >> "$GITHUB_STEP_SUMMARY"
