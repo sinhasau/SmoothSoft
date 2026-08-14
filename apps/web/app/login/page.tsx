@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '../../lib/api';
-import { filterRoster, findLastUsedEntry, groupByLocation, readLastStaffId, rememberLastStaffId, type RosterEntry } from './roster-helpers';
+import { filterRoster, findLastUsedEntry, groupByLocation, landingPathAfterLogin, readLastStaffId, rememberLastStaffId, splitOwners, type RosterEntry } from './roster-helpers';
 
 // Staff/org/location assignments change rarely relative to how often someone
 // switches roles during a shift, so treat the roster as long-lived cache
@@ -26,7 +26,7 @@ export default function LoginPage() {
   });
 
   const login = useMutation({
-    mutationFn: (locationStaffId: string) => api.post<{ locationId: string }>('/auth/login', { locationStaffId }),
+    mutationFn: (locationStaffId: string) => api.post<{ locationId: string; role: string }>('/auth/login', { locationStaffId }),
     onSuccess: (claims, locationStaffId) => {
       rememberLastStaffId(locationStaffId);
       // The "Switch" button (see LocationLayout) sets ['auth','me'] to null
@@ -34,13 +34,16 @@ export default function LoginPage() {
       // staleTime — so without this, useRequireAuth on the next page reads
       // that stale null and bounces straight back here instead of refetching.
       queryClient.setQueryData(['auth', 'me'], claims);
-      router.push(`/locations/${claims.locationId}/queue`);
+      router.push(landingPathAfterLogin(claims));
     },
   });
 
   const lastUsed = useMemo(() => findLastUsedEntry(roster ?? [], readLastStaffId()), [roster]);
   const filtered = useMemo(() => filterRoster(roster ?? [], query), [roster, query]);
-  const byLocation = useMemo(() => groupByLocation(filtered), [filtered]);
+  // Owners span every shop, so they get their own group rather than being
+  // filed under whichever location their staff row points at.
+  const { owners, staff } = useMemo(() => splitOwners(filtered), [filtered]);
+  const byLocation = useMemo(() => groupByLocation(staff), [staff]);
   const customerLocations = Array.from(new Map((roster ?? []).map((entry) => [entry.locationId, entry])).values());
 
   return (
@@ -81,6 +84,28 @@ export default function LoginPage() {
           />
         )}
 
+        {owners.length > 0 && (
+          <div className="mb-6">
+            <h2 className="mb-2 text-sm font-semibold text-gray-500">Organization</h2>
+            <div className="flex flex-col gap-2">
+              {owners.map((p) => (
+                <button
+                  key={p.locationStaffId}
+                  onClick={() => login.mutate(p.locationStaffId)}
+                  disabled={login.isPending}
+                  className="flex items-center justify-between rounded-xl border border-[#cfded7] bg-[#f4f8f6] px-4 py-3 text-left shadow-sm transition hover:border-[#78988d] hover:bg-white disabled:opacity-50"
+                >
+                  <span>
+                    <span className="block font-medium">{p.fullName}</span>
+                    <span className="block text-xs text-gray-500">{p.organizationName} · all locations</span>
+                  </span>
+                  <span className="text-sm font-medium text-[#315c4f]">Owner</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {Array.from(byLocation.entries()).map(([locationLabel, people]) => (
           <div key={locationLabel} className="mb-6">
             <h2 className="text-sm font-semibold text-gray-500 mb-2">{locationLabel}</h2>
@@ -102,7 +127,7 @@ export default function LoginPage() {
           </div>
         ))}
 
-        {query && byLocation.size === 0 && <p className="text-sm text-gray-500 mb-6">No staff match "{query}".</p>}
+        {query && byLocation.size === 0 && owners.length === 0 && <p className="text-sm text-gray-500 mb-6">No staff match "{query}".</p>}
 
         {customerLocations.length > 0 && <div className="mt-7 border-t border-black/[0.07] pt-6"><h2 className="text-sm font-semibold text-gray-700">Customer view</h2><p className="mt-1 text-xs text-gray-500">Preview the booking experience without signing in as an employee.</p><div className="mt-3 flex flex-col gap-2">{customerLocations.map((location) => <Link key={location.locationId} href={`/book/${location.locationId}`} className="flex items-center justify-between rounded-xl border border-[#cfded7] bg-[#f4f8f6] px-4 py-3 text-sm font-medium text-[#315c4f] transition hover:border-[#78988d] hover:bg-white"><span>Book at {location.locationName}</span><span aria-hidden="true">→</span></Link>)}</div></div>}
 

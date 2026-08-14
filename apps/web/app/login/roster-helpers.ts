@@ -45,6 +45,37 @@ export function filterRoster(roster: RosterEntry[], query: string): RosterEntry[
   );
 }
 
+/**
+ * Where signing in as this person lands them.
+ *
+ * An org owner does not work a chair — their day starts at the cross-location
+ * workspace, not one shop's queue board. Login used to send everyone to
+ * `/locations/<id>/queue`, so the owner had to notice the sidebar and navigate
+ * out to reach anything org-wide, and nothing on the login screen suggested
+ * the owner view existed at all.
+ */
+export function landingPathAfterLogin(claims: { role: string; locationId: string }): string {
+  return claims.role === 'org_owner' ? '/org' : `/locations/${claims.locationId}/queue`;
+}
+
+/**
+ * Splits the roster into the organization-wide people and everyone else.
+ *
+ * Owners were filed under whichever location their `location_staff` row
+ * happens to point at, with "org owner" as small grey text beside the name —
+ * so the one role that spans every shop looked like a member of one shop.
+ * They are their own group, and it is listed first.
+ *
+ * Grouping only; nobody is filtered out. Every roster entry appears in exactly
+ * one of the two returns.
+ */
+export function splitOwners(roster: RosterEntry[]): { owners: RosterEntry[]; staff: RosterEntry[] } {
+  return {
+    owners: roster.filter((entry) => entry.role === 'org_owner'),
+    staff: roster.filter((entry) => entry.role !== 'org_owner'),
+  };
+}
+
 export function groupByLocation(roster: RosterEntry[]): Map<string, RosterEntry[]> {
   const byLocation = new Map<string, RosterEntry[]>();
   for (const entry of roster) {
