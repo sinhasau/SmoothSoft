@@ -175,3 +175,55 @@ function normalize(value: unknown): unknown {
   if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
   return value ?? null;
 }
+
+/**
+ * Fields a person's contact record accepts. Deliberately a whitelist: the write
+ * path must never be able to reach `full_name`, `email`'s uniqueness, or
+ * anything on `location_staff`, no matter what a client posts.
+ */
+export const CONTACT_WRITABLE = [
+  'phone',
+  'email',
+  'addressLine1',
+  'addressLine2',
+  'city',
+  'region',
+  'postalCode',
+  'country',
+  'emergencyContactName',
+  'emergencyContactPhone',
+] as const;
+
+export type ContactPatch = Partial<Record<(typeof CONTACT_WRITABLE)[number], string | null>>;
+
+const COLUMN: Record<(typeof CONTACT_WRITABLE)[number], string> = {
+  phone: 'phone',
+  email: 'email',
+  addressLine1: 'address_line1',
+  addressLine2: 'address_line2',
+  city: 'city',
+  region: 'region',
+  postalCode: 'postal_code',
+  country: 'country',
+  emergencyContactName: 'emergency_contact_name',
+  emergencyContactPhone: 'emergency_contact_phone',
+};
+
+/**
+ * Maps a submitted patch to database columns, dropping anything unrecognised
+ * and normalising blank strings to null.
+ *
+ * Blank means "cleared", not the empty string: an address line saved as `''`
+ * would print as a stray blank row on a mailing label and would not be
+ * distinguishable from unset anywhere else in the app.
+ */
+export function contactUpdateFor(patch: ContactPatch): Record<string, string | null> {
+  const update: Record<string, string | null> = {};
+  for (const key of CONTACT_WRITABLE) {
+    if (!(key in patch)) continue;
+    const raw = patch[key];
+    const value = typeof raw === 'string' ? raw.trim() : raw ?? null;
+    update[COLUMN[key]] = value === '' ? null : (value ?? null);
+  }
+  return update;
+}

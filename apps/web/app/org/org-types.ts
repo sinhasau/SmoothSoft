@@ -10,18 +10,42 @@ export interface OwnerAssignment {
   locationId: string;
   locationName: string;
   compensationModel: string;
+  /** null when withheld by the visibility rule, versus an object of nulls for "not on file". */
+  contact?: StaffContact | null;
   commissionPct: number | null;
   boothRentWeekly: number | null;
   hourlyRate: number | null;
   annualSalary: number | null;
 }
 
+export interface StaffContact {
+  phone: string | null;
+  email: string | null;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  region: string | null;
+  postalCode: string | null;
+  country: string | null;
+  emergencyContactName: string | null;
+  emergencyContactPhone: string | null;
+}
+
 export interface OwnerPerson {
   userId: string;
   fullName: string;
-  role: OwnerAssignment['role'];
+  /**
+   * Person-level role/classification/status are only set when EVERY assignment
+   * agrees. When they disagree these are null and the matching `mixed*` flag is
+   * true — the API refuses to invent a consensus, because it used to report
+   * whichever location sorted first and could show a 1099 barber as W-2.
+   */
+  role: OwnerAssignment['role'] | null;
   classification: OwnerAssignment['classification'];
-  employmentStatus: OwnerAssignment['employmentStatus'];
+  employmentStatus: OwnerAssignment['employmentStatus'] | null;
+  mixedRole: boolean;
+  mixedClassification: boolean;
+  mixedEmploymentStatus: boolean;
   assignments: OwnerAssignment[];
 }
 
@@ -42,6 +66,15 @@ export interface OwnerLocation {
   tax: number;
   tips: number;
   pendingScheduleRequests: number;
+  address?: {
+    addressLine1: string | null;
+    addressLine2: string | null;
+    city: string | null;
+    region: string | null;
+    postalCode: string | null;
+    country: string | null;
+    phone: string | null;
+  } | null;
 }
 
 export interface OwnerDashboard {

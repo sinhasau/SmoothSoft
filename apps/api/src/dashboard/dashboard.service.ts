@@ -399,6 +399,16 @@ export class DashboardService {
             tax: txns.reduce((s, t) => s + Number(t.tax), 0),
             tips: txns.reduce((s, t) => s + Number(t.tip), 0),
             pendingScheduleRequests: Number(pendingScheduleRequests?.count ?? 0),
+            // Public shop address (0055). Read-only here; owner-only to edit.
+            address: {
+              addressLine1: loc.address_line1 ?? null,
+              addressLine2: loc.address_line2 ?? null,
+              city: loc.city ?? null,
+              region: loc.region ?? null,
+              postalCode: loc.postal_code ?? null,
+              country: loc.country ?? null,
+              phone: loc.phone ?? null,
+            },
             team,
           };
         });
@@ -438,12 +448,22 @@ export class DashboardService {
       },
     );
 
+    // Role, classification and employment status are properties of an
+    // ASSIGNMENT, not of a person — the schema keys them to (location, user).
+    //
+    // This used to collapse them onto the person by taking whichever location
+    // happened to be first, so someone managing Novi and cutting hair at South
+    // Lyon showed one of the two at random, and the W-2/1099 pill could be flat
+    // wrong. That is the field the product strategy calls the single biggest
+    // legal exposure, so "close enough" is not acceptable.
+    //
+    // A person-level value is now only reported when every assignment agrees.
+    // When they disagree it is null and the matching `mixed*` flag is set, so
+    // the UI shows the per-assignment breakdown instead of inventing a
+    // consensus that does not exist.
     const people = new Map<string, {
       userId: string;
       fullName: string;
-      role: StaffRole;
-      classification: 'w2' | '1099' | null;
-      employmentStatus: string;
       assignments: Array<(typeof perLocation)[number]['team'][number]>;
     }>();
     for (const location of perLocation) {
@@ -451,21 +471,33 @@ export class DashboardService {
         const existing = people.get(assignment.userId);
         if (existing) {
           existing.assignments.push(assignment);
-          if (assignment.role === 'org_owner') existing.role = assignment.role;
           continue;
         }
         people.set(assignment.userId, {
           userId: assignment.userId,
           fullName: assignment.fullName,
-          role: assignment.role,
-          classification: assignment.classification,
-          employmentStatus: assignment.employmentStatus,
           assignments: [assignment],
         });
       }
     }
 
-    const team = Array.from(people.values()).sort((a, b) => a.fullName.localeCompare(b.fullName));
+    const team = Array.from(people.values())
+      .map((person) => {
+        const distinct = <T,>(values: readonly T[]) => [...new Set(values)];
+        const roles = distinct(person.assignments.map((a) => a.role));
+        const classifications = distinct(person.assignments.map((a) => a.classification));
+        const statuses = distinct(person.assignments.map((a) => a.employmentStatus));
+        return {
+          ...person,
+          role: roles.length === 1 ? roles[0] : null,
+          classification: classifications.length === 1 ? classifications[0] : null,
+          employmentStatus: statuses.length === 1 ? statuses[0] : null,
+          mixedRole: roles.length > 1,
+          mixedClassification: classifications.length > 1,
+          mixedEmploymentStatus: statuses.length > 1,
+        };
+      })
+      .sort((a, b) => a.fullName.localeCompare(b.fullName));
     const actionItems = [
       ...(totals.complianceAlerts > 0 ? [{ id: 'compliance', tone: 'red' as const, title: `${totals.complianceAlerts} compliance item${totals.complianceAlerts === 1 ? '' : 's'} need attention`, href: '/org/team' }] : []),
       ...perLocation.filter((location) => location.pendingScheduleRequests > 0).map((location) => ({ id: `schedule-${location.locationId}`, tone: 'amber' as const, title: `${location.pendingScheduleRequests} schedule request${location.pendingScheduleRequests === 1 ? '' : 's'} at ${location.locationName}`, href: `/locations/${location.locationId}/schedule` })),

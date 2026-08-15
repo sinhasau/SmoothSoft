@@ -40,6 +40,15 @@ export interface LocationsTable {
   name: string;
   timezone: Generated<string>;
   created_at: TimestampTzWithDefault;
+  /** Public-facing shop address and phone (migration 0055). Owner-only to edit. */
+  address_line1: string | null;
+  address_line2: string | null;
+  city: string | null;
+  region: string | null;
+  postal_code: string | null;
+  country: string | null;
+  phone: string | null;
+
 }
 
 export interface UsersTable {
