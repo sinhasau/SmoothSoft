@@ -37,6 +37,7 @@ import { COMPLIANCE_FILE_HELP, isAllowedComplianceFile } from './compliance-file
 import { paySchedule } from './payroll-period';
 import { encryptSsn, maskSsn, normalizeSsn } from '../security/staff-pii';
 import { contactFor } from '../common/staff-contact-visibility';
+import { rethrowIfSchemaBehind } from '../common/schema-readiness';
 
 /** W2/1099 classification is payroll-sensitive — only management should see it about other staff. */
 function canViewClassification(role: StaffRole): boolean {
@@ -323,7 +324,8 @@ export class SettingsService {
       ])
       .where('ls.location_id', '=', locationId)
       .orderBy('u.full_name')
-      .execute();
+      .execute()
+      .catch(rethrowIfSchemaBehind('The staff roster', '0054'));
 
     const results = [];
     for (const person of staff) {

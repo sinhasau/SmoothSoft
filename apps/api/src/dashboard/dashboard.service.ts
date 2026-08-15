@@ -4,6 +4,7 @@ import { db } from '../common/request-context';
 import { PG_POOL } from '../db/database.module';
 import { runInLocationScope } from '../db/scoped-query';
 import { contactFor } from '../common/staff-contact-visibility';
+import { rethrowIfSchemaBehind } from '../common/schema-readiness';
 import type { StaffRole } from '../db/kysely.types';
 import { dayOfWeekInTimezone, startOfDayInTimezone } from '../common/time';
 
@@ -263,6 +264,15 @@ export class DashboardService {
 
   /** `viewerUserId` is only for the contact-visibility rule; scoping is by organizationId. */
   async orgDashboard(organizationId: string, viewerUserId: string) {
+    // Every page in the owner workspace reads this one endpoint, so an
+    // unapplied migration here is a five-page outage. Name the missing step
+    // rather than returning a bare 500 across the whole workspace.
+    return this.buildOrgDashboard(organizationId, viewerUserId).catch(
+      rethrowIfSchemaBehind('The owner workspace', '0054'),
+    );
+  }
+
+  private async buildOrgDashboard(organizationId: string, viewerUserId: string) {
     const trx = db();
     const [organization, locations] = await Promise.all([
       trx.selectFrom('organizations').select(['id', 'name']).where('id', '=', organizationId).executeTakeFirstOrThrow(),
