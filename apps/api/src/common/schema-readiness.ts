@@ -21,9 +21,12 @@ import { ServiceUnavailableException } from '@nestjs/common';
  * only half the job — a new table arrives with no grants for the app role, and
  * that failed identically from the outside.
  *
- * This is damage control, NOT a fix for the ordering problem. Nothing here
- * stops a migration and its dependent code shipping together; it only makes the
- * result legible. See CLAUDE.md on expand/contract sequencing.
+ * This is the last line of defence, not the fix. Nothing here stops a migration
+ * and its dependent code shipping together — the `deploy-window` CI job does
+ * that, by running this branch's code against the base branch's schema
+ * (`db/deploy-window.test.ts`). This only makes the failure legible if it gets
+ * through anyway. See CLAUDE.md, "Shipping a migration and the code that needs
+ * it".
  */
 export function rethrowIfSchemaBehind(what: string, migration: string) {
   return (error: unknown): never => {

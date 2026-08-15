@@ -164,6 +164,55 @@ or a chat — it is the table-owning role, it bypasses RLS, and it can drop ever
 table. If one is ever exposed, rotate it in Neon and update both `DATABASE_URL`
 and `DATABASE_MIGRATE_URL` in Render before doing anything else.
 
+### Shipping a migration and the code that needs it
+
+**A migration and the code that depends on it must not merge in the same pull
+request.** This is the single rule; everything below is why, and how.
+
+Migrations are applied by hand from the Actions tab, but the API redeploys on
+merge. So between those two moments production runs the **new code against the
+old schema**. Postgres raises `undefined_column`, and whatever that endpoint
+backs is down until someone notices and runs the workflow.
+
+This has caused three outages. The worst was `GET /dashboard/org`, which backs
+*every* page in the owner workspace — Home, Locations, Team, Payroll and
+Reports all failed together, reported simply as "majority of stuff on the
+owner's organization workpage is broken". The window is not theoretical or
+brief: it lasts until a person opens the Actions tab.
+
+**Sequence it as two pull requests:**
+
+1. **Migration only.** Additive, and safe against a database that already has
+   it (see the table above). Merge it, then run the **Migrate production
+   database** workflow and confirm it applied.
+2. **The code that uses the new columns.** Merge after step 1 is live. Now
+   there is no window — the schema was already there.
+
+`deploy-window` in CI enforces this. It builds the schema **the base branch
+has**, then runs this branch's code against it and sweeps every parameterless
+`GET` as every role in the seed
+(`apps/api/src/db/deploy-window.test.ts`). A pull request that adds both a
+migration and code needing it fails there, with the endpoints named. The
+`migrations` job runs the same sweep against the full schema as a control, so a
+route failing in both is an ordinary bug rather than an ordering problem.
+
+Do not skip the job or narrow the sweep to get a merge through — splitting the
+pull request is the fix, and it takes minutes. The sweep enumerates routes from
+the live Express router rather than a list precisely so new endpoints are
+covered without anyone remembering; `SKIP` in that file is for routes excluded
+for reasons about the route, not about the schema.
+
+**When the two genuinely cannot be split** — a column that must be backfilled
+by the same code that reads it — the code must tolerate the old schema on its
+own (read defensively, fall back to today's behaviour when the column is
+absent) so that it passes the base-schema sweep honestly. Say so in the pull
+request, and say why splitting was not possible.
+
+`rethrowIfSchemaBehind` (`apps/api/src/common/schema-readiness.ts`) is the last
+line, not the fix: when this is got wrong anyway, it turns the bare 500 into a
+503 naming the migration to run. Guard new endpoints with it when they read
+freshly added columns.
+
 ## Testing
 
 - Both apps use **vitest**, tests colocated as `*.test.ts` / `*.test.tsx`.

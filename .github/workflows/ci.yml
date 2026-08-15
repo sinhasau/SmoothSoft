@@ -94,3 +94,101 @@ jobs:
           RLS_TEST_APP_URL: postgres://salon_app:salon_app_dev_password@localhost:5432/salon_platform
         run: npx vitest run src/db/rls-isolation.test.ts
         working-directory: apps/api
+      # The control run for the deploy-window job below: the same sweep against
+      # a database that HAS every migration. It must pass. If a route fails
+      # here as well as there, it is an ordinary bug and not a schema-ordering
+      # problem — which is the distinction that makes the other job's failure
+      # trustworthy enough to block a merge on.
+      - name: Seed a demo shop
+        run: npm run seed --workspace @salon-platform/api
+        env:
+          DATABASE_URL: postgres://salon_app:salon_app_dev_password@localhost:5432/salon_platform
+      - name: Endpoint sweep — full schema (control)
+        env:
+          DEPLOY_WINDOW_TEST: '1'
+          DATABASE_URL: postgres://salon_app:salon_app_dev_password@localhost:5432/salon_platform
+        run: npx vitest run src/db/deploy-window.test.ts
+        working-directory: apps/api
+
+  # Reproduces the deploy window: production runs the new code for a while
+  # BEFORE the migration is applied, because migrations are applied by hand
+  # from the Actions tab (render.yaml has no pre-deploy hook — free plan).
+  #
+  # So this builds the schema the base branch has, and runs this branch's code
+  # against it. A pull request carrying both a migration and code that needs it
+  # fails here — which has now caused three outages, the last one taking down
+  # every page in the owner workspace at once.
+  #
+  # Pull requests only: on a push to main the merge has already happened, and
+  # "the schema before this commit" is no longer the question worth asking.
+  deploy-window:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: salon
+          POSTGRES_PASSWORD: salon_dev_password
+          POSTGRES_DB: salon_platform
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U salon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_MIGRATE_URL: postgres://salon:salon_dev_password@localhost:5432/salon_platform
+      DATABASE_URL: postgres://salon_app:salon_app_dev_password@localhost:5432/salon_platform
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needs the base commit present locally to list its migration files.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Create app login role
+        run: psql "$DATABASE_MIGRATE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE salon_app LOGIN PASSWORD 'salon_app_dev_password';"
+      # Hold back migrations this branch adds, so db:migrate builds exactly the
+      # schema production is on during the window. They are moved rather than
+      # deleted, and restored immediately after, so the working tree the sweep
+      # runs against is the real one.
+      - name: Apply only the migrations the base branch has
+        run: |
+          mkdir -p /tmp/branch-only-migrations
+          git ls-tree -r --name-only "$BASE_SHA" db/migrations \
+            | xargs -r -n1 basename | sort > /tmp/base-migrations.txt
+          echo "base branch has $(wc -l < /tmp/base-migrations.txt) migration(s)"
+          held=0
+          for path in db/migrations/*.sql; do
+            name=$(basename "$path")
+            if ! grep -qxF "$name" /tmp/base-migrations.txt; then
+              echo "holding back $name (added by this branch)"
+              mv "$path" /tmp/branch-only-migrations/
+              held=$((held + 1))
+            fi
+          done
+          echo "held back $held migration(s)"
+          npm run db:migrate
+          npm run db:grant-app-role
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      - name: Restore this branch's migrations
+        # Always: the sweep must run against this branch's real working tree,
+        # and leaving files in /tmp on a failed migrate would silently change
+        # what the failure message means.
+        if: always()
+        run: |
+          shopt -s nullglob
+          for path in /tmp/branch-only-migrations/*.sql; do mv "$path" db/migrations/; done
+      - name: Seed a demo shop
+        run: npm run seed --workspace @salon-platform/api
+      - name: Endpoint sweep — base schema
+        env:
+          DEPLOY_WINDOW_TEST: '1'
+        run: npx vitest run src/db/deploy-window.test.ts
+        working-directory: apps/api
