@@ -69,7 +69,7 @@ describe('normalizeOwnerDashboard', () => {
       organization: { id: 'o1', name: "JJ's Barbers" },
       locations: [{ ...oldLocation, pendingScheduleRequests: 4 }],
       totals: { revenueToday: 1, clientsServed: 1, staffOnShift: 1, staffTotal: 1, complianceAlerts: 1, w2Count: 1, contractorCount: 1, serviceRevenue: 1, retailRevenue: 1, discount: 1, salesTax: 1, tips: 1 },
-      team: [{ userId: 'u1', fullName: 'Joel', role: 'org_owner', classification: 'w2', employmentStatus: 'active', assignments: [] }],
+      team: [{ userId: 'u1', fullName: 'Joel', role: 'org_owner', classification: 'w2', employmentStatus: 'active', mixedRole: false, mixedClassification: false, mixedEmploymentStatus: false, assignments: [] }],
       actionItems: [{ id: 'a1', tone: 'red', title: 'x', href: '/y' }],
     };
     const d = normalizeOwnerDashboard(current);
