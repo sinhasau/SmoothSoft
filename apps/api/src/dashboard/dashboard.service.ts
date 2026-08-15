@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { db } from '../common/request-context';
 import { PG_POOL } from '../db/database.module';
 import { runInLocationScope } from '../db/scoped-query';
+import { contactFor } from '../common/staff-contact-visibility';
 import type { StaffRole } from '../db/kysely.types';
 import { dayOfWeekInTimezone, startOfDayInTimezone } from '../common/time';
 
@@ -260,7 +261,8 @@ export class DashboardService {
     }));
   }
 
-  async orgDashboard(organizationId: string) {
+  /** `viewerUserId` is only for the contact-visibility rule; scoping is by organizationId. */
+  async orgDashboard(organizationId: string, viewerUserId: string) {
     const trx = db();
     const [organization, locations] = await Promise.all([
       trx.selectFrom('organizations').select(['id', 'name']).where('id', '=', organizationId).executeTakeFirstOrThrow(),
@@ -279,6 +281,17 @@ export class DashboardService {
               'ls.id as locationStaffId',
               'ls.user_id as userId',
               'u.full_name as fullName',
+              // RESTRICTED. Only ever returned through contactFor() below.
+              'u.phone as phone',
+              'u.email as email',
+              'u.address_line1 as addressLine1',
+              'u.address_line2 as addressLine2',
+              'u.city as city',
+              'u.region as region',
+              'u.postal_code as postalCode',
+              'u.country as country',
+              'u.emergency_contact_name as emergencyContactName',
+              'u.emergency_contact_phone as emergencyContactPhone',
               'ls.role as role',
               'ls.classification as classification',
               'ls.employment_status as employmentStatus',
@@ -336,8 +349,21 @@ export class DashboardService {
             const pay = compensationByStaff.get(person.locationStaffId);
             const compensationModel = pay?.custom_pay_model_name
               ?? (pay?.annual_salary != null ? 'salary' : pay?.hourly_rate != null ? 'hourly' : pay?.booth_rent_weekly != null ? 'booth_rent' : pay?.commission_pct != null ? 'commission' : 'not_configured');
+            const {
+              phone, email, addressLine1, addressLine2, city, region, postalCode, country,
+              emergencyContactName, emergencyContactPhone, ...rest
+            } = person;
             return {
-              ...person,
+              ...rest,
+              // This endpoint is owner-only (requireOwner), so the rule always
+              // grants here — routed through it anyway so there is one answer
+              // to this question, and so tightening the endpoint's guard later
+              // cannot silently leave contact details exposed.
+              contact: contactFor(
+                { userId: viewerUserId, role: 'org_owner', organizationId, locationId: loc.id },
+                { userId: person.userId, organizationId, locationIds: [loc.id] },
+                { phone, email, addressLine1, addressLine2, city, region, postalCode, country, emergencyContactName, emergencyContactPhone },
+              ),
               locationId: loc.id,
               locationName: loc.name,
               compensationModel,

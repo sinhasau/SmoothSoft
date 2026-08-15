@@ -48,6 +48,22 @@ export interface UsersTable {
   phone: string | null;
   full_name: string;
   created_at: TimestampTzWithDefault;
+  /**
+   * Home address and emergency contact (migration 0054), on the person rather
+   * than per assignment — one human, one home address.
+   *
+   * RESTRICTED. Never select these without passing the result through
+   * `contactFor()` in common/staff-contact-visibility.ts, and never add them to
+   * the pre-auth login roster (roster-bootstrap.ts).
+   */
+  address_line1: string | null;
+  address_line2: string | null;
+  city: string | null;
+  region: string | null;
+  postal_code: string | null;
+  country: string | null;
+  emergency_contact_name: string | null;
+  emergency_contact_phone: string | null;
 }
 
 export type StaffRole = 'org_owner' | 'location_manager' | 'staff' | 'front_desk';
