@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { db } from '../common/request-context';
 import { PG_POOL } from '../db/database.module';
@@ -22,7 +22,12 @@ export class OrgSettingsService {
   async get(organizationId: string) {
     const trx = db();
     const [defaults, locations] = await Promise.all([
-      trx.selectFrom('organization_settings').selectAll().where('organization_id', '=', organizationId).executeTakeFirst(),
+      trx
+        .selectFrom('organization_settings')
+        .selectAll()
+        .where('organization_id', '=', organizationId)
+        .executeTakeFirst()
+        .catch(rethrowIfNotMigrated),
       trx.selectFrom('locations').select(['id', 'name']).where('organization_id', '=', organizationId).orderBy('name').execute(),
     ]);
 
@@ -91,7 +96,8 @@ export class OrgSettingsService {
       .onConflict((oc: any) =>
         oc.column('organization_id').doUpdateSet({ [field.orgColumn]: parsed.value, updated_at: new Date() } as never),
       )
-      .execute();
+      .execute()
+      .catch(rethrowIfNotMigrated);
 
     let updatedLocations = 0;
     if (scope === 'all') {
@@ -120,6 +126,48 @@ export class OrgSettingsService {
 
     return { key, value: parsed.value, scope, updatedLocations };
   }
+}
+
+/**
+ * Turns "the migration has not been applied" into a message that says so.
+ *
+ * Nest renders any unhandled exception as a bare 500 `"Internal server error"`,
+ * so a missing table reached the owner as a mystery: the screen correctly said
+ * the load had failed and correctly guessed at migrations, but the one fact
+ * that would have ended the question — WHICH migration — was only in the server
+ * log, which the person looking at the screen cannot read.
+ *
+ * 503 rather than 500 because it is a deployment-ordering problem, not a bug:
+ * the API is running ahead of the schema it needs, and it will fix itself the
+ * moment the migration is applied. No retry loop can help, so the message says
+ * what to run.
+ *
+ * Postgres 42P01 is `undefined_table`, 42703 is `undefined_column`, and 42501
+ * is `insufficient_privilege`. Anything else rethrows untouched — this must
+ * never swallow a real failure.
+ *
+ * 42501 is here because applying the migration is only half the job: a new
+ * table arrives owned by the migrating role with no grants, so `salon_app`
+ * cannot read it and the app fails with `permission denied for table
+ * organization_settings` — a DIFFERENT error that looked identical from the
+ * outside (a bare 500). Anyone who runs `db:migrate` by hand and skips
+ * `db:grant-app-role` lands here, so the message names that step.
+ */
+function rethrowIfNotMigrated(error: unknown): never {
+  const code = (error as { code?: string } | null)?.code;
+  if (code === '42P01' || code === '42703') {
+    throw new ServiceUnavailableException(
+      'Organization settings need database migration 0053, which has not been applied to this database yet. ' +
+        'Run the "Migrate production database" workflow from the Actions tab, then reload.',
+    );
+  }
+  if (code === '42501') {
+    throw new ServiceUnavailableException(
+      'Migration 0053 has been applied but the app role cannot read the new table yet — grants were not run. ' +
+        'Run "npm run db:grant-app-role" (the Migrate production database workflow does this automatically), then reload.',
+    );
+  }
+  throw error;
 }
 
 /** node-postgres returns NUMERIC as a string; the UI wants a number. */
