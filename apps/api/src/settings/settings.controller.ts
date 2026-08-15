@@ -255,7 +255,7 @@ export class SettingsController {
   @Get('staff')
   roster() {
     const auth = requireAuth();
-    return this.settings.roster(auth.locationId, auth.role, auth.locationStaffId);
+    return this.settings.roster(auth.locationId, auth.role, auth.locationStaffId, { userId: auth.userId, organizationId: auth.organizationId });
   }
 
   @Get('staff/:id/service-performance')

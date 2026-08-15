@@ -23,6 +23,6 @@ export class DashboardController {
   @Get('org')
   org() {
     const auth = requireOwner();
-    return this.dashboard.orgDashboard(auth.organizationId);
+    return this.dashboard.orgDashboard(auth.organizationId, auth.userId);
   }
 }

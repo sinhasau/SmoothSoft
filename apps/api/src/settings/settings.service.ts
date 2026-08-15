@@ -36,6 +36,7 @@ import { rollingServiceAverages } from '../queue/service-performance';
 import { COMPLIANCE_FILE_HELP, isAllowedComplianceFile } from './compliance-file.rules';
 import { paySchedule } from './payroll-period';
 import { encryptSsn, maskSsn, normalizeSsn } from '../security/staff-pii';
+import { contactFor } from '../common/staff-contact-visibility';
 
 /** W2/1099 classification is payroll-sensitive — only management should see it about other staff. */
 function canViewClassification(role: StaffRole): boolean {
@@ -277,7 +278,17 @@ export class SettingsService {
   }
 
   // ---- Staff roster ----
-  async roster(locationId: string, requesterRole: StaffRole, requesterStaffId?: string) {
+  async roster(
+    locationId: string,
+    requesterRole: StaffRole,
+    requesterStaffId?: string,
+    /**
+     * Who is asking, for the contact-details rule. Optional so existing callers
+     * and tests keep working; when absent, contact is withheld from everyone
+     * (fail closed — a caller that has not identified itself gets nothing).
+     */
+    viewer?: { userId: string; organizationId: string },
+  ) {
     const trx = db();
     const staff = await trx
       .selectFrom('location_staff as ls')
@@ -286,7 +297,20 @@ export class SettingsService {
       .leftJoin('employee_tax_identities as eti', 'eti.location_staff_id', 'ls.id')
       .select([
         'ls.id as locationStaffId',
+        'u.id as userId',
         'u.full_name as fullName',
+        // RESTRICTED — see common/staff-contact-visibility.ts. Selected here but
+        // only ever returned through contactFor() below.
+        'u.phone as phone',
+        'u.email as email',
+        'u.address_line1 as addressLine1',
+        'u.address_line2 as addressLine2',
+        'u.city as city',
+        'u.region as region',
+        'u.postal_code as postalCode',
+        'u.country as country',
+        'u.emergency_contact_name as emergencyContactName',
+        'u.emergency_contact_phone as emergencyContactPhone',
         'ls.role as role',
         'ls.classification as classification',
         'ls.status as status',
@@ -318,7 +342,20 @@ export class SettingsService {
           .orderBy('day_of_week')
           .execute(),
       ]);
-      results.push({ ...person, maskedSsn: person.ssnLastFour ? maskSsn(person.ssnLastFour) : null, ssnLastFour: undefined, compensation: comp ?? null, goals: goals ?? null, schedule });
+      const {
+        phone, email, addressLine1, addressLine2, city, region, postalCode, country,
+        emergencyContactName, emergencyContactPhone, userId, ...rest
+      } = person;
+      // One rule, one place. Withheld returns null rather than a block of
+      // nulls, so "not yours to read" is distinguishable from "not on file".
+      const contact = viewer
+        ? contactFor(
+            { userId: viewer.userId, role: requesterRole, organizationId: viewer.organizationId, locationId },
+            { userId, organizationId: viewer.organizationId, locationIds: [locationId] },
+            { phone, email, addressLine1, addressLine2, city, region, postalCode, country, emergencyContactName, emergencyContactPhone },
+          )
+        : null;
+      results.push({ ...rest, userId, contact, maskedSsn: person.ssnLastFour ? maskSsn(person.ssnLastFour) : null, ssnLastFour: undefined, compensation: comp ?? null, goals: goals ?? null, schedule });
     }
     if (canViewClassification(requesterRole)) return results;
     // Employees need names/statuses for daily operations and may inspect their
