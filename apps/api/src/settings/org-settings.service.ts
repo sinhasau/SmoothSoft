@@ -142,8 +142,16 @@ export class OrgSettingsService {
  * moment the migration is applied. No retry loop can help, so the message says
  * what to run.
  *
- * Postgres 42P01 is `undefined_table`, 42703 is `undefined_column`. Anything
- * else rethrows untouched — this must never swallow a real failure.
+ * Postgres 42P01 is `undefined_table`, 42703 is `undefined_column`, and 42501
+ * is `insufficient_privilege`. Anything else rethrows untouched — this must
+ * never swallow a real failure.
+ *
+ * 42501 is here because applying the migration is only half the job: a new
+ * table arrives owned by the migrating role with no grants, so `salon_app`
+ * cannot read it and the app fails with `permission denied for table
+ * organization_settings` — a DIFFERENT error that looked identical from the
+ * outside (a bare 500). Anyone who runs `db:migrate` by hand and skips
+ * `db:grant-app-role` lands here, so the message names that step.
  */
 function rethrowIfNotMigrated(error: unknown): never {
   const code = (error as { code?: string } | null)?.code;
@@ -151,6 +159,12 @@ function rethrowIfNotMigrated(error: unknown): never {
     throw new ServiceUnavailableException(
       'Organization settings need database migration 0053, which has not been applied to this database yet. ' +
         'Run the "Migrate production database" workflow from the Actions tab, then reload.',
+    );
+  }
+  if (code === '42501') {
+    throw new ServiceUnavailableException(
+      'Migration 0053 has been applied but the app role cannot read the new table yet — grants were not run. ' +
+        'Run "npm run db:grant-app-role" (the Migrate production database workflow does this automatically), then reload.',
     );
   }
   throw error;
